@@ -1911,6 +1911,23 @@ def cmd_run_gates(args):
             "runId": run_id
         }
         append_jsonl(os.path.join(workspace, "state", "events.jsonl"), event)
+
+        # Auto-write SAFE_CHECKPOINT continuation decision on gate pass
+        # Wrapped in try/except so a decision-write failure never breaks the gate command
+        try:
+            _write_continuation_decision(
+                workspace=workspace,
+                decision="SAFE_CHECKPOINT",
+                phase="SAFE_CHECKPOINT",
+                task_id=task_id,
+                run_id=run_id,
+                justification=f"Gates passed for run {run_id}",
+            )
+        except Exception as _exc:
+            print(
+                f"Warning: auto-write continuation decision failed after gate pass: {_exc}",
+                file=sys.stderr,
+            )
     else:
         # FAIL — transition to GATE_FAILED
         state["currentPhase"] = "GATE_FAILED"
