@@ -1267,6 +1267,107 @@ _TRANSITIONS_PRESERVE_IDENTITY = frozenset([
     "REQUEST_CHANGES",
 ])
 
+def _maybe_write_continuation_decision(workspace, action, state, task_id, run_id):
+    """Auto-write continuation-decision.json for terminal transitions.
+
+    Terminal transitions produce a decision that determines the next step
+    of the supervisor loop.  Transient transitions (RUN_EXECUTOR, etc.)
+    do NOT write a decision.
+
+    This call is wrapped in try/except so a decision-write failure never
+    breaks the transition itself.
+    """
+    try:
+        # Mapping of terminal transition -> (decision, phase_override_or_None)
+        # For transitions where currentTaskId/currentRunId were cleared by the
+        # transition logic, we read them from the *just-written* state (which
+        # already has the cleared values).  We need the PRE-transition values
+        # for traceability, so we use the task_id/run_id passed from the caller.
+        # For CONTINUE_LOOP we must inspect backlog for READY tasks.
+
+        if action == "SET_DONE":
+            _write_continuation_decision(
+                workspace=workspace,
+                decision="DONE",
+                phase=state.get("currentPhase", "DONE"),
+                task_id=task_id,
+                run_id=run_id,
+                justification="All work completed; team state set to DONE",
+            )
+
+        elif action == "SET_SAFE_CHECKPOINT":
+            _write_continuation_decision(
+                workspace=workspace,
+                decision="SAFE_CHECKPOINT",
+                phase=state.get("currentPhase", "SAFE_CHECKPOINT"),
+                task_id=task_id,
+                run_id=run_id,
+                justification="Safe checkpoint reached; team state is verified",
+            )
+
+        elif action == "SET_HUMAN_REQUIRED":
+            # Read blockers for a summary
+            blockers_summary = ""
+            try:
+                blockers = read_jsonl(os.path.join(workspace, "state", "blockers.jsonl"))
+                open_blockers = [b for b in blockers if not b.get("resolvedAtUtc")]
+                if open_blockers:
+                    summaries = [b.get("summary", "no summary") for b in open_blockers[:5]]
+                    blockers_summary = "; ".join(summaries)
+            except Exception:
+                pass
+
+            _write_continuation_decision(
+                workspace=workspace,
+                decision="HUMAN_DECISION_REQUIRED",
+                phase=state.get("currentPhase", "HUMAN_DECISION_REQUIRED"),
+                task_id=task_id,
+                run_id=run_id,
+                justification="Human decision required; blocker(s) present",
+                blockers_summary=blockers_summary,
+            )
+
+        elif action == "CONTINUE_LOOP":
+            # Check backlog for READY tasks
+            has_ready = False
+            try:
+                for task in read_jsonl(os.path.join(workspace, "state", "backlog.jsonl")):
+                    if task.get("status") == "READY":
+                        has_ready = True
+                        break
+            except Exception:
+                pass
+
+            if has_ready:
+                _write_continuation_decision(
+                    workspace=workspace,
+                    decision="CONTINUE",
+                    phase=state.get("currentPhase", "READY_FOR_NEXT_TASK"),
+                    task_id=task_id,
+                    run_id=run_id,
+                    justification="READY tasks remain in backlog; continuing loop",
+                )
+            else:
+                _write_continuation_decision(
+                    workspace=workspace,
+                    decision="SAFE_CHECKPOINT",
+                    phase=state.get("currentPhase", "READY_FOR_NEXT_TASK"),
+                    task_id=task_id,
+                    run_id=run_id,
+                    justification="No READY tasks in backlog; checkpoint reached",
+                )
+
+        # All other transitions (RUN_EXECUTOR, RUN_CHANGE_REVIEWER, etc.)
+        # are transient — do NOT write a decision.
+
+    except Exception as exc:
+        print(
+            f"Warning: auto-write continuation decision failed for "
+            f"transition '{action}': {exc}",
+            file=sys.stderr,
+        )
+
+
 def cmd_apply_transition(args):
     workspace = resolve_workspace(args.workspace)
     action = args.action
@@ -1346,6 +1447,9 @@ def cmd_apply_transition(args):
         state["currentRunId"] = ""
 
     write_json(os.path.join(workspace, "state", "team-state.json"), state)
+
+    # ---- Auto-write continuation decision for terminal transitions ----
+    _maybe_write_continuation_decision(workspace, action, state, task_id, run_id)
 
     # Append events
     event_types = {
