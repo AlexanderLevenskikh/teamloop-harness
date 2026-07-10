@@ -228,6 +228,40 @@ def cmd_init_workspace(args):
         profile_data["profileId"] = profile
         write_json(os.path.join(target_dir, "profiles", "active-profile.json"), profile_data)
 
+    # Memory directory
+    memory_src_dir = os.path.join(template_dir, "memory")
+    memory_dst_dir = os.path.join(target_dir, "memory")
+    os.makedirs(memory_dst_dir, exist_ok=True)
+
+    # project-profile.json — copy template and substitute workspace name
+    pp_src = os.path.join(memory_src_dir, "project-profile.json")
+    pp_dst = os.path.join(memory_dst_dir, "project-profile.json")
+    if os.path.exists(pp_src):
+        pp_data = read_json(pp_src)
+        pp_data["workspace"] = ws_basename
+        pp_data["memoryVersion"] = "1"
+        write_json(pp_dst, pp_data)
+    else:
+        # Fallback: create a valid default profile
+        write_json(pp_dst, {
+            "schemaVersion": 1,
+            "workspace": ws_basename,
+            "memoryVersion": "1",
+            "activeGuidanceRequiresEvidence": True
+        })
+
+    # Copy remaining memory template files (JSONL and markdown)
+    for name in ["lessons.jsonl", "antipatterns.jsonl", "decisions.jsonl", "evidence-map.jsonl", "memory-summary.md"]:
+        src = os.path.join(memory_src_dir, name)
+        dst = os.path.join(memory_dst_dir, name)
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
+        else:
+            # Fallback: create empty file for JSONL, stub for markdown
+            with open(dst, "w", encoding="utf-8") as f:
+                if name.endswith(".md"):
+                    f.write("# Memory Summary\n\nNo lessons, antipatterns, or decisions recorded yet.\n")
+
     print(f"TeamLoop workspace initialized at {target_dir} with profile '{profile}'.")
 
 
@@ -374,6 +408,41 @@ def cmd_validate_state(args):
                         else:
                             errors.append(f"{rpath}: no research schema available for validation")
 
+    # --- Memory directory ---
+    memory_dir = os.path.join(workspace, "memory")
+    if os.path.isdir(memory_dir):
+        # Memory JSONL files validated against their schemas
+        memory_jsonl_schemas = {
+            "lessons.jsonl": "lesson",
+            "antipatterns.jsonl": "antipattern",
+            "decisions.jsonl": "decision",
+            "evidence-map.jsonl": "evidence",
+        }
+        for name, schema_name in memory_jsonl_schemas.items():
+            jsonl_path = os.path.join(memory_dir, name)
+            if not os.path.exists(jsonl_path):
+                continue  # memory files are optional; missing is fine
+            schema = schema_map.get(schema_name, {})
+            if not schema:
+                continue
+            try:
+                entries = read_jsonl(jsonl_path)
+                for i, entry in enumerate(entries, 1):
+                    entry_errors = validate_against_schema(entry, schema, f"memory/{name} line {i}")
+                    errors.extend(entry_errors)
+            except (json.JSONDecodeError, ValueError) as e:
+                errors.append(f"memory/{name}: JSON parse error: {e}")
+
+        # project-profile.json validated against memory-profile schema
+        pp_path = os.path.join(memory_dir, "project-profile.json")
+        pp = read_json_file_safe(pp_path)
+        if pp is not None:
+            pp_errors = validate_against_schema(pp, schema_map.get("memory-profile", {}), "memory/project-profile.json")
+            errors.extend(pp_errors)
+
+        # Semantic validation: active guidance must have valid evidence
+        errors.extend(_validate_memory_semantics(memory_dir))
+
     # --- Stale current-task.json check ---
     # If team-state has no active task but current-task.json exists with IN_PROGRESS, that's stale.
     if state is not None and not state.get("currentTaskId", ""):
@@ -507,6 +576,340 @@ def _validate_human_required(workspace):
 # ---------------------------------------------------------------------------
 # Command: next-action
 # ---------------------------------------------------------------------------
+
+def _validate_memory_semantics(memory_dir):
+    """Semantic validation for memory files.
+
+    Rules:
+    - ACTIVE records in lessons/antipatterns/decisions must have at least one
+      evidenceId that exists in evidence-map.jsonl.
+    - Evidence with status UNVERIFIED cannot support an ACTIVE record.
+    - DEPRECATED/REJECTED/SUPERSEDED records are allowed without evidence.
+    - Empty or missing files produce no errors.
+    """
+    errors = []
+    non_active_statuses = frozenset(["DEPRECATED", "REJECTED", "SUPERSEDED"])
+
+    # Load evidence-map
+    evidence_path = os.path.join(memory_dir, "evidence-map.jsonl")
+    evidence_entries = []
+    if os.path.exists(evidence_path):
+        try:
+            evidence_entries = read_jsonl(evidence_path)
+        except (json.JSONDecodeError, ValueError):
+            # Parse errors already caught in schema validation loop above
+            pass
+
+    evidence_ids = set()
+    unverified_evidence_ids = set()
+    for ev in evidence_entries:
+        eid = ev.get("evidenceId", "")
+        if eid:
+            evidence_ids.add(eid)
+            if ev.get("status", "").upper() == "UNVERIFIED":
+                unverified_evidence_ids.add(eid)
+
+    # Check active guidance in lessons, antipatterns, decisions
+    guidance_files = [
+        ("lessons.jsonl", "lessonId"),
+        ("antipatterns.jsonl", "antipatternId"),
+        ("decisions.jsonl", "decisionId"),
+    ]
+
+    for filename, id_field in guidance_files:
+        filepath = os.path.join(memory_dir, filename)
+        if not os.path.exists(filepath):
+            continue
+        try:
+            entries = read_jsonl(filepath)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        for entry in entries:
+            status = entry.get("status", "")
+            if status in non_active_statuses:
+                # Non-active records don't need evidence
+                continue
+
+            if status != "ACTIVE":
+                # Unknown status — skip, don't error
+                continue
+
+            record_id = entry.get(id_field, "")
+            evidence_ids_ref = entry.get("evidenceIds", [])
+            if not isinstance(evidence_ids_ref, list):
+                evidence_ids_ref = []
+
+            if not evidence_ids_ref:
+                errors.append(
+                    f"memory/{filename}: ACTIVE {id_field} '{record_id}' has no evidenceIds"
+                )
+                continue
+
+            # Check each referenced evidence exists and is not UNVERIFIED
+            for eid_ref in evidence_ids_ref:
+                if eid_ref not in evidence_ids:
+                    errors.append(
+                        f"memory/{filename}: ACTIVE {id_field} '{record_id}' references missing evidenceId '{eid_ref}'"
+                    )
+                elif eid_ref in unverified_evidence_ids:
+                    errors.append(
+                        f"memory/{filename}: ACTIVE {id_field} '{record_id}' references UNVERIFIED evidenceId '{eid_ref}'"
+                    )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Command: memory-doctor
+# ---------------------------------------------------------------------------
+
+def cmd_memory_doctor(args):
+    """Validate memory JSONL files and report structured findings.
+
+    Reuses validation logic from cmd_validate_state — no duplicated rules.
+    Produces gate-result-style JSON output with checks array.
+    Exits 0 if clean, 1 if issues found.
+    """
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    schemas_dir = os.path.join(project_root, "schemas")
+    memory_dir = os.path.join(workspace, "memory")
+
+    # Load schemas
+    schema_map = {}
+    for name in os.listdir(schemas_dir):
+        if name.endswith(".schema.json"):
+            base = name.replace(".schema.json", "")
+            schema_map[base] = read_json(os.path.join(schemas_dir, name))
+
+    checks = []
+    overall = "PASS"
+    all_issues = []
+
+    # ----- Check 1: memory-json-parse -----
+    # Verify all memory JSONL files parse cleanly.
+    _check_json_parse(memory_dir, checks, all_issues)
+
+    # ----- Check 2: memory-schema-valid -----
+    # Validate each entry against its schema (reuse validate_against_schema).
+    _check_schema_valid(memory_dir, schema_map, checks, all_issues)
+
+    # ----- Check 3: active-has-evidence -----
+    # Semantic check: active guidance must have verified evidence
+    # (reuse _validate_memory_semantics).
+    _check_active_has_evidence(memory_dir, checks, all_issues)
+
+    # ----- Check 4: deprecated-retained -----
+    # Check that DEPRECATED/SUPERSEDED records still exist and are not orphaned.
+    _check_deprecated_retained(memory_dir, checks, all_issues)
+
+    # Compute counts for summary
+    counts = _collect_memory_counts(memory_dir)
+
+    if all_issues:
+        overall = "FAIL"
+
+    result = {
+        "schemaVersion": 1,
+        "status": overall,
+        "checks": checks,
+        "summary": counts,
+        "issues": all_issues,
+    }
+
+    print(json.dumps(result, ensure_ascii=False))
+
+    if overall == "FAIL":
+        sys.exit(1)
+
+
+def _check_json_parse(memory_dir, checks, all_issues):
+    """Check 1: all memory JSONL files parse without errors."""
+    issues = []
+    files_checked = 0
+    jsonl_files = [
+        "lessons.jsonl", "antipatterns.jsonl", "decisions.jsonl",
+        "evidence-map.jsonl",
+    ]
+
+    for name in jsonl_files:
+        path = os.path.join(memory_dir, name)
+        if not os.path.exists(path):
+            continue
+        files_checked += 1
+        try:
+            entries = read_jsonl(path)
+            # Count lines to report
+            with open(path, "r", encoding="utf-8-sig") as f:
+                lines = [l for l in f.readlines() if l.strip()]
+            # Check for entries that might fail later
+            for i, line in enumerate(lines, 1):
+                try:
+                    json.loads(line)
+                except json.JSONDecodeError as e:
+                    msg = f"{name} line {i}: {e}"
+                    issues.append(msg)
+        except (json.JSONDecodeError, ValueError) as e:
+            issues.append(f"{name}: parse error: {e}")
+
+    # Also check project-profile.json
+    pp_path = os.path.join(memory_dir, "project-profile.json")
+    if os.path.exists(pp_path):
+        files_checked += 1
+        if is_invalid_json_file(pp_path):
+            issues.append("project-profile.json: invalid JSON")
+
+    status = "PASS" if not issues else "FAIL"
+    checks.append({
+        "name": "memory-json-parse",
+        "status": status,
+        "description": f"Parsed {files_checked} memory JSON file(s) without errors" if not issues
+            else f"Found {len(issues)} JSON parse error(s) in memory files",
+    })
+    all_issues.extend(issues)
+
+
+def _check_schema_valid(memory_dir, schema_map, checks, all_issues):
+    """Check 2: validate entries against their schemas.
+
+    Reuses validate_against_schema from the core module.
+    """
+    issues = []
+    memory_jsonl_schemas = {
+        "lessons.jsonl": "lesson",
+        "antipatterns.jsonl": "antipattern",
+        "decisions.jsonl": "decision",
+        "evidence-map.jsonl": "evidence",
+    }
+
+    entries_validated = 0
+
+    for name, schema_name in memory_jsonl_schemas.items():
+        jsonl_path = os.path.join(memory_dir, name)
+        if not os.path.exists(jsonl_path):
+            continue
+        schema = schema_map.get(schema_name, {})
+        if not schema:
+            continue
+        try:
+            entries = read_jsonl(jsonl_path)
+        except (json.JSONDecodeError, ValueError):
+            # Parse errors already caught by check 1
+            continue
+        for i, entry in enumerate(entries, 1):
+            entries_validated += 1
+            entry_errors = validate_against_schema(entry, schema, f"memory/{name} line {i}")
+            issues.extend(entry_errors)
+
+    # project-profile.json against memory-profile
+    pp_path = os.path.join(memory_dir, "project-profile.json")
+    pp = read_json_file_safe(pp_path)
+    if pp is not None:
+        entries_validated += 1
+        pp_errors = validate_against_schema(pp, schema_map.get("memory-profile", {}), "memory/project-profile.json")
+        issues.extend(pp_errors)
+
+    status = "PASS" if not issues else "FAIL"
+    checks.append({
+        "name": "memory-schema-valid",
+        "status": status,
+        "description": f"Validated {entries_validated} entry(ies) against schemas" if not issues
+            else f"Found {len(issues)} schema violation(s) across {entries_validated} entries",
+    })
+    all_issues.extend(issues)
+
+
+def _check_active_has_evidence(memory_dir, checks, all_issues):
+    """Check 3: ACTIVE guidance records must have verified evidence.
+
+    Reuses _validate_memory_semantics from the core module.
+    """
+    issues = _validate_memory_semantics(memory_dir)
+    status = "PASS" if not issues else "FAIL"
+    checks.append({
+        "name": "active-has-evidence",
+        "status": status,
+        "description": "All ACTIVE guidance has verified evidence" if not issues
+            else f"Found {len(issues)} evidence linkage error(s)",
+    })
+    all_issues.extend(issues)
+
+
+def _check_deprecated_retained(memory_dir, checks, all_issues):
+    """Check 4: DEPRECATED/SUPERSEDED records are still retained in memory.
+
+    These records should not be deleted — they serve as historical context.
+    This check verifies that supersededBy references point to existing records.
+    """
+    issues = []
+
+    # For each supersededBy reference, verify the target exists in the same file
+    superseded_guidance = [
+        ("lessons.jsonl", "lessonId", "supersededBy"),
+        ("decisions.jsonl", "decisionId", "supersededBy"),
+    ]
+
+    for filename, id_field, sup_field in superseded_guidance:
+        filepath = os.path.join(memory_dir, filename)
+        if not os.path.exists(filepath):
+            continue
+        try:
+            entries = read_jsonl(filepath)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        existing_ids = {e.get(id_field) for e in entries}
+
+        for entry in entries:
+            sup_ref = entry.get(sup_field, "")
+            if sup_ref and sup_ref not in existing_ids:
+                record_id = entry.get(id_field, "unknown")
+                issues.append(
+                    f"memory/{filename}: {id_field} '{record_id}' supersededBy '{sup_ref}' not found"
+                )
+
+    status = "PASS" if not issues else "FAIL"
+    checks.append({
+        "name": "deprecated-retained",
+        "status": status,
+        "description": "All supersededBy references point to existing records" if not issues
+            else f"Found {len(issues)} orphaned supersededBy reference(s)",
+    })
+    all_issues.extend(issues)
+
+
+def _collect_memory_counts(memory_dir):
+    """Count active/deprecated/rejected entries across memory files."""
+    counts = {"active": 0, "deprecated": 0, "rejected": 0, "superseded": 0, "evidence": 0}
+    guidance_files = [
+        ("lessons.jsonl", "lesson"),
+        ("antipatterns.jsonl", "antipattern"),
+        ("decisions.jsonl", "decision"),
+    ]
+
+    for filename, _ in guidance_files:
+        filepath = os.path.join(memory_dir, filename)
+        if not os.path.exists(filepath):
+            continue
+        try:
+            entries = read_jsonl(filepath)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        for entry in entries:
+            status = entry.get("status", "").lower()
+            if status in counts:
+                counts[status] += 1
+
+    ev_path = os.path.join(memory_dir, "evidence-map.jsonl")
+    if os.path.exists(ev_path):
+        try:
+            counts["evidence"] = len(read_jsonl(ev_path))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return counts
+
 
 def cmd_next_action(args):
     workspace = resolve_workspace(args.workspace)
@@ -1290,6 +1693,10 @@ def main():
     p_vresearch.add_argument("--json-string", default="")
     p_vresearch.add_argument("--workspace", "-w", default="", help="Ignored, for wrapper compatibility")
 
+    # memory-doctor
+    p_mdoctor = subparsers.add_parser("memory-doctor", help="Validate memory JSONL files and report findings")
+    p_mdoctor.add_argument("--workspace", "-w", default=".teamloop")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1306,6 +1713,7 @@ def main():
         "run-gates": cmd_run_gates,
         "validate-task": cmd_validate_task,
         "validate-research": cmd_validate_research,
+        "memory-doctor": cmd_memory_doctor,
     }
 
     commands[args.command](args)
