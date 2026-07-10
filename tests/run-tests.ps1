@@ -378,10 +378,10 @@ Test-Run "Memory: DeprecatedRetainedButInactive" {
 
 Test-Run "Memory: SupersededWithoutEvidencePasses" {
     Init-TestWorkspace
-    $lesson = '{"schemaVersion":1,"lessonId":"lesson-sup","title":"Superseded","description":"Old way","status":"SUPERSEDED","createdAtUtc":"2024-01-01T00:00:00Z","supersededBy":"lesson-new"}'
+    $lesson = '{"schemaVersion":1,"lessonId":"lesson-sup","title":"Superseded","description":"Old way","status":"SUPERSEDED","createdAtUtc":"2024-01-01T00:00:00Z"}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
     $valResult = Invoke-PythonScriptWithExit "validate-state"
-    if (-not (Assert-Equal $valResult.exitCode 0 ("validate-state should pass for SUPERSEDED lesson without evidence, got: " + $valResult.output))) { return $false }
+    if (-not (Assert-Equal $valResult.exitCode 0 ("validate-state should pass for SUPERSEDED lesson without evidence or supersededBy, got: " + $valResult.output))) { return $false }
     Cleanup-Workspace
     return $true
 }
@@ -447,6 +447,76 @@ Test-Run "Memory: ActiveWithUnverifiedEvidenceFails" {
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
     $valResult = Invoke-PythonScriptWithExit "validate-state"
     if (-not (Assert-Equal $valResult.exitCode 1 ("validate-state should fail on ACTIVE lesson with UNVERIFIED evidence, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+# ============================================================
+# NEW REGRESSION TESTS (PowerShell)
+# ============================================================
+Test-Run "WriteEvent: InvalidTypeRejected" {
+    Init-TestWorkspace
+    $eventsFile = Join-Path $script:workspaceAbs "state\events.jsonl"
+    $linesBefore = (Get-Content $eventsFile).Count
+    $result = Invoke-PythonScriptWithExit "write-event" "--type", "INVALID_TYPE", "--actor", "test", "--summary", "Should fail"
+    if (-not (Assert-Equal $result.exitCode 1 ("write-event with INVALID_TYPE should exit 1, got " + $result.exitCode))) { return $false }
+    $linesAfter = (Get-Content $eventsFile).Count
+    if (-not (Assert-Equal $linesAfter $linesBefore ("events.jsonl should be unchanged, before=$linesBefore after=$linesAfter"))) { return $false }
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 0 ("validate-state should still pass after rejected write-event, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: ActiveWithUnverifiedEvidenceFailsSchemaValid" {
+    Init-TestWorkspace
+    $evidence = '{"schemaVersion":1,"evidenceId":"evidence-001","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z","status":"UNVERIFIED"}'
+    $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-001"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\evidence-map.jsonl") -Content $evidence
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 1 ("validate-state should fail on UNVERIFIED evidence, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: SupersededByFailsBothValidateStateAndMemoryDoctor" {
+    Init-TestWorkspace
+    $lesson = '{"schemaVersion":1,"lessonId":"lesson-sup","title":"Superseded","description":"Old way","status":"SUPERSEDED","createdAtUtc":"2024-01-01T00:00:00Z","supersededBy":"lesson-nonexistent"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 1 ("validate-state should fail on orphaned supersededBy, got: " + $valResult.output))) { return $false }
+    $doctorResult = Invoke-PythonScriptWithExit "memory-doctor"
+    if (-not (Assert-Equal $doctorResult.exitCode 1 ("memory-doctor should fail on orphaned supersededBy, got: " + $doctorResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "MemoryDoctor: MissingDirectoryFails" {
+    Init-TestWorkspace
+    Remove-Item (Join-Path $script:workspaceAbs "memory") -Recurse -Force
+    $doctorResult = Invoke-PythonScriptWithExit "memory-doctor"
+    if (-not (Assert-Equal $doctorResult.exitCode 1 ("memory-doctor should exit 1 when memory dir missing, got: " + $doctorResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "MemoryDoctor: EmptySubsystemWarns" {
+    Init-TestWorkspace
+    $doctorResult = Invoke-PythonScriptWithExit "memory-doctor"
+    $doctorOutput = $doctorResult.output -join "`n"
+    if (-not (Assert-Match $doctorOutput "WARNING" "memory-doctor should report WARNING for empty subsystem")) { return $false }
+    if (-not (Assert-Equal $doctorResult.exitCode 0 ("memory-doctor should exit 0 for WARNING-level finding, got: " + $doctorOutput))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: ProfileDeprecatedFieldsRejected" {
+    Init-TestWorkspace
+    $pp = '{"schemaVersion":1,"workspace":".teamloop","memoryVersion":"1","activeGuidanceRequiresEvidence":true,"maxActiveLessons":5}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\project-profile.json") -Content $pp
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 1 ("validate-state should fail on project-profile with deprecated fields, got: " + $valResult.output))) { return $false }
     Cleanup-Workspace
     return $true
 }

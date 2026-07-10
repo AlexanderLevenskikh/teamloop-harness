@@ -248,7 +248,7 @@ test_09() {
 # ============================================================
 test_10() {
     init_test_workspace
-    run_core write-event --type TEST_EVENT --actor test --summary "Test event" >/dev/null
+    run_core write-event --type STATE_TRANSITION --actor test --summary "Test event" >/dev/null
     [[ -f "$WORKSPACE_ABS/state/events.jsonl" ]] || { echo "events.jsonl missing"; return 1; }
     local lines
     lines=$(wc -l < "$WORKSPACE_ABS/state/events.jsonl")
@@ -262,7 +262,7 @@ test_10() {
 # ============================================================
 test_11() {
     init_test_workspace
-    run_core write-event --type TEST_EVENT --actor test --summary 'Test "quotes" \\backslash\\ newline' >/dev/null
+    run_core write-event --type STATE_TRANSITION --actor test --summary 'Test "quotes" \\backslash\\ newline' >/dev/null
     local events_file="$WORKSPACE_ABS/state/events.jsonl"
     local last_line
     last_line=$(tail -1 "$events_file")
@@ -1029,14 +1029,14 @@ test_57() {
 test_58() {
     # Memory_SupersededWithoutEvidencePasses — SUPERSEDED lesson validates without evidence
     init_test_workspace
-    local lesson='{"schemaVersion":1,"lessonId":"lesson-sup","title":"Superseded","description":"Old way","status":"SUPERSEDED","createdAtUtc":"2024-01-01T00:00:00Z","supersededBy":"lesson-new"}'
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-sup","title":"Superseded","description":"Old way","status":"SUPERSEDED","createdAtUtc":"2024-01-01T00:00:00Z"}'
     echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
     set +e
     local vout vrc
     vout=$(run_core validate-state 2>&1)
     vrc=$?
     set -e
-    [[ $vrc -eq 0 ]] || { echo "validate-state should pass for SUPERSEDED lesson without evidence, got: $vout"; return 1; }
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass for SUPERSEDED lesson without evidence or supersededBy, got: $vout"; return 1; }
     cleanup_workspace
     return 0
 }
@@ -1138,6 +1138,235 @@ test_64() {
 }
 
 # ============================================================
+# NEW REGRESSION TESTS 65-76
+# ============================================================
+test_65() {
+    # WriteEvent_InvalidTypeRejected — write-event with invalid type exits non-zero, events.jsonl unchanged
+    init_test_workspace
+    local events_file="$WORKSPACE_ABS/state/events.jsonl"
+    local lines_before
+    lines_before=$(wc -l < "$events_file")
+    set +e
+    local eout erc
+    eout=$(run_core write-event --type INVALID_TYPE --actor test --summary "Should fail" 2>&1)
+    erc=$?
+    set -e
+    [[ $erc -eq 1 ]] || { echo "write-event with INVALID_TYPE should exit 1, got exit $erc"; return 1; }
+    local lines_after
+    lines_after=$(wc -l < "$events_file")
+    [[ "$lines_before" -eq "$lines_after" ]] || { echo "events.jsonl should be unchanged, before=$lines_before after=$lines_after"; return 1; }
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should still pass after rejected write-event, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_66() {
+    # Memory_ActiveWithUnverifiedEvidenceFailsSchemaValid — evidence record with status UNVERIFIED fails validate-state for the semantic reason
+    init_test_workspace
+    local evidence='{"schemaVersion":1,"evidenceId":"evidence-001","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z","status":"UNVERIFIED"}'
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-001"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    echo "$evidence" > "$WORKSPACE_ABS/memory/evidence-map.jsonl"
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail on UNVERIFIED evidence, got: $vout"; return 1; }
+    echo "$vout" | grep -qi "UNVERIFIED\|evidence" || { echo "validate-state error should mention UNVERIFIED or evidence, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_67() {
+    # Memory_SupersededByFailsBothValidateStateAndMemoryDoctor — orphaned supersededBy detected by both
+    init_test_workspace
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-sup","title":"Superseded","description":"Old way","status":"SUPERSEDED","createdAtUtc":"2024-01-01T00:00:00Z","supersededBy":"lesson-nonexistent"}'
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    # validate-state should fail
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail on orphaned supersededBy, got: $vout"; return 1; }
+    # memory-doctor should fail
+    set +e
+    local dout drc
+    dout=$("$PY" "$CORE" memory-doctor --workspace "$WORKSPACE_ABS" 2>&1)
+    drc=$?
+    set -e
+    [[ $drc -eq 1 ]] || { echo "memory-doctor should fail on orphaned supersededBy, got: $dout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_68() {
+    # MemoryDoctor_MissingDirectoryFails — memory-doctor exits 1 when memory directory absent
+    init_test_workspace
+    rm -rf "$WORKSPACE_ABS/memory"
+    set +e
+    local dout drc
+    dout=$("$PY" "$CORE" memory-doctor --workspace "$WORKSPACE_ABS" 2>&1)
+    drc=$?
+    set -e
+    [[ $drc -eq 1 ]] || { echo "memory-doctor should exit 1 when memory dir missing, got: $dout"; return 1; }
+    echo "$dout" | grep -qi "memory" || { echo "memory-doctor output should mention memory directory, got: $dout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_69() {
+    # MemoryDoctor_EmptySubsystemWarns — empty JSONL files produce WARNING, not FAIL
+    init_test_workspace
+    set +e
+    local dout drc
+    dout=$("$PY" "$CORE" memory-doctor --workspace "$WORKSPACE_ABS" 2>&1)
+    drc=$?
+    set -e
+    echo "$dout" | grep -q "WARNING" || { echo "memory-doctor should report WARNING for empty subsystem, got: $dout"; return 1; }
+    # Should not be a hard FAIL — exit 0
+    [[ $drc -eq 0 ]] || { echo "memory-doctor should exit 0 for WARNING-level finding, got: $dout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_70() {
+    # Memory_ProfileDeprecatedFieldsRejected — injecting activeGuidanceRequiresEvidence or maxActiveLessons fails schema
+    init_test_workspace
+    local pp='{"schemaVersion":1,"workspace":".teamloop","memoryVersion":"1","activeGuidanceRequiresEvidence":true,"maxActiveLessons":5}'
+    echo "$pp" > "$WORKSPACE_ABS/memory/project-profile.json"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail on project-profile with deprecated fields, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# ============================================================
+# PowerShell parity tests 71-76
+# ============================================================
+test_71() {
+    # WriteEvent_InvalidTypeRejected — PS parity
+    init_test_workspace
+    local events_file="$WORKSPACE_ABS/state/events.jsonl"
+    local lines_before
+    lines_before=$(wc -l < "$events_file")
+    set +e
+    local eout erc
+    eout=$(run_core write-event --type INVALID_TYPE --actor test --summary "Should fail" 2>&1)
+    erc=$?
+    set -e
+    [[ $erc -eq 1 ]] || { echo "write-event with INVALID_TYPE should exit 1 (PS parity), got exit $erc"; return 1; }
+    local lines_after
+    lines_after=$(wc -l < "$events_file")
+    [[ "$lines_before" -eq "$lines_after" ]] || { echo "events.jsonl should be unchanged (PS parity), before=$lines_before after=$lines_after"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_72() {
+    # Memory_DoctorMissingDirFails — memory-doctor exits 1 without memory dir
+    init_test_workspace
+    rm -rf "$WORKSPACE_ABS/memory"
+    set +e
+    local dout drc
+    dout=$("$PY" "$CORE" memory-doctor --workspace "$WORKSPACE_ABS" 2>&1)
+    drc=$?
+    set -e
+    [[ $drc -eq 1 ]] || { echo "memory-doctor should exit 1 when memory dir missing, got: $dout"; return 1; }
+    echo "$dout" | grep -q "FAIL" || { echo "memory-doctor output should contain FAIL, got: $dout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_73() {
+    # Memory_SupersededByBothCheck — both validate-state and memory-doctor catch orphaned ref
+    init_test_workspace
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-orphan","title":"Orphan","description":"Test","status":"SUPERSEDED","createdAtUtc":"2024-01-01T00:00:00Z","supersededBy":"no-such-lesson"}'
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    # validate-state fails
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should catch orphaned supersededBy, got: $vout"; return 1; }
+    # memory-doctor fails
+    set +e
+    local dout drc
+    dout=$("$PY" "$CORE" memory-doctor --workspace "$WORKSPACE_ABS" 2>&1)
+    drc=$?
+    set -e
+    [[ $drc -eq 1 ]] || { echo "memory-doctor should catch orphaned supersededBy, got: $dout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_74() {
+    # Memory_ActiveWithUnverifiedEvidenceSemantic — validate-state fails for UNVERIFIED evidence with meaningful error
+    init_test_workspace
+    local evidence='{"schemaVersion":1,"evidenceId":"ev-001","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z","status":"UNVERIFIED"}'
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["ev-001"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    echo "$evidence" > "$WORKSPACE_ABS/memory/evidence-map.jsonl"
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail on UNVERIFIED evidence, got: $vout"; return 1; }
+    echo "$vout" | grep -qi "UNVERIFIED\|evidence" || { echo "Error should mention UNVERIFIED or evidence, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_75() {
+    # MemoryDoctor_WarningNotFail — empty subsystem is WARNING-level, not hard FAIL
+    init_test_workspace
+    set +e
+    local dout drc
+    dout=$("$PY" "$CORE" memory-doctor --workspace "$WORKSPACE_ABS" 2>&1)
+    drc=$?
+    set -e
+    echo "$dout" | grep -q "WARNING" || { echo "memory-doctor should report WARNING for empty memory, got: $dout"; return 1; }
+    [[ $drc -eq 0 ]] || { echo "memory-doctor should NOT exit 1 for WARNING, got: $dout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_76() {
+    # Memory_ProfileRemovedDeprecatedFields — activeGuidanceRequiresEvidence and maxActiveLessons rejected by schema
+    init_test_workspace
+    local pp='{"schemaVersion":1,"workspace":".teamloop","memoryVersion":"1","activeGuidanceRequiresEvidence":true}'
+    echo "$pp" > "$WORKSPACE_ABS/memory/project-profile.json"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail with activeGuidanceRequiresEvidence, got: $vout"; return 1; }
+    # Also test maxActiveLessons
+    local pp2='{"schemaVersion":1,"workspace":".teamloop","memoryVersion":"1","maxActiveLessons":5}'
+    echo "$pp2" > "$WORKSPACE_ABS/memory/project-profile.json"
+    set +e
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail with maxActiveLessons, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# ============================================================
 # RUN ALL
 # ============================================================
 
@@ -1205,6 +1434,18 @@ test_run "Memory: ProfileValidation" test_61
 test_run "Memory: DoctorEmptyPasses" test_62
 test_run "Memory: DoctorDetectsIssues" test_63
 test_run "Memory: ActiveWithUnverifiedEvidenceFails" test_64
+test_run "WriteEvent: InvalidTypeRejected" test_65
+test_run "Memory: ActiveWithUnverifiedEvidenceFailsSchemaValid" test_66
+test_run "Memory: SupersededByFailsBothValidateStateAndMemoryDoctor" test_67
+test_run "MemoryDoctor: MissingDirectoryFails" test_68
+test_run "MemoryDoctor: EmptySubsystemWarns" test_69
+test_run "Memory: ProfileDeprecatedFieldsRejected" test_70
+test_run "WriteEvent: InvalidTypeRejected_PSParity" test_71
+test_run "MemoryDoctor: MissingDirFails_PSParity" test_72
+test_run "Memory: SupersededByBothCheck_PSParity" test_73
+test_run "Memory: ActiveWithUnverifiedEvidenceSemantic" test_74
+test_run "MemoryDoctor: WarningNotFail" test_75
+test_run "Memory: ProfileRemovedDeprecatedFields" test_76
 
 # ============================================================
 # SUMMARY
