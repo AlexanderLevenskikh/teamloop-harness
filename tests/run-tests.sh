@@ -1367,6 +1367,183 @@ test_76() {
 }
 
 # ============================================================
+# AUTO-DECISION REGRESSION TESTS 94-104
+# ============================================================
+
+test_94() {
+    # AutoDecision: SetDoneWritesDone — apply-transition SET_DONE creates decision with decision: "DONE"
+    init_test_workspace
+    run_core apply-transition --action SET_DONE >/dev/null 2>&1
+    local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
+    [[ -f "$decision_file" ]] || { echo "continuation-decision.json should be created by SET_DONE"; return 1; }
+    local decision_val
+    decision_val=$(cat "$decision_file" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('decision',''))" 2>/dev/null)
+    [[ "$decision_val" == "DONE" ]] || { echo "SET_DONE should write decision DONE, got '$decision_val'"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_95() {
+    # AutoDecision: SetCheckpointWritesCheckpoint — apply-transition SET_SAFE_CHECKPOINT creates decision with decision: "SAFE_CHECKPOINT"
+    init_test_workspace
+    run_core apply-transition --action SET_SAFE_CHECKPOINT >/dev/null 2>&1
+    local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
+    [[ -f "$decision_file" ]] || { echo "continuation-decision.json should be created by SET_SAFE_CHECKPOINT"; return 1; }
+    local decision_val
+    decision_val=$(cat "$decision_file" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('decision',''))" 2>/dev/null)
+    [[ "$decision_val" == "SAFE_CHECKPOINT" ]] || { echo "SET_SAFE_CHECKPOINT should write decision SAFE_CHECKPOINT, got '$decision_val'"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_96() {
+    # AutoDecision: SetHumanRequiredWritesDecision — apply-transition SET_HUMAN_REQUIRED creates decision with decision: "HUMAN_DECISION_REQUIRED"
+    init_test_workspace
+    run_core apply-transition --action SET_HUMAN_REQUIRED >/dev/null 2>&1
+    local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
+    [[ -f "$decision_file" ]] || { echo "continuation-decision.json should be created by SET_HUMAN_REQUIRED"; return 1; }
+    local decision_val
+    decision_val=$(cat "$decision_file" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('decision',''))" 2>/dev/null)
+    [[ "$decision_val" == "HUMAN_DECISION_REQUIRED" ]] || { echo "SET_HUMAN_REQUIRED should write decision HUMAN_DECISION_REQUIRED, got '$decision_val'"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_97() {
+    # AutoDecision: ContinueLoopWritesContinue — CONTINUE_LOOP with READY tasks creates decision: "CONTINUE"
+    init_test_workspace
+    echo '{"schemaVersion":1,"taskId":"task-001","title":"Ready task","status":"READY","scope":["src/**"],"successCriteria":["Works"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    run_core apply-transition --action CONTINUE_LOOP >/dev/null 2>&1
+    local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
+    [[ -f "$decision_file" ]] || { echo "continuation-decision.json should be created by CONTINUE_LOOP"; return 1; }
+    local decision_val
+    decision_val=$(cat "$decision_file" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('decision',''))" 2>/dev/null)
+    [[ "$decision_val" == "CONTINUE" ]] || { echo "CONTINUE_LOOP with READY tasks should write decision CONTINUE, got '$decision_val'"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_98() {
+    # AutoDecision: ContinueLoopNoReadyWritesCheckpoint — CONTINUE_LOOP with no READY tasks creates decision: "SAFE_CHECKPOINT"
+    init_test_workspace
+    run_core apply-transition --action CONTINUE_LOOP >/dev/null 2>&1
+    local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
+    [[ -f "$decision_file" ]] || { echo "continuation-decision.json should be created by CONTINUE_LOOP"; return 1; }
+    local decision_val
+    decision_val=$(cat "$decision_file" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('decision',''))" 2>/dev/null)
+    [[ "$decision_val" == "SAFE_CHECKPOINT" ]] || { echo "CONTINUE_LOOP with no READY tasks should write decision SAFE_CHECKPOINT, got '$decision_val'"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_99() {
+    # AutoDecision: TransientSkipsWrite — apply-transition RUN_EXECUTOR does NOT modify decision file
+    init_test_workspace
+    echo '{"schemaVersion":1,"taskId":"task-001","title":"Ready task","status":"READY","scope":["src/**"],"successCriteria":["Works"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    # Ensure no decision file exists before
+    [[ ! -f "$WORKSPACE_ABS/state/continuation-decision.json" ]] || rm -f "$WORKSPACE_ABS/state/continuation-decision.json"
+    run_core apply-transition --action RUN_EXECUTOR --task-id task-001 >/dev/null 2>&1
+    # Decision file should NOT have been created
+    [[ ! -f "$WORKSPACE_ABS/state/continuation-decision.json" ]] && { echo "Good: RUN_EXECUTOR did not create decision file"; } || { echo "RUN_EXECUTOR should NOT create continuation-decision.json"; return 1; }
+    # Also check RUN_CHANGE_REVIEWER
+    run_core apply-transition --action RUN_CHANGE_REVIEWER >/dev/null 2>&1
+    [[ ! -f "$WORKSPACE_ABS/state/continuation-decision.json" ]] && { echo "Good: RUN_CHANGE_REVIEWER did not create decision file"; } || { echo "RUN_CHANGE_REVIEWER should NOT create continuation-decision.json"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_100() {
+    # AutoDecision: RunGatesPassWritesDecision — run-gates on PASS creates decision: "SAFE_CHECKPOINT"
+    init_test_workspace
+    echo '{"schemaVersion":1,"taskId":"task-001","title":"Gate test","status":"READY","scope":["src/**"],"successCriteria":["Pass"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    run_core apply-transition --action RUN_EXECUTOR --task-id task-001 >/dev/null 2>&1
+    run_core apply-transition --action RUN_GATEKEEPER >/dev/null 2>&1
+    mkdir -p "$WORKSPACE_ABS/policies"
+    cat > "$WORKSPACE_ABS/policies/gate-policy.json" << 'GEOF'
+{"gates":[{"name":"ok","type":"shell","command":"sh -c 'exit 0'","required":true}]}
+GEOF
+    run_core run-gates >/dev/null 2>&1
+    local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
+    [[ -f "$decision_file" ]] || { echo "continuation-decision.json should be created by run-gates PASS"; return 1; }
+    local decision_val
+    decision_val=$(cat "$decision_file" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('decision',''))" 2>/dev/null)
+    [[ "$decision_val" == "SAFE_CHECKPOINT" ]] || { echo "run-gates PASS should write decision SAFE_CHECKPOINT, got '$decision_val'"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_101() {
+    # AutoDecision: DecisionFileValidJson — the auto-written decision file is valid JSON
+    init_test_workspace
+    run_core apply-transition --action SET_SAFE_CHECKPOINT >/dev/null 2>&1
+    local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
+    [[ -f "$decision_file" ]] || { echo "continuation-decision.json should exist"; return 1; }
+    "$PY" -c "import json,sys; json.load(open(sys.argv[1]))" "$decision_file" 2>/dev/null || { echo "continuation-decision.json is not valid JSON"; return 1; }
+    # Also verify required fields are present
+    local has_required
+    has_required=$("$PY" -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+required = ['schemaVersion', 'decision', 'phase', 'justification', 'checks', 'createdAtUtc']
+missing = [f for f in required if f not in d]
+print(','.join(missing) if missing else 'OK')
+" "$decision_file" 2>/dev/null)
+    [[ "$has_required" == "OK" ]] || { echo "Decision file missing required fields: $has_required"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_102() {
+    # AutoDecision: DecisionFileMatchesSchema — the auto-written decision file validates against schema
+    init_test_workspace
+    run_core apply-transition --action SET_SAFE_CHECKPOINT >/dev/null 2>&1
+    local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
+    local schema_file="$PROJECT_ROOT/schemas/continuation-decision.schema.json"
+    "$PY" -c "
+import json, sys
+from jsonschema import validate, ValidationError
+decision = json.load(open(sys.argv[1]))
+schema = json.load(open(sys.argv[2]))
+try:
+    validate(instance=decision, schema=schema)
+except ValidationError as e:
+    print(f'Schema validation failed: {e.message}', file=sys.stderr)
+    sys.exit(1)
+" "$decision_file" "$schema_file" 2>/dev/null || { echo "Auto-written continuation-decision.json does not match schema"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_103() {
+    # ValidateContinuation: DecisionPhaseMismatch — decision=DONE with phase!=DONE fails validate-state
+    init_test_workspace
+    # Write DONE decision with EXECUTING_TASK phase (mismatch)
+    run_core write-continuation-decision --decision DONE --phase EXECUTING_TASK >/dev/null 2>&1
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail when decision=DONE but phase!=DONE, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_104() {
+    # ValidateContinuation: AutoDecisionConsistent — after SET_SAFE_CHECKPOINT, validate-state passes (auto-written decision is consistent)
+    init_test_workspace
+    run_core apply-transition --action SET_SAFE_CHECKPOINT >/dev/null 2>&1
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass after SET_SAFE_CHECKPOINT (auto-written decision is consistent), got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# ============================================================
 # RUN ALL
 # ============================================================
 
@@ -1735,6 +1912,17 @@ test_run "Schema: ContinuationDecisionEnum" test_90
 test_run "Schema: ContinuationDecisionAdditionalProps" test_91
 test_run "Continuation: WriteThenValidate" test_92
 test_run "Continuation: StaleTaskIdWarning" test_93
+test_run "AutoDecision: SetDoneWritesDone" test_94
+test_run "AutoDecision: SetCheckpointWritesCheckpoint" test_95
+test_run "AutoDecision: SetHumanRequiredWritesDecision" test_96
+test_run "AutoDecision: ContinueLoopWritesContinue" test_97
+test_run "AutoDecision: ContinueLoopNoReadyWritesCheckpoint" test_98
+test_run "AutoDecision: TransientSkipsWrite" test_99
+test_run "AutoDecision: RunGatesPassWritesDecision" test_100
+test_run "AutoDecision: DecisionFileValidJson" test_101
+test_run "AutoDecision: DecisionFileMatchesSchema" test_102
+test_run "ValidateContinuation: DecisionPhaseMismatch" test_103
+test_run "ValidateContinuation: AutoDecisionConsistent" test_104
 
 # ============================================================
 # SUMMARY

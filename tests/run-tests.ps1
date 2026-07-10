@@ -593,6 +593,72 @@ Test-Run "ContinuationDecision: SchemaExists" {
 }
 
 # ============================================================
+# AUTO-DECISION REGRESSION TESTS (PowerShell)
+# ============================================================
+Test-Run "AutoDecision: SetCheckpointWritesDecision" {
+    Init-TestWorkspace
+    Invoke-PythonScript "apply-transition" "--action", "SET_SAFE_CHECKPOINT" | Out-Null
+    $cdPath = Join-Path $script:workspaceAbs "state\continuation-decision.json"
+    if (-not (Assert-True (Test-Path $cdPath) "SET_SAFE_CHECKPOINT should create continuation-decision.json")) { return $false }
+    $cdContent = Get-Content $cdPath -Raw | ConvertFrom-Json
+    if (-not (Assert-Equal $cdContent.decision "SAFE_CHECKPOINT" ("decision should be SAFE_CHECKPOINT, got " + $cdContent.decision))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "AutoDecision: TransientSkipsWrite" {
+    Init-TestWorkspace
+    $taskJson = '{"schemaVersion":1,"taskId":"task-001","title":"Ready","status":"READY","scope":["src/**"],"successCriteria":["Works"]}'
+    Append-JsonLine -Path (Join-Path $script:workspaceAbs "state\backlog.jsonl") -Line $taskJson
+    Invoke-PythonScript "apply-transition" "--action", "RUN_EXECUTOR", "--task-id", "task-001" | Out-Null
+    $cdPath = Join-Path $script:workspaceAbs "state\continuation-decision.json"
+    if (Test-Path $cdPath) {
+        Write-Host "  FAIL: RUN_EXECUTOR should NOT create continuation-decision.json" -ForegroundColor Red
+        return $false
+    }
+    Invoke-PythonScript "apply-transition" "--action", "RUN_CHANGE_REVIEWER" | Out-Null
+    if (Test-Path $cdPath) {
+        Write-Host "  FAIL: RUN_CHANGE_REVIEWER should NOT create continuation-decision.json" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "AutoDecision: DecisionFileValidJson" {
+    Init-TestWorkspace
+    Invoke-PythonScript "apply-transition" "--action", "SET_SAFE_CHECKPOINT" | Out-Null
+    $cdPath = Join-Path $script:workspaceAbs "state\continuation-decision.json"
+    if (-not (Assert-True (Test-Path $cdPath) "decision file should exist")) { return $false }
+    try {
+        $cdContent = Get-Content $cdPath -Raw | ConvertFrom-Json
+        $requiredFields = @("schemaVersion", "decision", "phase", "justification", "checks", "createdAtUtc")
+        foreach ($field in $requiredFields) {
+            if (-not $cdContent.PSObject.Properties.Name.Contains($field)) {
+                Write-Host "  FAIL: decision file missing required field '$field'" -ForegroundColor Red
+                return $false
+            }
+        }
+    } catch {
+        Write-Host "  FAIL: continuation-decision.json is not valid JSON" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "AutoDecision: SetDoneWritesDoneDecision" {
+    Init-TestWorkspace
+    Invoke-PythonScript "apply-transition" "--action", "SET_DONE" | Out-Null
+    $cdPath = Join-Path $script:workspaceAbs "state\continuation-decision.json"
+    if (-not (Assert-True (Test-Path $cdPath) "SET_DONE should create continuation-decision.json")) { return $false }
+    $cdContent = Get-Content $cdPath -Raw | ConvertFrom-Json
+    if (-not (Assert-Equal $cdContent.decision "DONE" ("decision should be DONE, got " + $cdContent.decision))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+# ============================================================
 # SUMMARY
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor White
