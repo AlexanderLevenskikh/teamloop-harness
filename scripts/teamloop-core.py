@@ -1895,11 +1895,157 @@ def cmd_validate_research(args):
 
 
 # ---------------------------------------------------------------------------
+# Internal helper: _write_continuation_decision
+# ---------------------------------------------------------------------------
+
+def _write_continuation_decision(workspace, decision, phase, task_id="", run_id="",
+                                 justification="", blockers_summary="", blocker_id="",
+                                 evidence=None):
+    """Write a continuation-decision.json record and append a STATE_TRANSITION event.
+
+    This is the canonical internal entry point for writing continuation decisions.
+    Both the CLI command (cmd_write_continuation_decision) and any future runtime
+    callers (e.g., cmd_apply_transition) delegate to this function.
+
+    Parameters
+    ----------
+    workspace : str
+        Absolute path to the .teamloop workspace.
+    decision : str
+        One of: DONE, SAFE_CHECKPOINT, CONTINUE, HUMAN_DECISION_REQUIRED, BLOCKED.
+    phase : str
+        Current phase string (must be non-empty).
+    task_id : str, optional
+        Current task ID.
+    run_id : str, optional
+        Current run ID.
+    justification : str, optional
+        Human-readable justification. Auto-generated from decision+phase if empty.
+    blockers_summary : str, optional
+        Summary of blockers (added as extra check entry when present).
+    blocker_id : str, optional
+        Blocker identifier for BLOCKED/HUMAN_DECISION_REQUIRED decisions.
+    evidence : list[str], optional
+        List of evidence strings.
+
+    Returns
+    -------
+    dict | None
+        The written decision object on success, None on any error.
+        Errors are logged to stderr; the caller is never aborted.
+    """
+    try:
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        # ---- load schema ----
+        schema_path = os.path.join(project_root, "schemas", "continuation-decision.schema.json")
+        schema = read_json(schema_path)
+
+        # ---- validate decision enum from schema (single source of truth) ----
+        valid_decisions = frozenset(
+            schema.get("properties", {}).get("decision", {}).get("enum", [])
+        )
+        if decision not in valid_decisions:
+            print(
+                f"Warning: invalid decision '{decision}'. "
+                f"Valid decisions: {', '.join(sorted(valid_decisions))}",
+                file=sys.stderr,
+            )
+            return None
+
+        if not phase:
+            print("Warning: phase is required for continuation decision", file=sys.stderr)
+            return None
+
+        if not justification:
+            justification = f"Decision {decision} recorded for phase {phase}"
+
+        # ---- auto-generate baseline checks ----
+        checks = [
+            {
+                "name": "decision-valid",
+                "status": "PASS",
+                "summary": f"Decision '{decision}' is a valid enum value"
+            },
+            {
+                "name": "phase-set",
+                "status": "PASS",
+                "summary": f"Phase '{phase}' is set"
+            },
+        ]
+
+        # If a blockers-summary was provided, add an extra check entry.
+        if blockers_summary:
+            checks.append({
+                "name": "blockers-recorded",
+                "status": "PASS",
+                "summary": blockers_summary
+            })
+
+        now = utc_now_iso()
+
+        decision_obj = {
+            "schemaVersion": 1,
+            "decision": decision,
+            "phase": phase,
+            "justification": justification,
+            "checks": checks,
+            "createdAtUtc": now,
+        }
+        if task_id:
+            decision_obj["taskId"] = task_id
+        if run_id:
+            decision_obj["runId"] = run_id
+        if blocker_id:
+            decision_obj["blockerId"] = blocker_id
+        if evidence:
+            decision_obj["evidence"] = evidence
+
+        # ---- write file ----
+        decision_file = os.path.join(workspace, "state", "continuation-decision.json")
+        write_json(decision_file, decision_obj)
+
+        # ---- validate written file against schema ----
+        written = read_json(decision_file)
+        errors = validate_against_schema(written, schema, "continuation-decision.json")
+        if errors:
+            print("Warning: continuation-decision.json failed schema validation:", file=sys.stderr)
+            for err in errors:
+                print(f"  - {err}", file=sys.stderr)
+            return None
+
+        # ---- append STATE_TRANSITION event ----
+        events_file = os.path.join(workspace, "state", "events.jsonl")
+        event = {
+            "schemaVersion": 1,
+            "eventId": f"evt-{os.getpid()}{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}",
+            "type": "STATE_TRANSITION",
+            "actor": "executor",
+            "timestampUtc": now,
+            "summary": f"Continuation decision '{decision}' written for phase '{phase}'",
+        }
+        if task_id:
+            event["taskId"] = task_id
+        if run_id:
+            event["runId"] = run_id
+        append_jsonl(events_file, event)
+
+        return decision_obj
+
+    except Exception as exc:
+        print(f"Warning: failed to write continuation decision: {exc}", file=sys.stderr)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Command: write-continuation-decision
 # ---------------------------------------------------------------------------
 
 def cmd_write_continuation_decision(args):
     """Write a continuation-decision.json record for the current run/task.
+
+    Delegates to _write_continuation_decision() which contains the canonical
+    logic for schema loading, validation, file writing, and event appending.
 
     Reads team-state.json to auto-populate phase, taskId, and runId when not
     supplied on the command line.  Auto-generates a minimal checks array so
@@ -1909,11 +2055,9 @@ def cmd_write_continuation_decision(args):
     workspace = resolve_workspace(args.workspace)
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    # ---- load schema ----
+    # ---- validate decision enum from schema (CLI must fail hard) ----
     schema_path = os.path.join(project_root, "schemas", "continuation-decision.schema.json")
     schema = read_json(schema_path)
-
-    # ---- validate decision enum from schema (single source of truth) ----
     valid_decisions = frozenset(
         schema.get("properties", {}).get("decision", {}).get("enum", [])
     )
@@ -1937,83 +2081,25 @@ def cmd_write_continuation_decision(args):
         print("Error: --phase is required (not set on CLI or in team-state.json)", file=sys.stderr)
         sys.exit(1)
 
-    justification = args.justification or f"Decision {args.decision} recorded for phase {phase}"
+    # ---- delegate to internal helper ----
+    result = _write_continuation_decision(
+        workspace=workspace,
+        decision=args.decision,
+        phase=phase,
+        task_id=task_id,
+        run_id=run_id,
+        justification=args.justification or "",
+        blockers_summary=args.blockers_summary or "",
+        blocker_id=args.blocker_id or "",
+        evidence=args.evidence if args.evidence else None,
+    )
 
-    # ---- auto-generate baseline checks ----
-    checks = [
-        {
-            "name": "decision-valid",
-            "status": "PASS",
-            "summary": f"Decision '{args.decision}' is a valid enum value"
-        },
-        {
-            "name": "phase-set",
-            "status": "PASS",
-            "summary": f"Phase '{phase}' is set"
-        },
-    ]
-
-    # If decision is BLOCKED or HUMAN_DECISION_REQUIRED and a blockers-summary
-    # was provided, add an extra check entry.
-    if args.blockers_summary:
-        checks.append({
-            "name": "blockers-recorded",
-            "status": "PASS",
-            "summary": args.blockers_summary
-        })
-
-    now = utc_now_iso()
-
-    decision_obj = {
-        "schemaVersion": 1,
-        "decision": args.decision,
-        "phase": phase,
-        "justification": justification,
-        "checks": checks,
-        "createdAtUtc": now,
-    }
-    if task_id:
-        decision_obj["taskId"] = task_id
-    if run_id:
-        decision_obj["runId"] = run_id
-    if args.blocker_id:
-        decision_obj["blockerId"] = args.blocker_id
-    if args.evidence:
-        decision_obj["evidence"] = args.evidence
-
-    # ---- write file ----
-    decision_file = os.path.join(workspace, "state", "continuation-decision.json")
-    write_json(decision_file, decision_obj)
-
-    # ---- validate written file against schema ----
-    written = read_json(decision_file)
-    errors = validate_against_schema(written, schema, "continuation-decision.json")
-    if errors:
-        print("Error: continuation-decision.json failed schema validation:", file=sys.stderr)
-        for err in errors:
-            print(f"  - {err}", file=sys.stderr)
+    if result is None:
+        print("Error: _write_continuation_decision returned None (see stderr for details)", file=sys.stderr)
         sys.exit(1)
 
-    # ---- append STATE_TRANSITION event ----
-    events_file = os.path.join(workspace, "state", "events.jsonl")
-    event = {
-        "schemaVersion": 1,
-        "eventId": f"evt-{os.getpid()}{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}",
-        "type": "STATE_TRANSITION",
-        "actor": "executor",
-        "timestampUtc": now,
-        "summary": f"Continuation decision '{args.decision}' written for phase '{phase}'",
-        "taskId": task_id if task_id else None,
-        "runId": run_id if run_id else None,
-    }
-    if event["taskId"] is None:
-        del event["taskId"]
-    if event["runId"] is None:
-        del event["runId"]
-    append_jsonl(events_file, event)
-
     # ---- output ----
-    print(json.dumps(decision_obj, ensure_ascii=False))
+    print(json.dumps(result, ensure_ascii=False))
 
 
 # ---------------------------------------------------------------------------
