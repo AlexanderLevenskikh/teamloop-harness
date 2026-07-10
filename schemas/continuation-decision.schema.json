@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ContinuationDecision",
+  "description": "Records the strict decision taken at each phase transition",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "decision",
+    "phase",
+    "justification",
+    "checks",
+    "createdAtUtc"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "decision": {
+      "type": "string",
+      "enum": ["DONE", "SAFE_CHECKPOINT", "CONTINUE", "HUMAN_DECISION_REQUIRED", "BLOCKED"]
+    },
+    "phase": { "type": "string", "minLength": 1 },
+    "justification": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string" },
+    "runId": { "type": "string" },
+    "blockerId": { "type": "string" },
+    "evidence": { "type": "array", "items": { "type": "string" } },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "ERROR"] },
+          "summary": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "createdAtUtc": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}
