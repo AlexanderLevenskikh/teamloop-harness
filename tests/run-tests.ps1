@@ -522,6 +522,77 @@ Test-Run "Memory: ProfileDeprecatedFieldsRejected" {
 }
 
 # ============================================================
+# CONTINUATION-DECISION TESTS (PowerShell)
+# ============================================================
+Test-Run "ContinuationDecision: ValidDecisionWrite" {
+    Init-TestWorkspace
+    $result = Invoke-PythonScriptWithExit "write-continuation-decision" "--decision", "SAFE_CHECKPOINT", "--phase", "EXECUTING_TASK"
+    if (-not (Assert-Equal $result.exitCode 0 ("write-continuation-decision SAFE_CHECKPOINT should exit 0, got: " + $result.exitCode))) { return $false }
+    $cdPath = Join-Path $script:workspaceAbs "state\continuation-decision.json"
+    if (-not (Assert-True (Test-Path $cdPath) "continuation-decision.json should be created")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "ContinuationDecision: InvalidDecisionRejected" {
+    Init-TestWorkspace
+    $result = Invoke-PythonScriptWithExit "write-continuation-decision" "--decision", "INVALID", "--phase", "EXECUTING_TASK"
+    if (-not (Assert-Equal $result.exitCode 1 ("write-continuation-decision with INVALID should exit 1, got: " + $result.exitCode))) { return $false }
+    # Note: Invoke-PythonScriptWithExit suppresses stderr, so we only verify the exit code
+    # (the writer prints the error message to stderr before exiting)
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "ContinuationDecision: MissingDecisionFilePassesValidation" {
+    Init-TestWorkspace
+    $cdPath = Join-Path $script:workspaceAbs "state\continuation-decision.json"
+    if (Test-Path $cdPath) {
+        Write-Host "  FAIL: decision file should not exist on fresh workspace" -ForegroundColor Red
+        return $false
+    }
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 0 ("Missing decision file should pass validate-state, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "ContinuationDecision: DoneRequiresDonePhase" {
+    Init-TestWorkspace
+    Invoke-PythonScript "write-continuation-decision" "--decision", "DONE", "--phase", "EXECUTING_TASK" | Out-Null
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 1 ("DONE decision with EXECUTING_TASK phase should fail, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "ContinuationDecision: WriteThenValidate" {
+    Init-TestWorkspace
+    Invoke-PythonScript "write-continuation-decision" "--decision", "SAFE_CHECKPOINT", "--phase", "INITIALIZED" | Out-Null
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 0 ("validate-state should pass after writing valid SAFE_CHECKPOINT, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "ContinuationDecision: SchemaExists" {
+    $schemaPath = Join-Path $projectRoot "schemas\continuation-decision.schema.json"
+    if (-not (Test-Path $schemaPath)) {
+        Write-Host "  FAIL: continuation-decision.schema.json missing" -ForegroundColor Red
+        return $false
+    }
+    try {
+        $schemaContent = Get-Content $schemaPath -Raw
+        $null = $schemaContent | ConvertFrom-Json
+    } catch {
+        Write-Host "  FAIL: continuation-decision.schema.json is not valid JSON" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+# ============================================================
 # SUMMARY
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor White

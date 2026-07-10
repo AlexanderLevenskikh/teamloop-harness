@@ -1448,6 +1448,295 @@ test_run "MemoryDoctor: WarningNotFail" test_75
 test_run "Memory: ProfileRemovedDeprecatedFields" test_76
 
 # ============================================================
+# CONTINUATION-DECISION TESTS 77-93
+# ============================================================
+
+# --- Writer Tests ---
+
+test_77() {
+    # WriteContinuationDecision: ValidDecision — writing SAFE_CHECKPOINT succeeds (exit 0, file created)
+    init_test_workspace
+    set +e
+    local wout wrc
+    wout=$(run_core write-continuation-decision --decision SAFE_CHECKPOINT --phase EXECUTING_TASK 2>&1)
+    wrc=$?
+    set -e
+    [[ $wrc -eq 0 ]] || { echo "write-continuation-decision SAFE_CHECKPOINT should exit 0, got exit $wrc: $wout"; return 1; }
+    [[ -f "$WORKSPACE_ABS/state/continuation-decision.json" ]] || { echo "continuation-decision.json should be created"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_78() {
+    # WriteContinuationDecision: InvalidDecision — writing INVALID fails (exit 1, error to stderr)
+    init_test_workspace
+    set +e
+    local wout wrc
+    wout=$(run_core write-continuation-decision --decision INVALID --phase EXECUTING_TASK 2>&1)
+    wrc=$?
+    set -e
+    [[ $wrc -eq 1 ]] || { echo "write-continuation-decision with INVALID should exit 1, got exit $wrc: $wout"; return 1; }
+    echo "$wout" | grep -qi "invalid\|error" || { echo "Should report invalid decision error, got: $wout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_79() {
+    # WriteContinuationDecision: AllDecisionsValid — each of the 5 decisions succeeds
+    init_test_workspace
+    local decisions="DONE SAFE_CHECKPOINT CONTINUE HUMAN_DECISION_REQUIRED BLOCKED"
+    for dec in $decisions; do
+        set +e
+        local wout wrc
+        wout=$(run_core write-continuation-decision --decision "$dec" --phase EXECUTING_TASK 2>&1)
+        wrc=$?
+        set -e
+        [[ $wrc -eq 0 ]] || { echo "Decision '$dec' should succeed, got exit $wrc: $wout"; return 1; }
+    done
+    cleanup_workspace
+    return 0
+}
+
+test_80() {
+    # WriteContinuationDecision: OutputIsValidJson — the written file is valid JSON
+    init_test_workspace
+    run_core write-continuation-decision --decision SAFE_CHECKPOINT --phase EXECUTING_TASK >/dev/null 2>&1
+    local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
+    "$PY" -c "import json,sys; json.load(open(sys.argv[1]))" "$decision_file" 2>/dev/null || { echo "continuation-decision.json is not valid JSON"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_81() {
+    # WriteContinuationDecision: OutputMatchesSchema — validates against continuation-decision.schema.json
+    init_test_workspace
+    run_core write-continuation-decision --decision CONTINUE --phase EXECUTING_TASK >/dev/null 2>&1
+    local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
+    local schema_file="$PROJECT_ROOT/schemas/continuation-decision.schema.json"
+    "$PY" -c "
+import json, sys
+from jsonschema import validate, ValidationError
+decision = json.load(open(sys.argv[1]))
+schema = json.load(open(sys.argv[2]))
+try:
+    validate(instance=decision, schema=schema)
+except ValidationError as e:
+    print(f'Schema validation failed: {e.message}', file=sys.stderr)
+    sys.exit(1)
+" "$decision_file" "$schema_file" 2>/dev/null || { echo "continuation-decision.json does not match schema"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# --- Validator Tests ---
+
+test_82() {
+    # ValidateContinuation: MissingDecisionPasses — missing continuation-decision.json passes validate-state
+    init_test_workspace
+    # Fresh workspace, no continuation-decision.json
+    [[ ! -f "$WORKSPACE_ABS/state/continuation-decision.json" ]] || { echo "decision file should not exist"; return 1; }
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "Missing decision file should pass validate-state, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_83() {
+    # ValidateContinuation: DoneRequiresDonePhase — decision=DONE with non-DONE phase fails validate-state
+    init_test_workspace
+    run_core write-continuation-decision --decision DONE --phase EXECUTING_TASK >/dev/null 2>&1
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "DONE decision with EXECUTING_TASK phase should fail, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_84() {
+    # ValidateContinuation: HumanDecisionRequiresBlockers — HUMAN_DECISION_REQUIRED with no blockers fails
+    init_test_workspace
+    run_core write-continuation-decision --decision HUMAN_DECISION_REQUIRED --phase HUMAN_DECISION_REQUIRED >/dev/null 2>&1
+    # Also set the team-state phase
+    local state_file="$WORKSPACE_ABS/state/team-state.json"
+    local content
+    content=$(cat "$state_file")
+    content=$(echo "$content" | "$PY" -c "import json,sys; d=json.load(sys.stdin); d['currentPhase']='HUMAN_DECISION_REQUIRED'; d['status']='HUMAN_DECISION_REQUIRED'; print(json.dumps(d))")
+    echo "$content" > "$state_file"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "HUMAN_DECISION_REQUIRED without blockers should fail, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_85() {
+    # ValidateContinuation: SafeCheckpointAfterDoneFails — SAFE_CHECKPOINT after phase=DONE fails
+    init_test_workspace
+    # Set phase to DONE
+    local state_file="$WORKSPACE_ABS/state/team-state.json"
+    local content
+    content=$(cat "$state_file")
+    content=$(echo "$content" | "$PY" -c "import json,sys; d=json.load(sys.stdin); d['currentPhase']='DONE'; d['status']='DONE'; print(json.dumps(d))")
+    echo "$content" > "$state_file"
+    run_core write-continuation-decision --decision SAFE_CHECKPOINT --phase DONE >/dev/null 2>&1
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "SAFE_CHECKPOINT after DONE phase should fail, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_86() {
+    # ValidateContinuation: ContinueRequiresReadyTasks — CONTINUE with no READY tasks fails
+    init_test_workspace
+    run_core write-continuation-decision --decision CONTINUE --phase EXECUTING_TASK >/dev/null 2>&1
+    # No tasks in backlog at all
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "CONTINUE without READY tasks should fail, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_87() {
+    # ValidateContinuation: BlockedRequiresBlockers — BLOCKED with no open blockers fails
+    init_test_workspace
+    run_core write-continuation-decision --decision BLOCKED --phase EXECUTING_TASK >/dev/null 2>&1
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "BLOCKED without blockers should fail, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_88() {
+    # ValidateContinuation: DoneRequiresCleanState — DONE with READY tasks fails
+    init_test_workspace
+    echo '{"schemaVersion":1,"taskId":"task-001","title":"Open task","status":"READY","scope":["src/**"],"successCriteria":["Works"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    run_core write-continuation-decision --decision DONE --phase DONE >/dev/null 2>&1
+    # Set state to DONE
+    local state_file="$WORKSPACE_ABS/state/team-state.json"
+    local content
+    content=$(cat "$state_file")
+    content=$(echo "$content" | "$PY" -c "import json,sys; d=json.load(sys.stdin); d['currentPhase']='DONE'; d['status']='DONE'; print(json.dumps(d))")
+    echo "$content" > "$state_file"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "DONE with READY tasks should fail, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# --- Schema Tests ---
+
+test_89() {
+    # Schema: ContinuationDecisionExists — schema file exists and is valid JSON
+    local schema_file="$PROJECT_ROOT/schemas/continuation-decision.schema.json"
+    [[ -f "$schema_file" ]] || { echo "continuation-decision.schema.json missing"; return 1; }
+    "$PY" -c "import json,sys; json.load(open(sys.argv[1]))" "$schema_file" 2>/dev/null || { echo "continuation-decision.schema.json is not valid JSON"; return 1; }
+    return 0
+}
+
+test_90() {
+    # Schema: ContinuationDecisionEnum — schema contains all 5 decision values
+    local schema_file="$PROJECT_ROOT/schemas/continuation-decision.schema.json"
+    local enum_vals
+    enum_vals=$(cat "$schema_file" | "$PY" -c "
+import json, sys
+schema = json.load(open(sys.argv[1]))
+vals = schema.get('properties', {}).get('decision', {}).get('enum', [])
+print(','.join(sorted(vals)))
+" "$schema_file")
+    [[ "$enum_vals" == "BLOCKED,CONTINUE,DONE,HUMAN_DECISION_REQUIRED,SAFE_CHECKPOINT" ]] || { echo "Schema should contain all 5 decisions, got: $enum_vals"; return 1; }
+    return 0
+}
+
+test_91() {
+    # Schema: ContinuationDecisionAdditionalProps — schema rejects additional properties
+    local schema_file="$PROJECT_ROOT/schemas/continuation-decision.schema.json"
+    local has_additional
+    has_additional=$(cat "$schema_file" | "$PY" -c "
+import json, sys
+schema = json.load(open(sys.argv[1]))
+print(schema.get('additionalProperties', True))
+" "$schema_file")
+    [[ "$has_additional" == "False" ]] || { echo "Schema should have additionalProperties: false, got: $has_additional"; return 1; }
+    return 0
+}
+
+# --- Integration Tests ---
+
+test_92() {
+    # Continuation: WriteThenValidate — write a valid decision, validate-state passes
+    init_test_workspace
+    # Write SAFE_CHECKPOINT with initial phase matching team-state
+    run_core write-continuation-decision --decision SAFE_CHECKPOINT --phase INITIALIZED >/dev/null 2>&1
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass after writing valid SAFE_CHECKPOINT, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_93() {
+    # Continuation: StaleTaskIdWarning — decision with non-existent taskId produces validation error
+    init_test_workspace
+    run_core write-continuation-decision --decision SAFE_CHECKPOINT --phase INITIALIZED --task-id task-nonexistent >/dev/null 2>&1
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail with non-existent taskId, got: $vout"; return 1; }
+    echo "$vout" | grep -qi "task-nonexistent\|not found" || { echo "validate-state error should mention the stale taskId, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_run "WriteContinuationDecision: ValidDecision" test_77
+test_run "WriteContinuationDecision: InvalidDecision" test_78
+test_run "WriteContinuationDecision: AllDecisionsValid" test_79
+test_run "WriteContinuationDecision: OutputIsValidJson" test_80
+test_run "WriteContinuationDecision: OutputMatchesSchema" test_81
+test_run "ValidateContinuation: MissingDecisionPasses" test_82
+test_run "ValidateContinuation: DoneRequiresDonePhase" test_83
+test_run "ValidateContinuation: HumanDecisionRequiresBlockers" test_84
+test_run "ValidateContinuation: SafeCheckpointAfterDoneFails" test_85
+test_run "ValidateContinuation: ContinueRequiresReadyTasks" test_86
+test_run "ValidateContinuation: BlockedRequiresBlockers" test_87
+test_run "ValidateContinuation: DoneRequiresCleanState" test_88
+test_run "Schema: ContinuationDecisionExists" test_89
+test_run "Schema: ContinuationDecisionEnum" test_90
+test_run "Schema: ContinuationDecisionAdditionalProps" test_91
+test_run "Continuation: WriteThenValidate" test_92
+test_run "Continuation: StaleTaskIdWarning" test_93
+
+# ============================================================
 # SUMMARY
 # ============================================================
 echo ""
