@@ -1743,6 +1743,128 @@ def cmd_validate_research(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: write-continuation-decision
+# ---------------------------------------------------------------------------
+
+def cmd_write_continuation_decision(args):
+    """Write a continuation-decision.json record for the current run/task.
+
+    Reads team-state.json to auto-populate phase, taskId, and runId when not
+    supplied on the command line.  Auto-generates a minimal checks array so
+    the file is always schema-valid.  Appends a STATE_TRANSITION event for
+    auditability.
+    """
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # ---- load schema ----
+    schema_path = os.path.join(project_root, "schemas", "continuation-decision.schema.json")
+    schema = read_json(schema_path)
+
+    # ---- validate decision enum from schema (single source of truth) ----
+    valid_decisions = frozenset(
+        schema.get("properties", {}).get("decision", {}).get("enum", [])
+    )
+    if args.decision not in valid_decisions:
+        print(
+            f"Error: invalid decision '{args.decision}'. "
+            f"Valid decisions: {', '.join(sorted(valid_decisions))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # ---- auto-populate phase / taskId / runId from team-state ----
+    state_file = os.path.join(workspace, "state", "team-state.json")
+    state = read_json_file_safe(state_file) or {}
+
+    phase = args.phase or state.get("currentPhase", "")
+    task_id = args.task_id or state.get("currentTaskId", "")
+    run_id = args.run_id or state.get("currentRunId", "")
+
+    if not phase:
+        print("Error: --phase is required (not set on CLI or in team-state.json)", file=sys.stderr)
+        sys.exit(1)
+
+    justification = args.justification or f"Decision {args.decision} recorded for phase {phase}"
+
+    # ---- auto-generate baseline checks ----
+    checks = [
+        {
+            "name": "decision-valid",
+            "status": "PASS",
+            "summary": f"Decision '{args.decision}' is a valid enum value"
+        },
+        {
+            "name": "phase-set",
+            "status": "PASS",
+            "summary": f"Phase '{phase}' is set"
+        },
+    ]
+
+    # If decision is BLOCKED or HUMAN_DECISION_REQUIRED and a blockers-summary
+    # was provided, add an extra check entry.
+    if args.blockers_summary:
+        checks.append({
+            "name": "blockers-recorded",
+            "status": "PASS",
+            "summary": args.blockers_summary
+        })
+
+    now = utc_now_iso()
+
+    decision_obj = {
+        "schemaVersion": 1,
+        "decision": args.decision,
+        "phase": phase,
+        "justification": justification,
+        "checks": checks,
+        "createdAtUtc": now,
+    }
+    if task_id:
+        decision_obj["taskId"] = task_id
+    if run_id:
+        decision_obj["runId"] = run_id
+    if args.blocker_id:
+        decision_obj["blockerId"] = args.blocker_id
+    if args.evidence:
+        decision_obj["evidence"] = args.evidence
+
+    # ---- write file ----
+    decision_file = os.path.join(workspace, "state", "continuation-decision.json")
+    write_json(decision_file, decision_obj)
+
+    # ---- validate written file against schema ----
+    written = read_json(decision_file)
+    errors = validate_against_schema(written, schema, "continuation-decision.json")
+    if errors:
+        print("Error: continuation-decision.json failed schema validation:", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err}", file=sys.stderr)
+        sys.exit(1)
+
+    # ---- append STATE_TRANSITION event ----
+    events_file = os.path.join(workspace, "state", "events.jsonl")
+    event = {
+        "schemaVersion": 1,
+        "eventId": f"evt-{os.getpid()}{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}",
+        "type": "STATE_TRANSITION",
+        "actor": "executor",
+        "timestampUtc": now,
+        "summary": f"Continuation decision '{args.decision}' written for phase '{phase}'",
+        "taskId": task_id if task_id else None,
+        "runId": run_id if run_id else None,
+    }
+    if event["taskId"] is None:
+        del event["taskId"]
+    if event["runId"] is None:
+        del event["runId"]
+    append_jsonl(events_file, event)
+
+    # ---- output ----
+    print(json.dumps(decision_obj, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
 # Workspace path resolution
 # ---------------------------------------------------------------------------
 
@@ -1813,6 +1935,18 @@ def main():
     p_mdoctor = subparsers.add_parser("memory-doctor", help="Validate memory JSONL files and report findings")
     p_mdoctor.add_argument("--workspace", "-w", default=".teamloop")
 
+    # write-continuation-decision
+    p_wcd = subparsers.add_parser("write-continuation-decision", help="Write a continuation decision record")
+    p_wcd.add_argument("--workspace", "-w", default=".teamloop")
+    p_wcd.add_argument("--decision", required=True, help="Decision value (DONE, SAFE_CHECKPOINT, CONTINUE, HUMAN_DECISION_REQUIRED, BLOCKED)")
+    p_wcd.add_argument("--phase", default="", help="Phase (auto-populated from team-state.json if omitted)")
+    p_wcd.add_argument("--justification", default="", help="Justification text (auto-generated if omitted)")
+    p_wcd.add_argument("--task-id", default="", help="Task ID (auto-populated from team-state.json if omitted)")
+    p_wcd.add_argument("--run-id", default="", help="Run ID (auto-populated from team-state.json if omitted)")
+    p_wcd.add_argument("--blocker-id", default="", help="Blocker ID for BLOCKED/HUMAN_DECISION_REQUIRED")
+    p_wcd.add_argument("--blockers-summary", default="", help="Summary of blockers")
+    p_wcd.add_argument("--evidence", default=[], action="append", help="Evidence item (repeatable)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1830,6 +1964,7 @@ def main():
         "validate-task": cmd_validate_task,
         "validate-research": cmd_validate_research,
         "memory-doctor": cmd_memory_doctor,
+        "write-continuation-decision": cmd_write_continuation_decision,
     }
 
     commands[args.command](args)
