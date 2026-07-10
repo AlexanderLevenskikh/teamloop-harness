@@ -246,8 +246,7 @@ def cmd_init_workspace(args):
         write_json(pp_dst, {
             "schemaVersion": 1,
             "workspace": ws_basename,
-            "memoryVersion": "1",
-            "activeGuidanceRequiresEvidence": True
+            "memoryVersion": "1"
         })
 
     # Copy remaining memory template files (JSONL and markdown)

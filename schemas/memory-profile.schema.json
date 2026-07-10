@@ -7,9 +7,7 @@
   "properties": {
     "schemaVersion": { "type": "integer", "const": 1 },
     "workspace": { "type": "string", "minLength": 1 },
-    "memoryVersion": { "type": "string", "minLength": 1 },
-    "activeGuidanceRequiresEvidence": { "type": "boolean", "default": true },
-    "maxActiveLessons": { "type": "integer", "minimum": 1 }
+    "memoryVersion": { "type": "string", "minLength": 1 }
   },
   "additionalProperties": false
 }
