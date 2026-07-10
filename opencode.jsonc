@@ -1,0 +1,72 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "orchestrator",
+  "instructions": [
+    "TEAMLOOP.md",
+    "TESTING.md"
+  ],
+  "agent": {
+    "orchestrator": {
+      "description": "Primary TeamLoop orchestrator for runtime-bound supervised delivery",
+      "mode": "primary",
+      "prompt": "{file:./.opencode/agents/orchestrator.md}",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "task": {
+          "*": "deny",
+          "discovery": "allow",
+          "researcher": "allow",
+          "research-lead": "allow",
+          "task-slicer": "allow",
+          "executor": "allow",
+          "change-reviewer": "allow",
+          "gatekeeper": "allow"
+        }
+      }
+    },
+    "discovery": {
+      "description": "Discovers project facts and requirements before planning",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/discovery.md}"
+    },
+    "researcher": {
+      "description": "Investigates technical unknowns and records evidence",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/researcher.md}"
+    },
+    "research-lead": {
+      "description": "Reviews research quality and evidence",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/research-lead.md}"
+    },
+    "task-slicer": {
+      "description": "Turns approved findings into bounded executable tasks",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/task-slicer.md}"
+    },
+    "executor": {
+      "description": "Implements one bounded TeamLoop task within scope",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/executor.md}"
+    },
+    "change-reviewer": {
+      "description": "Reviews changes for correctness, scope and contract violations",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/change-reviewer.md}"
+    },
+    "gatekeeper": {
+      "description": "Runs required gates and records evidence",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/gatekeeper.md}"
+    }
+  },
+  "command": {
+    "supervised-task": {
+      "description": "Start or continue a runtime-bound TeamLoop supervised delivery loop",
+      "agent": "orchestrator",
+      "subtask": false,
+      "template": "Follow the complete protocol in @.opencode/commands/supervised-task.md.\n\nRequested task or arguments:\n$ARGUMENTS"
+    }
+  }
+}
