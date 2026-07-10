@@ -876,6 +876,57 @@ def cmd_memory_doctor(args):
     schemas_dir = os.path.join(project_root, "schemas")
     memory_dir = os.path.join(workspace, "memory")
 
+    # --- Check 0: memory-subsystem-present ---
+    # If the memory directory does not exist, report structured FAIL immediately.
+    # If it exists but is empty (no guidance or evidence data), report WARNING.
+    subsystem_checks = []
+    subsystem_issues = []
+
+    if not os.path.isdir(memory_dir):
+        subsystem_checks.append({
+            "name": "memory-subsystem-present",
+            "status": "FAIL",
+            "description": "memory directory not found at {}".format(memory_dir),
+        })
+        subsystem_issues.append("memory-subsystem-present: memory directory not found at {}".format(memory_dir))
+    else:
+        # Directory exists — check if project-profile.json is present
+        pp_path = os.path.join(memory_dir, "project-profile.json")
+        has_profile = os.path.exists(pp_path)
+
+        # Check if any guidance or evidence data exists
+        guidance_files = [
+            "lessons.jsonl", "antipatterns.jsonl", "decisions.jsonl", "evidence-map.jsonl",
+        ]
+        has_data = False
+        for gf in guidance_files:
+            gp = os.path.join(memory_dir, gf)
+            if os.path.exists(gp) and os.path.getsize(gp) > 0:
+                has_data = True
+                break
+
+        if has_profile and has_data:
+            subsystem_checks.append({
+                "name": "memory-subsystem-present",
+                "status": "PASS",
+                "description": "memory directory present with project-profile.json and data files",
+            })
+        elif has_profile and not has_data:
+            # Empty subsystem — warn but don't fail
+            subsystem_checks.append({
+                "name": "memory-subsystem-present",
+                "status": "WARNING",
+                "description": "memory directory present but no guidance or evidence data found",
+            })
+        else:
+            # Missing project-profile.json
+            subsystem_checks.append({
+                "name": "memory-subsystem-present",
+                "status": "FAIL",
+                "description": "memory directory present but project-profile.json missing",
+            })
+            subsystem_issues.append("memory-subsystem-present: project-profile.json missing from {}".format(memory_dir))
+
     # Load schemas for schema conformance checks
     schema_map = {}
     for name in os.listdir(schemas_dir):
@@ -884,22 +935,40 @@ def cmd_memory_doctor(args):
             schema_map[base] = read_json(os.path.join(schemas_dir, name))
 
     # Run canonical validation (JSON parse, schema, evidence, supersededBy)
-    memory_result = _validate_memory_internal(memory_dir, schema_map=schema_map)
+    # Only run deeper checks if the memory directory exists.
+    # When it doesn't exist, _validate_memory_internal would silently pass,
+    # which is why the memory-subsystem-present check above is essential.
+    if os.path.isdir(memory_dir):
+        memory_result = _validate_memory_internal(memory_dir, schema_map=schema_map)
+    else:
+        memory_result = {
+            "checks": [],
+            "issues": [],
+            "status": "PASS",
+        }
 
     # Compute counts for summary
     counts = _collect_memory_counts(memory_dir)
 
+    # Prepend the subsystem check to the checks array
+    all_checks = list(subsystem_checks) + list(memory_result["checks"])
+    all_issues = list(subsystem_issues) + list(memory_result["issues"])
+
+    # Overall status: FAIL if any FAIL check, else PASS
+    has_fail = any(c["status"] == "FAIL" for c in all_checks)
+    overall_status = "FAIL" if has_fail else "PASS"
+
     result = {
         "schemaVersion": 1,
-        "status": memory_result["status"],
-        "checks": memory_result["checks"],
+        "status": overall_status,
+        "checks": all_checks,
         "summary": counts,
-        "issues": memory_result["issues"],
+        "issues": all_issues,
     }
 
     print(json.dumps(result, ensure_ascii=False))
 
-    if memory_result["status"] == "FAIL":
+    if overall_status == "FAIL":
         sys.exit(1)
 
 
