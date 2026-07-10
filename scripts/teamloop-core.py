@@ -606,7 +606,7 @@ def _validate_memory_semantics(memory_dir):
         eid = ev.get("evidenceId", "")
         if eid:
             evidence_ids.add(eid)
-            if ev.get("status", "").upper() == "UNVERIFIED":
+            if ev.get("status", "VERIFIED").upper() == "UNVERIFIED":
                 unverified_evidence_ids.add(eid)
 
     # Check active guidance in lessons, antipatterns, decisions
