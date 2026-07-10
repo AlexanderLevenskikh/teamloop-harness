@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "profileId": "generic-software-task",
+  "displayName": "Generic Software Task",
+  "workspace": ".teamloop",
+  "defaultAllowedWrites": [
+    "src/**",
+    "tests/**",
+    ".teamloop/**"
+  ],
+  "defaultForbiddenWrites": [
+    ".git/**",
+    "node_modules/**",
+    "dist/**",
+    "build/**"
+  ],
+  "discoveryQuestions": [
+    {
+      "id": "task_goal",
+      "question": "What should be changed?",
+      "required": true
+    },
+    {
+      "id": "verification_command",
+      "question": "What command verifies the change?",
+      "required": false
+    },
+    {
+      "id": "affected_scope",
+      "question": "Which files or directories are affected?",
+      "required": false
+    }
+  ],
+  "gateCommands": [
+    {
+      "name": "scope",
+      "type": "built-in",
+      "required": true
+    }
+  ],
+  "roleOverrides": {},
+  "taskSlicing": {
+    "defaultMaxFilesPerTask": 5,
+    "defaultMaxRisk": "medium"
+  },
+  "completionCriteria": [
+    "All tasks in backlog are DONE or CANCELLED",
+    "All required gates pass",
+    "No unresolved blockers"
+  ]
+}

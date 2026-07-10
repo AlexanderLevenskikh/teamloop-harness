@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "workspace": ".teamloop",
+  "goal": "UNSPECIFIED",
+  "profile": "__PROFILE__",
+  "status": "NEW",
+  "currentPhase": "NEEDS_DISCOVERY",
+  "currentRunId": "",
+  "currentTaskId": "",
+  "lastDecisionId": "",
+  "lastGateStatus": "",
+  "humanRequired": false,
+  "createdAtUtc": "__CREATED_AT__",
+  "updatedAtUtc": "__CREATED_AT__"
+}

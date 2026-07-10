@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "profileId": "__PROFILE__",
+  "displayName": "Generic Software Task",
+  "workspace": ".teamloop",
+  "defaultAllowedWrites": [
+    "src/**",
+    "tests/**",
+    ".teamloop/**"
+  ],
+  "defaultForbiddenWrites": [
+    ".git/**",
+    "node_modules/**",
+    "dist/**",
+    "build/**"
+  ],
+  "gateCommands": [
+    {
+      "name": "scope",
+      "type": "built-in",
+      "required": true
+    }
+  ],
+  "roleOverrides": {},
+  "taskSlicing": {
+    "defaultMaxFilesPerTask": 5,
+    "defaultMaxRisk": "medium"
+  }
+}

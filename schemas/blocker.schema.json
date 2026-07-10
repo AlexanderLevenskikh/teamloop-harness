@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Blocker",
+  "description": "Human-required blocker record",
+  "type": "object",
+  "required": ["schemaVersion", "blockerId", "type", "category", "summary", "questionsForHuman"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "blockerId": { "type": "string", "pattern": "^blocker-" },
+    "runId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "type": { "type": "string", "const": "HUMAN_DECISION_REQUIRED" },
+    "category": {
+      "type": "string",
+      "enum": [
+        "MISSING_CREDENTIALS",
+        "MISSING_SOURCE_TRUTH",
+        "SCOPE_POLICY_FORBIDS_REQUIRED_EDIT",
+        "PRODUCT_BEHAVIOR_AMBIGUITY",
+        "DESTRUCTIVE_ACTION_REQUIRES_APPROVAL",
+        "SECURITY_OR_LEGAL_DECISION",
+        "EXTERNAL_SYSTEM_UNAVAILABLE"
+      ]
+    },
+    "summary": { "type": "string", "minLength": 1 },
+    "evidence": { "type": "array", "items": { "type": "string" } },
+    "questionsForHuman": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "resolvedAtUtc": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

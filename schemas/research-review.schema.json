@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ResearchReview",
+  "description": "Research lead review of a research report",
+  "type": "object",
+  "required": ["schemaVersion", "researchId", "reviewStatus", "reviewer", "checks"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "researchId": { "type": "string", "pattern": "^research-" },
+    "reviewStatus": {
+      "type": "string",
+      "enum": ["APPROVED", "REQUEST_CHANGES", "REJECTED"]
+    },
+    "reviewer": { "type": "string", "const": "research-lead" },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status"],
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["PASS", "FAIL"] },
+          "details": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "requiredChanges": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

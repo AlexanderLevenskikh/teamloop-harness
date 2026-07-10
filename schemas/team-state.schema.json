@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TeamState",
+  "description": "Supervised agent team state for TeamLoop Harness",
+  "type": "object",
+  "required": ["schemaVersion", "workspace", "goal", "profile", "status", "currentPhase", "createdAtUtc", "updatedAtUtc"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "workspace": { "type": "string", "default": ".teamloop" },
+    "goal": { "type": "string", "default": "UNSPECIFIED" },
+    "profile": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["NEW", "IN_PROGRESS", "SAFE_CHECKPOINT", "HUMAN_DECISION_REQUIRED", "BLOCKED", "DONE", "FAILED"]
+    },
+    "currentPhase": {
+      "type": "string",
+      "enum": [
+        "NEEDS_DISCOVERY", "NEEDS_PLAN", "NEEDS_RESEARCH", "NEEDS_RESEARCH_REVIEW",
+        "NEEDS_TASK_SLICING", "READY_FOR_NEXT_TASK", "EXECUTING_TASK", "NEEDS_CHANGE_REVIEW",
+        "NEEDS_GATE", "GATE_FAILED", "REVIEW_FAILED", "SAFE_CHECKPOINT",
+        "HUMAN_DECISION_REQUIRED", "DONE"
+      ]
+    },
+    "currentRunId": { "type": "string" },
+    "currentTaskId": { "type": "string" },
+    "lastDecisionId": { "type": "string" },
+    "lastGateStatus": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "ERROR", ""] },
+    "humanRequired": { "type": "boolean" },
+    "createdAtUtc": { "type": "string", "format": "date-time" },
+    "updatedAtUtc": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

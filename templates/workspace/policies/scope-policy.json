@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "defaultAllowedWrites": [
+    ".teamloop/**"
+  ],
+  "taskAllowedWritesOverride": true,
+  "alwaysAllowedWrites": [
+    ".teamloop/**"
+  ],
+  "alwaysForbiddenWrites": [
+    ".git/**",
+    "node_modules/**",
+    "bin/**",
+    "obj/**"
+  ],
+  "allowUntrackedWithinAllowedRoots": true
+}

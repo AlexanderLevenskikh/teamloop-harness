@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Task",
+  "description": "Bounded task in TeamLoop Harness backlog",
+  "type": "object",
+  "required": ["schemaVersion", "taskId", "title", "status", "scope", "successCriteria"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "taskId": { "type": "string", "pattern": "^task-" },
+    "title": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["DRAFT", "READY", "IN_PROGRESS", "NEEDS_REVIEW", "REVIEW_FAILED", "DONE", "BLOCKED", "CANCELLED"]
+    },
+    "priority": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+    "origin": { "type": "string" },
+    "scope": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "allowedWrites": { "type": "array", "items": { "type": "string" } },
+    "forbiddenWrites": { "type": "array", "items": { "type": "string" } },
+    "requiredEvidence": { "type": "array", "items": { "type": "string" } },
+    "successCriteria": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "forbiddenActions": { "type": "array", "items": { "type": "string" } },
+    "humanRequired": { "type": "boolean", "default": false },
+    "blockers": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

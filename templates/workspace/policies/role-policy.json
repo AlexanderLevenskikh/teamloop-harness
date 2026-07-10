@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "defaultRoles": [
+    "supervisor", "researcher", "research-lead", "task-slicer", "executor", "change-reviewer", "gatekeeper"
+  ],
+  "maxConcurrentRuns": 1
+}

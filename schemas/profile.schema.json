@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Profile",
+  "description": "Domain-specific behavior profile",
+  "type": "object",
+  "required": ["schemaVersion", "profileId", "displayName"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "profileId": { "type": "string", "minLength": 1 },
+    "displayName": { "type": "string", "minLength": 1 },
+    "workspace": { "type": "string", "default": ".teamloop" },
+    "defaultAllowedWrites": { "type": "array", "items": { "type": "string" } },
+    "defaultForbiddenWrites": { "type": "array", "items": { "type": "string" } },
+    "discoveryQuestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "question"],
+        "properties": {
+          "id": { "type": "string" },
+          "question": { "type": "string" },
+          "required": { "type": "boolean", "default": false }
+        },
+        "additionalProperties": false
+      }
+    },
+    "gateCommands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "type"],
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "type": "string", "enum": ["built-in", "shell"] },
+          "command": { "type": "string" },
+          "required": { "type": "boolean", "default": true },
+          "timeoutSeconds": { "type": "integer" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "roleOverrides": { "type": "object" },
+    "taskSlicing": {
+      "type": "object",
+      "properties": {
+        "defaultMaxFilesPerTask": { "type": "integer" },
+        "defaultMaxRisk": { "type": "string", "enum": ["low", "medium", "high"] }
+      },
+      "additionalProperties": false
+    },
+    "completionCriteria": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

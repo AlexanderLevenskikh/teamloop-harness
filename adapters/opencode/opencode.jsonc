@@ -1,0 +1,32 @@
+{
+  "name": "teamloop-harness",
+  "description": "TeamLoop Harness - supervised agent delivery harness",
+  "agents": {
+    "supervisor": {
+      "file": "adapters/opencode/agents/supervisor.md"
+    },
+    "researcher": {
+      "file": "adapters/opencode/agents/researcher.md"
+    },
+    "research-lead": {
+      "file": "adapters/opencode/agents/research-lead.md"
+    },
+    "task-slicer": {
+      "file": "adapters/opencode/agents/task-slicer.md"
+    },
+    "executor": {
+      "file": "adapters/opencode/agents/executor.md"
+    },
+    "change-reviewer": {
+      "file": "adapters/opencode/agents/change-reviewer.md"
+    },
+    "gatekeeper": {
+      "file": "adapters/opencode/agents/gatekeeper.md"
+    }
+  },
+  "commands": {
+    "supervised-task": {
+      "file": "adapters/opencode/commands/supervised-task.md"
+    }
+  }
+}

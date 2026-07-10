@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "gates": [
+    {
+      "name": "scope",
+      "type": "built-in",
+      "required": true
+    }
+  ]
+}

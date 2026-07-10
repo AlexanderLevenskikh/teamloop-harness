@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Event",
+  "description": "Append-only event ledger entry",
+  "type": "object",
+  "required": ["schemaVersion", "eventId", "type", "actor", "timestampUtc", "summary"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "eventId": { "type": "string", "pattern": "^evt-" },
+    "runId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "type": {
+      "type": "string",
+      "enum": [
+        "RUN_STARTED", "RUN_FINISHED", "TASK_CREATED", "TASK_STARTED", "TASK_FINISHED",
+        "RESEARCH_CREATED", "RESEARCH_REJECTED", "RESEARCH_APPROVED",
+        "TASK_SLICE_CREATED", "TASK_SLICE_REJECTED",
+        "CHANGE_REVIEW_APPROVED", "CHANGE_REVIEW_FAILED",
+        "GATE_STARTED", "GATE_PASSED", "GATE_FAILED",
+        "BLOCKER_CLASSIFIED", "HUMAN_HANDOFF_CREATED", "STATE_TRANSITION"
+      ]
+    },
+    "actor": { "type": "string" },
+    "timestampUtc": { "type": "string", "format": "date-time" },
+    "summary": { "type": "string" },
+    "data": { "type": "object" }
+  },
+  "additionalProperties": false
+}

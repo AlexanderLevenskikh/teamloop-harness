@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ResearchReportInventory",
+  "description": "Machine-readable inventory for a research report",
+  "type": "object",
+  "required": ["schemaVersion", "researchId", "totalFindings", "categories", "agentExecutableCount", "humanRequiredCount"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "researchId": { "type": "string", "pattern": "^research-" },
+    "totalFindings": { "type": "integer", "minimum": 0 },
+    "categories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["category", "count", "items"],
+        "properties": {
+          "category": { "type": "string" },
+          "count": { "type": "integer", "minimum": 0 },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["file", "summary"],
+              "properties": {
+                "file": { "type": "string" },
+                "line": { "type": "integer" },
+                "summary": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "agentExecutableCount": { "type": "integer", "minimum": 0 },
+    "humanRequiredCount": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

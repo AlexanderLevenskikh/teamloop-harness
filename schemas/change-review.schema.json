@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChangeReview",
+  "description": "Change reviewer output for a run",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "taskId", "reviewStatus", "checks"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "runId": { "type": "string", "pattern": "^run-" },
+    "taskId": { "type": "string", "pattern": "^task-" },
+    "reviewStatus": {
+      "type": "string",
+      "enum": ["APPROVED", "REQUEST_CHANGES", "REJECTED"]
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status"],
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["PASS", "FAIL"] },
+          "details": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "requiredChanges": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}
