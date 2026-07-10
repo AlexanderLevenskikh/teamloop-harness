@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MemoryProfile",
+  "description": "Workspace memory profile that controls memory-subsystem behaviour",
+  "type": "object",
+  "required": ["schemaVersion", "workspace", "memoryVersion"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "workspace": { "type": "string", "minLength": 1 },
+    "memoryVersion": { "type": "string", "minLength": 1 },
+    "activeGuidanceRequiresEvidence": { "type": "boolean", "default": true },
+    "maxActiveLessons": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": false
+}
