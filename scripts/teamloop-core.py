@@ -471,6 +471,10 @@ def cmd_validate_state(args):
             elif ct.get("taskId") != task_id:
                 errors.append(f"team-state: current-task.json.taskId '{ct.get('taskId')}' does not match currentTaskId '{task_id}'")
 
+    # --- Continuation decision consistency ---
+    if state is not None:
+        errors.extend(_validate_continuation_consistency(workspace, state, schema_map))
+
     # --- Check all existing .json files for valid JSON ---
     # A file that exists but contains invalid JSON is a validation error.
     # A file that doesn't exist is optional — ignored.
@@ -575,6 +579,154 @@ def _validate_human_required(workspace):
         if valid:
             return []  # found valid blocker
     return ["team-state: HUMAN_DECISION_REQUIRED requires at least one valid open blocker (type=HUMAN_DECISION_REQUIRED, category, non-empty summary, evidence, questionsForHuman)"]
+
+
+def _validate_continuation_consistency(workspace, state, schema_map):
+    """Validate continuation-decision.json for consistency with team-state.
+
+    Checks:
+      1. Schema validation against continuation-decision.schema.json
+      2. Decision vs phase consistency
+      3. Stale taskId reference check
+      4. HUMAN_DECISION_REQUIRED requires open blockers
+      5. DONE requires clean state (no open tasks, no active run/task)
+      6. CONTINUE requires at least one READY task
+      7. BLOCKED requires at least one open blocker
+      8. SAFE_CHECKPOINT in DONE phase is impossible
+      9. Empty checks array is invalid
+    """
+    errors = []
+    decision_file = os.path.join(workspace, "state", "continuation-decision.json")
+
+    # Missing file is OK — backward compatibility
+    if not os.path.exists(decision_file):
+        return errors
+
+    # Check for invalid JSON before schema validation
+    if is_invalid_json_file(decision_file):
+        errors.append("continuation-decision.json: file exists but contains invalid JSON")
+        return errors
+
+    decision = read_json_file_safe(decision_file)
+    if decision is None:
+        return errors
+
+    # 1. Schema validation
+    cd_schema = schema_map.get("continuation-decision", None)
+    if cd_schema:
+        schema_errors = validate_against_schema(decision, cd_schema, "continuation-decision.json")
+        errors.extend(schema_errors)
+
+    # If schema validation already failed (e.g., missing required fields),
+    # we can still check what we can with .get() fallbacks
+    decision_val = decision.get("decision", "")
+    phase = state.get("currentPhase", "")
+    status = state.get("status", "")
+    task_id_ref = decision.get("taskId", "")
+
+    # 9. Empty checks array fails validation
+    checks = decision.get("checks", None)
+    if checks is not None and isinstance(checks, list) and len(checks) == 0:
+        errors.append("continuation-decision.json: 'checks' array must not be empty (minItems: 1)")
+
+    # 2. Decision vs phase consistency
+    if decision_val == "DONE":
+        if phase != "DONE" and status != "DONE":
+            errors.append(
+                f"continuation-decision.json: decision 'DONE' inconsistent with "
+                f"phase '{phase}' / status '{status}' (must be DONE)"
+            )
+
+    elif decision_val == "HUMAN_DECISION_REQUIRED":
+        if phase != "HUMAN_DECISION_REQUIRED" and status != "HUMAN_DECISION_REQUIRED":
+            errors.append(
+                f"continuation-decision.json: decision 'HUMAN_DECISION_REQUIRED' inconsistent with "
+                f"phase '{phase}' / status '{status}' (must be HUMAN_DECISION_REQUIRED)"
+            )
+
+    elif decision_val == "SAFE_CHECKPOINT":
+        if phase == "DONE" or status == "DONE":
+            errors.append(
+                f"continuation-decision.json: decision 'SAFE_CHECKPOINT' inconsistent with "
+                f"completed phase '{phase}' / status '{status}' (cannot checkpoint after DONE)"
+            )
+
+    # 3. Stale taskId reference check
+    if task_id_ref:
+        backlog = read_jsonl(os.path.join(workspace, "state", "backlog.jsonl"))
+        found = False
+        for task in backlog:
+            if task.get("taskId") == task_id_ref:
+                found = True
+                break
+        # Also check current-task.json
+        if not found:
+            ct = read_json_file_safe(os.path.join(workspace, "state", "current-task.json"))
+            if ct and ct.get("taskId") == task_id_ref:
+                found = True
+        if not found:
+            errors.append(
+                f"continuation-decision.json: taskId '{task_id_ref}' not found in backlog or current-task.json"
+            )
+
+    # 4. HUMAN_DECISION_REQUIRED requires open blockers
+    if decision_val == "HUMAN_DECISION_REQUIRED":
+        blockers = read_jsonl(os.path.join(workspace, "state", "blockers.jsonl"))
+        has_open = any(not b.get("resolvedAtUtc") for b in blockers)
+        blockers_summary = decision.get("blockersSummary", None)
+        if not has_open and not blockers_summary:
+            errors.append(
+                "continuation-decision.json: decision 'HUMAN_DECISION_REQUIRED' requires "
+                "at least one open blocker in blockers.jsonl or 'blockersSummary' in the decision"
+            )
+
+    # 5. DONE requires clean state
+    if decision_val == "DONE":
+        # No READY or IN_PROGRESS tasks
+        for task in read_jsonl(os.path.join(workspace, "state", "backlog.jsonl")):
+            if task.get("status") in ("READY", "IN_PROGRESS"):
+                errors.append(
+                    f"continuation-decision.json: decision 'DONE' with open task "
+                    f"'{task.get('taskId')}' (status: {task.get('status')})"
+                )
+                break
+
+        # No active run or task references in team-state
+        if state.get("currentTaskId", ""):
+            errors.append(
+                f"continuation-decision.json: decision 'DONE' with active currentTaskId "
+                f"'{state['currentTaskId']}' in team-state"
+            )
+        if state.get("currentRunId", ""):
+            errors.append(
+                f"continuation-decision.json: decision 'DONE' with active currentRunId "
+                f"'{state['currentRunId']}' in team-state"
+            )
+
+    # 6. CONTINUE requires at least one READY task
+    if decision_val == "CONTINUE":
+        has_ready = False
+        for task in read_jsonl(os.path.join(workspace, "state", "backlog.jsonl")):
+            if task.get("status") == "READY":
+                has_ready = True
+                break
+        if not has_ready:
+            errors.append(
+                "continuation-decision.json: decision 'CONTINUE' requires at least one "
+                "READY task in backlog (none found)"
+            )
+
+    # 7. BLOCKED requires at least one open blocker
+    if decision_val == "BLOCKED":
+        blockers = read_jsonl(os.path.join(workspace, "state", "blockers.jsonl"))
+        has_open = any(not b.get("resolvedAtUtc") for b in blockers)
+        if not has_open:
+            errors.append(
+                "continuation-decision.json: decision 'BLOCKED' requires at least one "
+                "open blocker in blockers.jsonl (none found)"
+            )
+
+    return errors
 
 
 # ---------------------------------------------------------------------------
