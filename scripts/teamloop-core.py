@@ -1138,12 +1138,35 @@ def cmd_apply_transition(args):
 # Command: write-event
 # ---------------------------------------------------------------------------
 
+def _load_event_types():
+    """Load the canonical event type enum from schemas/event.schema.json.
+
+    Returns a frozenset of valid event type strings.
+    The schema is the single source of truth — no hardcoded duplication.
+    """
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    schema_path = os.path.join(project_root, "schemas", "event.schema.json")
+    schema = read_json(schema_path)
+    enum_values = schema.get("properties", {}).get("type", {}).get("enum", [])
+    return frozenset(enum_values)
+
+
 def cmd_write_event(args):
     workspace = resolve_workspace(args.workspace)
     events_file = os.path.join(workspace, "state", "events.jsonl")
 
     if not os.path.exists(events_file):
         print("Error: Events file not found. Run init-workspace first.", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate event type against canonical enum from schema
+    valid_types = _load_event_types()
+    if args.type not in valid_types:
+        print(
+            f"Error: invalid event type '{args.type}'. "
+            f"Valid types: {', '.join(sorted(valid_types))}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Count existing events
