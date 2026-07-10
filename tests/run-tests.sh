@@ -932,6 +932,212 @@ test_51() {
 }
 
 # ============================================================
+# MEMORY REGRESSION TESTS 52-62
+# ============================================================
+test_52() {
+    # Memory_EmptyPasses — fresh workspace with empty memory files validates cleanly
+    init_test_workspace
+    # Memory dir created by init-workspace, JSONL files are empty
+    local mem_dir="$WORKSPACE_ABS/memory"
+    [[ -d "$mem_dir" ]] || { echo "memory directory should exist after init"; return 1; }
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "Fresh workspace with empty memory should validate, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_53() {
+    # Memory_MalformedJsonlFails — a JSONL file with invalid JSON fails validation
+    init_test_workspace
+    echo '{bad json content here' > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail on malformed memory JSONL, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_54() {
+    # Memory_ActiveWithoutEvidenceFails — an ACTIVE lesson without evidenceIds fails
+    init_test_workspace
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail on ACTIVE lesson without evidenceIds, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_55() {
+    # Memory_ActiveWithValidEvidencePasses — ACTIVE lesson with valid evidenceId passes
+    init_test_workspace
+    local evidence='{"schemaVersion":1,"evidenceId":"evidence-001","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-001"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    echo "$evidence" > "$WORKSPACE_ABS/memory/evidence-map.jsonl"
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass with ACTIVE lesson + valid evidence, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_56() {
+    # Memory_ActiveWithMissingEvidenceIdFails — ACTIVE lesson references evidenceId not in evidence-map
+    init_test_workspace
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-missing"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail on ACTIVE lesson referencing missing evidenceId, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_57() {
+    # Memory_DeprecatedRetainedButInactive — DEPRECATED lesson validates without evidence
+    init_test_workspace
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-depr","title":"Old lesson","description":"Deprecated","status":"DEPRECATED","createdAtUtc":"2024-01-01T00:00:00Z","deprecatedAtUtc":"2024-06-01T00:00:00Z"}'
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass for DEPRECATED lesson without evidence, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_58() {
+    # Memory_SupersededWithoutEvidencePasses — SUPERSEDED lesson validates without evidence
+    init_test_workspace
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-sup","title":"Superseded","description":"Old way","status":"SUPERSEDED","createdAtUtc":"2024-01-01T00:00:00Z","supersededBy":"lesson-new"}'
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass for SUPERSEDED lesson without evidence, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_59() {
+    # Memory_RejectedAntipatternWithoutEvidencePasses — REJECTED antipattern validates without evidence
+    init_test_workspace
+    local anti='{"schemaVersion":1,"antipatternId":"antipattern-001","title":"Old anti","description":"Rejected","status":"REJECTED","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    echo "$anti" > "$WORKSPACE_ABS/memory/antipatterns.jsonl"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass for REJECTED antipattern without evidence, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_60() {
+    # Memory_MissingMemoryDirPasses — missing memory directory does not crash validate-state
+    init_test_workspace
+    rm -rf "$WORKSPACE_ABS/memory"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass even if memory dir missing, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_61() {
+    # Memory_ProfileValidation — project-profile.json validated against memory-profile schema
+    init_test_workspace
+    # Inject an invalid field that is not allowed
+    local pp='{"schemaVersion":1,"workspace":".teamloop","memoryVersion":"1","invalidField":"bad"}'
+    echo "$pp" > "$WORKSPACE_ABS/memory/project-profile.json"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail on project-profile with invalid field, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_62() {
+    # Memory_DoctorEmptyPasses — memory-doctor returns PASS on clean empty memory
+    init_test_workspace
+    set +e
+    local dout drc
+    dout=$("$PY" "$CORE" memory-doctor --workspace "$WORKSPACE_ABS" 2>&1)
+    drc=$?
+    set -e
+    [[ $drc -eq 0 ]] || { echo "memory-doctor should exit 0 on empty memory, got: $dout"; return 1; }
+    echo "$dout" | grep -q '"status": "PASS"' || { echo "memory-doctor output should contain PASS, got: $dout"; return 1; }
+    echo "$dout" | grep -q '"checks"' || { echo "memory-doctor output should contain checks array, got: $dout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_63() {
+    # Memory_DoctorDetectsIssues — memory-doctor returns FAIL when issues exist
+    init_test_workspace
+    # Put an ACTIVE lesson with no evidence
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    set +e
+    local dout drc
+    dout=$("$PY" "$CORE" memory-doctor --workspace "$WORKSPACE_ABS" 2>&1)
+    drc=$?
+    set -e
+    [[ $drc -eq 1 ]] || { echo "memory-doctor should exit 1 when issues exist, got: $dout"; return 1; }
+    echo "$dout" | grep -q '"status": "FAIL"' || { echo "memory-doctor output should contain FAIL, got: $dout"; return 1; }
+    echo "$dout" | grep -q '"checks"' || { echo "memory-doctor output should contain checks array, got: $dout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_64() {
+    # Memory_ActiveWithUnverifiedEvidenceFails — ACTIVE lesson with UNVERIFIED evidence fails
+    init_test_workspace
+    # Add evidence with UNVERIFIED status
+    local evidence='{"schemaVersion":1,"evidenceId":"evidence-001","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z","status":"UNVERIFIED"}'
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-001"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    echo "$evidence" > "$WORKSPACE_ABS/memory/evidence-map.jsonl"
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail on ACTIVE lesson with UNVERIFIED evidence, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# ============================================================
 # RUN ALL
 # ============================================================
 
@@ -986,6 +1192,19 @@ test_run "P0: failed gate → validate-state PASS → next-action RUN_EXECUTOR" 
 test_run "P0: validate-state catches invalid JSON in artifacts" test_49
 test_run "P1: NEEDS_TASK_SLICING + READY task -> RUN_EXECUTOR" test_50
 test_run "P1: NEEDS_TASK_SLICING no READY tasks -> RUN_TASK_SLICER" test_51
+test_run "Memory: EmptyPasses" test_52
+test_run "Memory: MalformedJsonlFails" test_53
+test_run "Memory: ActiveWithoutEvidenceFails" test_54
+test_run "Memory: ActiveWithValidEvidencePasses" test_55
+test_run "Memory: ActiveWithMissingEvidenceIdFails" test_56
+test_run "Memory: DeprecatedRetainedButInactive" test_57
+test_run "Memory: SupersededWithoutEvidencePasses" test_58
+test_run "Memory: RejectedAntipatternWithoutEvidencePasses" test_59
+test_run "Memory: MissingMemoryDirPasses" test_60
+test_run "Memory: ProfileValidation" test_61
+test_run "Memory: DoctorEmptyPasses" test_62
+test_run "Memory: DoctorDetectsIssues" test_63
+test_run "Memory: ActiveWithUnverifiedEvidenceFails" test_64
 
 # ============================================================
 # SUMMARY

@@ -310,6 +310,148 @@ Test-Run "P1: NEEDS_TASK_SLICING no READY tasks -> RUN_TASK_SLICER" {
 }
 
 # ============================================================
+# MEMORY REGRESSION TESTS
+# ============================================================
+Test-Run "Memory: EmptyPasses" {
+    Init-TestWorkspace
+    $memDir = Join-Path $script:workspaceAbs "memory"
+    if (-not (Test-Path $memDir)) {
+        Write-Host "  FAIL: memory directory should exist after init" -ForegroundColor Red
+        return $false
+    }
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 0 ("Fresh workspace with empty memory should validate, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: MalformedJsonlFails" {
+    Init-TestWorkspace
+    [System.IO.File]::WriteAllText((Join-Path $script:workspaceAbs "memory\lessons.jsonl"), '{bad json content here', [System.Text.UTF8Encoding]::new($false))
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 1 ("validate-state should fail on malformed memory JSONL, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: ActiveWithoutEvidenceFails" {
+    Init-TestWorkspace
+    $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 1 ("validate-state should fail on ACTIVE lesson without evidenceIds, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: ActiveWithValidEvidencePasses" {
+    Init-TestWorkspace
+    $evidence = '{"schemaVersion":1,"evidenceId":"evidence-001","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-001"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\evidence-map.jsonl") -Content $evidence
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 0 ("validate-state should pass with ACTIVE lesson + valid evidence, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: ActiveWithMissingEvidenceIdFails" {
+    Init-TestWorkspace
+    $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-missing"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 1 ("validate-state should fail on ACTIVE lesson referencing missing evidenceId, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: DeprecatedRetainedButInactive" {
+    Init-TestWorkspace
+    $lesson = '{"schemaVersion":1,"lessonId":"lesson-depr","title":"Old lesson","description":"Deprecated","status":"DEPRECATED","createdAtUtc":"2024-01-01T00:00:00Z","deprecatedAtUtc":"2024-06-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 0 ("validate-state should pass for DEPRECATED lesson without evidence, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: SupersededWithoutEvidencePasses" {
+    Init-TestWorkspace
+    $lesson = '{"schemaVersion":1,"lessonId":"lesson-sup","title":"Superseded","description":"Old way","status":"SUPERSEDED","createdAtUtc":"2024-01-01T00:00:00Z","supersededBy":"lesson-new"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 0 ("validate-state should pass for SUPERSEDED lesson without evidence, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: RejectedAntipatternWithoutEvidencePasses" {
+    Init-TestWorkspace
+    $anti = '{"schemaVersion":1,"antipatternId":"antipattern-001","title":"Old anti","description":"Rejected","status":"REJECTED","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\antipatterns.jsonl") -Content $anti
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 0 ("validate-state should pass for REJECTED antipattern without evidence, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: MissingMemoryDirPasses" {
+    Init-TestWorkspace
+    Remove-Item (Join-Path $script:workspaceAbs "memory") -Recurse -Force
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 0 ("validate-state should pass even if memory dir missing, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: ProfileValidation" {
+    Init-TestWorkspace
+    $pp = '{"schemaVersion":1,"workspace":".teamloop","memoryVersion":"1","invalidField":"bad"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\project-profile.json") -Content $pp
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 1 ("validate-state should fail on project-profile with invalid field, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: DoctorEmptyPasses" {
+    Init-TestWorkspace
+    $doctorResult = Invoke-PythonScriptWithExit "memory-doctor"
+    if (-not (Assert-Equal $doctorResult.exitCode 0 ("memory-doctor should exit 0 on empty memory, got: " + $doctorResult.output))) { return $false }
+    $doctorJson = $doctorResult.output | ConvertFrom-Json
+    if (-not (Assert-Equal $doctorJson.status "PASS" ("memory-doctor output should contain PASS, got " + $doctorJson.status))) { return $false }
+    if (-not (Assert-True ($doctorJson.PSObject.Properties.Name -contains "checks") "memory-doctor output should contain checks array")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: DoctorDetectsIssues" {
+    Init-TestWorkspace
+    $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
+    $doctorResult = Invoke-PythonScriptWithExit "memory-doctor"
+    if (-not (Assert-Equal $doctorResult.exitCode 1 ("memory-doctor should exit 1 when issues exist, got: " + $doctorResult.output))) { return $false }
+    $doctorJson = $doctorResult.output | ConvertFrom-Json
+    if (-not (Assert-Equal $doctorJson.status "FAIL" ("memory-doctor output should contain FAIL, got " + $doctorJson.status))) { return $false }
+    if (-not (Assert-True ($doctorJson.PSObject.Properties.Name -contains "checks") "memory-doctor output should contain checks array")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Memory: ActiveWithUnverifiedEvidenceFails" {
+    Init-TestWorkspace
+    $evidence = '{"schemaVersion":1,"evidenceId":"evidence-001","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z","status":"UNVERIFIED"}'
+    $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-001"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\evidence-map.jsonl") -Content $evidence
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 1 ("validate-state should fail on ACTIVE lesson with UNVERIFIED evidence, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+# ============================================================
 # SUMMARY
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor White
