@@ -440,8 +440,13 @@ def cmd_validate_state(args):
             pp_errors = validate_against_schema(pp, schema_map.get("memory-profile", {}), "memory/project-profile.json")
             errors.extend(pp_errors)
 
-        # Semantic validation: active guidance must have valid evidence
-        errors.extend(_validate_memory_semantics(memory_dir))
+        # Semantic validation: use the canonical _validate_memory function.
+        # This covers evidence linkage AND supersededBy integrity.
+        # We do NOT re-run JSON parse or schema checks here — those are already
+        # handled by the loops above. Instead we call _validate_memory_internal
+        # with semantic_only=True so only the semantic checks fire.
+        memory_result = _validate_memory_internal(memory_dir, schema_map={}, semantic_only=True)
+        errors.extend(memory_result["issues"])
 
     # --- Stale current-task.json check ---
     # If team-state has no active task but current-task.json exists with IN_PROGRESS, that's stale.
@@ -577,154 +582,71 @@ def _validate_human_required(workspace):
 # Command: next-action
 # ---------------------------------------------------------------------------
 
-def _validate_memory_semantics(memory_dir):
-    """Semantic validation for memory files.
+def _validate_memory(memory_dir):
+    """Canonical memory validation function.
 
-    Rules:
-    - ACTIVE records in lessons/antipatterns/decisions must have at least one
-      evidenceId that exists in evidence-map.jsonl.
-    - Evidence with status UNVERIFIED cannot support an ACTIVE record.
-    - DEPRECATED/REJECTED/SUPERSEDED records are allowed without evidence.
-    - Empty or missing files produce no errors.
+    Produces a structured result covering ALL memory checks in one pass:
+    - JSON parse validity of memory JSONL files
+    - Schema conformance of each entry (given a schema_map, or empty)
+    - Active records have verified evidence
+    - Orphaned supersededBy references
+
+    Returns:
+        dict with keys:
+            checks: list of {name, status, description}
+            issues: list of issue strings
+            status: "PASS" | "FAIL"
+
+    Parameters:
+        memory_dir: path to the memory directory
+        schema_map: optional dict of schema_name -> schema_object for schema checks
     """
-    errors = []
-    non_active_statuses = frozenset(["DEPRECATED", "REJECTED", "SUPERSEDED"])
-
-    # Load evidence-map
-    evidence_path = os.path.join(memory_dir, "evidence-map.jsonl")
-    evidence_entries = []
-    if os.path.exists(evidence_path):
-        try:
-            evidence_entries = read_jsonl(evidence_path)
-        except (json.JSONDecodeError, ValueError):
-            # Parse errors already caught in schema validation loop above
-            pass
-
-    evidence_ids = set()
-    unverified_evidence_ids = set()
-    for ev in evidence_entries:
-        eid = ev.get("evidenceId", "")
-        if eid:
-            evidence_ids.add(eid)
-            if ev.get("status", "VERIFIED").upper() == "UNVERIFIED":
-                unverified_evidence_ids.add(eid)
-
-    # Check active guidance in lessons, antipatterns, decisions
-    guidance_files = [
-        ("lessons.jsonl", "lessonId"),
-        ("antipatterns.jsonl", "antipatternId"),
-        ("decisions.jsonl", "decisionId"),
-    ]
-
-    for filename, id_field in guidance_files:
-        filepath = os.path.join(memory_dir, filename)
-        if not os.path.exists(filepath):
-            continue
-        try:
-            entries = read_jsonl(filepath)
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-        for entry in entries:
-            status = entry.get("status", "")
-            if status in non_active_statuses:
-                # Non-active records don't need evidence
-                continue
-
-            if status != "ACTIVE":
-                # Unknown status — skip, don't error
-                continue
-
-            record_id = entry.get(id_field, "")
-            evidence_ids_ref = entry.get("evidenceIds", [])
-            if not isinstance(evidence_ids_ref, list):
-                evidence_ids_ref = []
-
-            if not evidence_ids_ref:
-                errors.append(
-                    f"memory/{filename}: ACTIVE {id_field} '{record_id}' has no evidenceIds"
-                )
-                continue
-
-            # Check each referenced evidence exists and is not UNVERIFIED
-            for eid_ref in evidence_ids_ref:
-                if eid_ref not in evidence_ids:
-                    errors.append(
-                        f"memory/{filename}: ACTIVE {id_field} '{record_id}' references missing evidenceId '{eid_ref}'"
-                    )
-                elif eid_ref in unverified_evidence_ids:
-                    errors.append(
-                        f"memory/{filename}: ACTIVE {id_field} '{record_id}' references UNVERIFIED evidenceId '{eid_ref}'"
-                    )
-
-    return errors
+    return _validate_memory_internal(memory_dir, schema_map=None, semantic_only=False)
 
 
-# ---------------------------------------------------------------------------
-# Command: memory-doctor
-# ---------------------------------------------------------------------------
+def _validate_memory_internal(memory_dir, schema_map=None, semantic_only=False):
+    """Internal implementation of _validate_memory with optional schema_map.
 
-def cmd_memory_doctor(args):
-    """Validate memory JSONL files and report structured findings.
+    When semantic_only=True, only the semantic checks (evidence linkage +
+    supersededBy integrity) are run. This is used by validate-state which
+    already handles JSON parse and schema checks in its own loops.
 
-    Reuses validation logic from cmd_validate_state — no duplicated rules.
-    Produces gate-result-style JSON output with checks array.
-    Exits 0 if clean, 1 if issues found.
+    When schema_map is None or empty, schema conformance checks are skipped.
+
+    Returns:
+        dict with keys:
+            checks: list of {name, status, description}
+            issues: list of issue strings
+            status: "PASS" | "FAIL"
     """
-    workspace = resolve_workspace(args.workspace)
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    schemas_dir = os.path.join(project_root, "schemas")
-    memory_dir = os.path.join(workspace, "memory")
+    if schema_map is None:
+        schema_map = {}
 
-    # Load schemas
-    schema_map = {}
-    for name in os.listdir(schemas_dir):
-        if name.endswith(".schema.json"):
-            base = name.replace(".schema.json", "")
-            schema_map[base] = read_json(os.path.join(schemas_dir, name))
-
-    checks = []
-    overall = "PASS"
+    all_checks = []
     all_issues = []
 
-    # ----- Check 1: memory-json-parse -----
-    # Verify all memory JSONL files parse cleanly.
-    _check_json_parse(memory_dir, checks, all_issues)
+    if not semantic_only:
+        # --- Check 1: memory-json-parse ---
+        _do_json_parse_check(memory_dir, all_checks, all_issues)
 
-    # ----- Check 2: memory-schema-valid -----
-    # Validate each entry against its schema (reuse validate_against_schema).
-    _check_schema_valid(memory_dir, schema_map, checks, all_issues)
+        # --- Check 2: memory-schema-valid ---
+        _do_schema_check(memory_dir, schema_map, all_checks, all_issues)
 
-    # ----- Check 3: active-has-evidence -----
-    # Semantic check: active guidance must have verified evidence
-    # (reuse _validate_memory_semantics).
-    _check_active_has_evidence(memory_dir, checks, all_issues)
+    # --- Check 3: active-has-evidence (semantic) ---
+    _do_active_evidence_check(memory_dir, all_checks, all_issues)
 
-    # ----- Check 4: deprecated-retained -----
-    # Check that DEPRECATED/SUPERSEDED records still exist and are not orphaned.
-    _check_deprecated_retained(memory_dir, checks, all_issues)
+    # --- Check 4: superseded-by-integrity (semantic) ---
+    _do_superseded_by_check(memory_dir, all_checks, all_issues)
 
-    # Compute counts for summary
-    counts = _collect_memory_counts(memory_dir)
-
-    if all_issues:
-        overall = "FAIL"
-
-    result = {
-        "schemaVersion": 1,
-        "status": overall,
-        "checks": checks,
-        "summary": counts,
+    overall = "FAIL" if all_issues else "PASS"
+    return {
+        "checks": all_checks,
         "issues": all_issues,
+        "status": overall,
     }
 
-    print(json.dumps(result, ensure_ascii=False))
 
-    if overall == "FAIL":
-        sys.exit(1)
-
-
-def _check_json_parse(memory_dir, checks, all_issues):
+def _do_json_parse_check(memory_dir, checks, all_issues):
     """Check 1: all memory JSONL files parse without errors."""
     issues = []
     files_checked = 0
@@ -740,20 +662,16 @@ def _check_json_parse(memory_dir, checks, all_issues):
         files_checked += 1
         try:
             entries = read_jsonl(path)
-            # Count lines to report
             with open(path, "r", encoding="utf-8-sig") as f:
                 lines = [l for l in f.readlines() if l.strip()]
-            # Check for entries that might fail later
             for i, line in enumerate(lines, 1):
                 try:
                     json.loads(line)
                 except json.JSONDecodeError as e:
-                    msg = f"{name} line {i}: {e}"
-                    issues.append(msg)
+                    issues.append(f"{name} line {i}: {e}")
         except (json.JSONDecodeError, ValueError) as e:
             issues.append(f"{name}: parse error: {e}")
 
-    # Also check project-profile.json
     pp_path = os.path.join(memory_dir, "project-profile.json")
     if os.path.exists(pp_path):
         files_checked += 1
@@ -764,17 +682,17 @@ def _check_json_parse(memory_dir, checks, all_issues):
     checks.append({
         "name": "memory-json-parse",
         "status": status,
-        "description": f"Parsed {files_checked} memory JSON file(s) without errors" if not issues
-            else f"Found {len(issues)} JSON parse error(s) in memory files",
+        "description": (
+            f"Parsed {files_checked} memory JSON file(s) without errors"
+            if not issues
+            else f"Found {len(issues)} JSON parse error(s) in memory files"
+        ),
     })
     all_issues.extend(issues)
 
 
-def _check_schema_valid(memory_dir, schema_map, checks, all_issues):
-    """Check 2: validate entries against their schemas.
-
-    Reuses validate_against_schema from the core module.
-    """
+def _do_schema_check(memory_dir, schema_map, checks, all_issues):
+    """Check 2: validate entries against their schemas."""
     issues = []
     memory_jsonl_schemas = {
         "lessons.jsonl": "lesson",
@@ -795,14 +713,12 @@ def _check_schema_valid(memory_dir, schema_map, checks, all_issues):
         try:
             entries = read_jsonl(jsonl_path)
         except (json.JSONDecodeError, ValueError):
-            # Parse errors already caught by check 1
             continue
         for i, entry in enumerate(entries, 1):
             entries_validated += 1
             entry_errors = validate_against_schema(entry, schema, f"memory/{name} line {i}")
             issues.extend(entry_errors)
 
-    # project-profile.json against memory-profile
     pp_path = os.path.join(memory_dir, "project-profile.json")
     pp = read_json_file_safe(pp_path)
     if pp is not None:
@@ -814,18 +730,85 @@ def _check_schema_valid(memory_dir, schema_map, checks, all_issues):
     checks.append({
         "name": "memory-schema-valid",
         "status": status,
-        "description": f"Validated {entries_validated} entry(ies) against schemas" if not issues
-            else f"Found {len(issues)} schema violation(s) across {entries_validated} entries",
+        "description": (
+            f"Validated {entries_validated} entry(ies) against schemas"
+            if not issues
+            else f"Found {len(issues)} schema violation(s) across {entries_validated} entries"
+        ),
     })
     all_issues.extend(issues)
 
 
-def _check_active_has_evidence(memory_dir, checks, all_issues):
+def _do_active_evidence_check(memory_dir, checks, all_issues):
     """Check 3: ACTIVE guidance records must have verified evidence.
 
-    Reuses _validate_memory_semantics from the core module.
+    Canonical evidence linkage check — consumed by both validate-state
+    and memory-doctor. No duplicate logic.
     """
-    issues = _validate_memory_semantics(memory_dir)
+    issues = []
+    non_active_statuses = frozenset(["DEPRECATED", "REJECTED", "SUPERSEDED"])
+
+    # Load evidence-map
+    evidence_path = os.path.join(memory_dir, "evidence-map.jsonl")
+    evidence_entries = []
+    if os.path.exists(evidence_path):
+        try:
+            evidence_entries = read_jsonl(evidence_path)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    evidence_ids = set()
+    unverified_evidence_ids = set()
+    for ev in evidence_entries:
+        eid = ev.get("evidenceId", "")
+        if eid:
+            evidence_ids.add(eid)
+            if ev.get("status", "VERIFIED").upper() == "UNVERIFIED":
+                unverified_evidence_ids.add(eid)
+
+    guidance_files = [
+        ("lessons.jsonl", "lessonId"),
+        ("antipatterns.jsonl", "antipatternId"),
+        ("decisions.jsonl", "decisionId"),
+    ]
+
+    for filename, id_field in guidance_files:
+        filepath = os.path.join(memory_dir, filename)
+        if not os.path.exists(filepath):
+            continue
+        try:
+            entries = read_jsonl(filepath)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        for entry in entries:
+            status = entry.get("status", "")
+            if status in non_active_statuses:
+                continue
+            if status != "ACTIVE":
+                continue
+
+            record_id = entry.get(id_field, "")
+            evidence_ids_ref = entry.get("evidenceIds", [])
+            if not isinstance(evidence_ids_ref, list):
+                evidence_ids_ref = []
+
+            if not evidence_ids_ref:
+                issues.append(
+                    f"memory/{filename}: ACTIVE {id_field} '{record_id}' has no evidenceIds"
+                )
+                continue
+
+            for eid_ref in evidence_ids_ref:
+                if eid_ref not in evidence_ids:
+                    issues.append(
+                        f"memory/{filename}: ACTIVE {id_field} '{record_id}' references missing evidenceId '{eid_ref}'"
+                    )
+                elif eid_ref in unverified_evidence_ids:
+                    issues.append(
+                        f"memory/{filename}: ACTIVE {id_field} '{record_id}' references UNVERIFIED evidenceId '{eid_ref}'"
+                    )
+
     status = "PASS" if not issues else "FAIL"
     checks.append({
         "name": "active-has-evidence",
@@ -836,15 +819,14 @@ def _check_active_has_evidence(memory_dir, checks, all_issues):
     all_issues.extend(issues)
 
 
-def _check_deprecated_retained(memory_dir, checks, all_issues):
-    """Check 4: DEPRECATED/SUPERSEDED records are still retained in memory.
+def _do_superseded_by_check(memory_dir, checks, all_issues):
+    """Check 4: supersededBy references must point to existing records.
 
-    These records should not be deleted — they serve as historical context.
-    This check verifies that supersededBy references point to existing records.
+    Canonical supersededBy integrity check — consumed by both validate-state
+    and memory-doctor. No duplicate logic.
     """
     issues = []
 
-    # For each supersededBy reference, verify the target exists in the same file
     superseded_guidance = [
         ("lessons.jsonl", "lessonId", "supersededBy"),
         ("decisions.jsonl", "decisionId", "supersededBy"),
@@ -871,12 +853,55 @@ def _check_deprecated_retained(memory_dir, checks, all_issues):
 
     status = "PASS" if not issues else "FAIL"
     checks.append({
-        "name": "deprecated-retained",
+        "name": "superseded-by-integrity",
         "status": status,
         "description": "All supersededBy references point to existing records" if not issues
             else f"Found {len(issues)} orphaned supersededBy reference(s)",
     })
     all_issues.extend(issues)
+
+
+# ---------------------------------------------------------------------------
+# Command: memory-doctor
+# ---------------------------------------------------------------------------
+
+def cmd_memory_doctor(args):
+    """Validate memory JSONL files and report structured findings.
+
+    Delegates to the canonical _validate_memory function — no duplicated rules.
+    Produces gate-result-style JSON output with checks array.
+    Exits 0 if clean, 1 if issues found.
+    """
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    schemas_dir = os.path.join(project_root, "schemas")
+    memory_dir = os.path.join(workspace, "memory")
+
+    # Load schemas for schema conformance checks
+    schema_map = {}
+    for name in os.listdir(schemas_dir):
+        if name.endswith(".schema.json"):
+            base = name.replace(".schema.json", "")
+            schema_map[base] = read_json(os.path.join(schemas_dir, name))
+
+    # Run canonical validation (JSON parse, schema, evidence, supersededBy)
+    memory_result = _validate_memory_internal(memory_dir, schema_map=schema_map)
+
+    # Compute counts for summary
+    counts = _collect_memory_counts(memory_dir)
+
+    result = {
+        "schemaVersion": 1,
+        "status": memory_result["status"],
+        "checks": memory_result["checks"],
+        "summary": counts,
+        "issues": memory_result["issues"],
+    }
+
+    print(json.dumps(result, ensure_ascii=False))
+
+    if memory_result["status"] == "FAIL":
+        sys.exit(1)
 
 
 def _collect_memory_counts(memory_dir):
