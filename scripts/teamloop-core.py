@@ -2646,6 +2646,581 @@ def _check_schema_integrity(project_root):
 
 
 # ---------------------------------------------------------------------------
+# Command: run-sentinel
+# ---------------------------------------------------------------------------
+
+# Known valid phase values (single source of truth for sentinel check #8).
+_KNOWN_PHASES = frozenset([
+    "",  # fresh workspace
+    "NEEDS_DISCOVERY",
+    "NEEDS_RESEARCH",
+    "NEEDS_RESEARCH_REVIEW",
+    "NEEDS_TASK_SLICING",
+    "EXECUTING_TASK",
+    "NEEDS_CHANGE_REVIEW",
+    "NEEDS_GATE",
+    "GATE_FAILED",
+    "REVIEW_FAILED",
+    "SAFE_CHECKPOINT",
+    "READY_FOR_NEXT_TASK",
+    "HUMAN_DECISION_REQUIRED",
+    "DONE",
+])
+
+# Baseline forbiddenWrites every scope-policy.json must contain.
+_SCOPE_POLICY_BASELINE_FORBIDDEN = [".git/**", "node_modules/**"]
+
+
+def _sentinel_get_run_id(workspace):
+    """Return a runId string. Prefers currentRunId from team-state, else creates one."""
+    state = read_json_file_safe(os.path.join(workspace, "state", "team-state.json"))
+    if state and state.get("currentRunId"):
+        return state["currentRunId"]
+    return "run-{}".format(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S"))
+
+
+def _sentinel_check_scope_policy_weakening(workspace):
+    """Check 1: scope-policy-weakening — scope-policy.json must have baseline forbiddenWrites."""
+    policy_path = os.path.join(workspace, "policies", "scope-policy.json")
+    if not os.path.exists(policy_path):
+        return {
+            "category": "scope-policy-weakening",
+            "severity": "CRITICAL",
+            "title": "Scope policy file missing",
+            "description": "scope-policy.json not found — no write guards in place",
+            "evidence": [{"type": "MISSING_ARTIFACT", "detail": policy_path}],
+            "resolutionHint": "Run init-workspace to restore scope-policy.json",
+        }
+
+    policy = read_json_file_safe(policy_path)
+    if policy is None:
+        return {
+            "category": "scope-policy-weakening",
+            "severity": "CRITICAL",
+            "title": "Scope policy file is invalid JSON",
+            "description": "scope-policy.json exists but cannot be parsed",
+            "evidence": [{"type": "FILE_PATH", "detail": policy_path}],
+            "resolutionHint": "Restore scope-policy.json with valid JSON",
+        }
+
+    # Check all forbidden-write field variants
+    all_forbidden = []
+    for key in ("forbiddenWrites", "alwaysForbiddenWrites"):
+        val = policy.get(key, [])
+        if isinstance(val, list):
+            all_forbidden.extend(val)
+
+    missing_baseline = []
+    for baseline_path in _SCOPE_POLICY_BASELINE_FORBIDDEN:
+        if baseline_path not in all_forbidden:
+            missing_baseline.append(baseline_path)
+
+    if missing_baseline:
+        return {
+            "category": "scope-policy-weakening",
+            "severity": "CRITICAL",
+            "title": "Scope policy weakened — baseline forbidden writes missing",
+            "description": "scope-policy.json is missing baseline forbiddenWrites: {}".format(
+                ", ".join(missing_baseline)
+            ),
+            "evidence": [
+                {"type": "SCHEMA_FIELD", "detail": "forbiddenWrites missing: " + ", ".join(missing_baseline)},
+                {"type": "FILE_PATH", "detail": policy_path},
+            ],
+            "resolutionHint": "Add baseline paths to forbiddenWrites in scope-policy.json",
+        }
+
+    return {
+        "category": "scope-policy-weakening",
+        "severity": "INFO",
+        "title": "Scope policy has baseline forbidden writes",
+        "description": "scope-policy.json contains required baseline forbidden writes",
+        "evidence": [{"type": "FILE_PATH", "detail": policy_path}],
+    }
+
+
+def _sentinel_check_gate_policy_weakening(workspace):
+    """Check 2: gate-policy-weakening — gate-policy.json must have at least one gate."""
+    policy_path = os.path.join(workspace, "policies", "gate-policy.json")
+    if not os.path.exists(policy_path):
+        return {
+            "category": "gate-policy-weakening",
+            "severity": "WARNING",
+            "title": "Gate policy file missing",
+            "description": "gate-policy.json not found — no gate checks configured",
+            "evidence": [{"type": "MISSING_ARTIFACT", "detail": policy_path}],
+            "resolutionHint": "Run init-workspace to restore gate-policy.json",
+        }
+
+    policy = read_json_file_safe(policy_path)
+    if policy is None:
+        return {
+            "category": "gate-policy-weakening",
+            "severity": "WARNING",
+            "title": "Gate policy file is invalid JSON",
+            "description": "gate-policy.json exists but cannot be parsed",
+            "evidence": [{"type": "FILE_PATH", "detail": policy_path}],
+            "resolutionHint": "Restore gate-policy.json with valid JSON",
+        }
+
+    gates = policy.get("gates", [])
+    if not gates or not isinstance(gates, list) or len(gates) == 0:
+        return {
+            "category": "gate-policy-weakening",
+            "severity": "WARNING",
+            "title": "No gates configured",
+            "description": "gate-policy.json has no gates — all changes pass without verification",
+            "evidence": [
+                {"type": "SCHEMA_FIELD", "detail": "gates array is empty"},
+                {"type": "FILE_PATH", "detail": policy_path},
+            ],
+            "resolutionHint": "Add at least one gate to gate-policy.json",
+        }
+
+    return {
+        "category": "gate-policy-weakening",
+        "severity": "INFO",
+        "title": "Gate policy has {} gate(s)".format(len(gates)),
+        "description": "gate-policy.json contains {} gate definition(s)".format(len(gates)),
+        "evidence": [{"type": "FILE_PATH", "detail": policy_path}],
+    }
+
+
+def _sentinel_check_schema_integrity(workspace):
+    """Check 3: schema-integrity — every schemas/*.schema.json must be valid JSON."""
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    schemas_dir = os.path.join(project_root, "schemas")
+    invalid_files = []
+
+    if not os.path.isdir(schemas_dir):
+        return {
+            "category": "schema-integrity",
+            "severity": "INFO",
+            "title": "Schemas directory not found",
+            "description": "schemas/ directory does not exist — nothing to check",
+            "evidence": [{"type": "MISSING_ARTIFACT", "detail": schemas_dir}],
+        }
+
+    for name in sorted(os.listdir(schemas_dir)):
+        if not name.endswith(".schema.json"):
+            continue
+        fpath = os.path.join(schemas_dir, name)
+        if is_invalid_json_file(fpath):
+            invalid_files.append("schemas/{}".format(name))
+
+    if invalid_files:
+        return {
+            "category": "schema-integrity",
+            "severity": "CRITICAL",
+            "title": "Schema files contain invalid JSON",
+            "description": "{} schema file(s) with invalid JSON".format(len(invalid_files)),
+            "evidence": [{"type": "FILE_PATH", "detail": p} for p in invalid_files],
+            "resolutionHint": "Fix JSON syntax in affected schema files",
+        }
+
+    return {
+        "category": "schema-integrity",
+        "severity": "INFO",
+        "title": "All schema files are valid JSON",
+        "description": "All .schema.json files in schemas/ parsed without errors",
+        "evidence": [{"type": "FILE_PATH", "detail": schemas_dir}],
+    }
+
+
+def _sentinel_check_test_suppression(workspace):
+    """Check 4: test-suppression — test runner scripts must exist and be non-empty."""
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    missing_or_empty = []
+
+    for script_name in ("tests/run-tests.sh", "tests/run-tests.ps1"):
+        spath = os.path.join(project_root, script_name)
+        if not os.path.exists(spath):
+            missing_or_empty.append(script_name)
+        elif os.path.getsize(spath) == 0:
+            missing_or_empty.append(script_name)
+
+    if missing_or_empty:
+        return {
+            "category": "test-suppression",
+            "severity": "CRITICAL",
+            "title": "Test runner script(s) missing or empty",
+            "description": "Test runner script(s) missing or empty: {}".format(
+                ", ".join(missing_or_empty)
+            ),
+            "evidence": [{"type": "MISSING_ARTIFACT", "detail": p} for p in missing_or_empty],
+            "resolutionHint": "Restore test runner scripts to the tests/ directory",
+        }
+
+    return {
+        "category": "test-suppression",
+        "severity": "INFO",
+        "title": "Test runner scripts present",
+        "description": "Both tests/run-tests.sh and tests/run-tests.ps1 exist and are non-empty",
+        "evidence": [
+            {"type": "FILE_PATH", "detail": os.path.join(project_root, "tests/run-tests.sh")},
+            {"type": "FILE_PATH", "detail": os.path.join(project_root, "tests/run-tests.ps1")},
+        ],
+    }
+
+
+def _sentinel_check_state_mutation(workspace):
+    """Check 5: state-mutation — core state files must be valid JSON."""
+    invalid_files = []
+
+    # team-state.json is a single JSON object
+    ts_path = os.path.join(workspace, "state", "team-state.json")
+    if os.path.exists(ts_path) and os.path.getsize(ts_path) > 0:
+        if is_invalid_json_file(ts_path):
+            invalid_files.append("state/team-state.json")
+
+    # JSONL files — check each line is valid JSON
+    for name in ("events.jsonl", "backlog.jsonl"):
+        jpath = os.path.join(workspace, "state", name)
+        if not os.path.exists(jpath) or os.path.getsize(jpath) == 0:
+            continue
+        # Check if the file can be read as valid JSONL
+        is_valid = True
+        for enc in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be"):
+            try:
+                with open(jpath, "r", encoding=enc) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            json.loads(line)
+                is_valid = True
+                break
+            except (UnicodeDecodeError, ValueError):
+                is_valid = False
+                continue
+        if not is_valid:
+            invalid_files.append("state/{}".format(name))
+
+    if invalid_files:
+        return {
+            "category": "state-mutation",
+            "severity": "CRITICAL",
+            "title": "State file(s) contain invalid JSON",
+            "description": "State file(s) corrupted or truncated: {}".format(
+                ", ".join(invalid_files)
+            ),
+            "evidence": [{"type": "FILE_PATH", "detail": p} for p in invalid_files],
+            "resolutionHint": "Restore state files from git or reinitialize workspace",
+        }
+
+    return {
+        "category": "state-mutation",
+        "severity": "INFO",
+        "title": "All state files are valid JSON",
+        "description": "Core state files (team-state.json, events.jsonl, backlog.jsonl) are valid",
+        "evidence": [{"type": "FILE_PATH", "detail": os.path.join(workspace, "state")}],
+    }
+
+
+def _sentinel_check_protected_file_changes(workspace):
+    """Check 6: protected-file-changes — reuse guard integrity check infrastructure."""
+    # Reuse _get_git_status_entries from guard integrity
+    git_status_entries = _get_git_status_entries()
+
+    if not git_status_entries:
+        return {
+            "category": "protected-file-changes",
+            "severity": "INFO",
+            "title": "No git changes detected",
+            "description": "Git status is clean — no file modifications detected",
+            "evidence": [{"type": "GIT_DIFF", "detail": "no changes"}],
+        }
+
+    # Load protected-paths policy if available
+    policy_path = os.path.join(workspace, "policies", "protected-paths.json")
+    policy = None
+    if os.path.exists(policy_path):
+        policy = read_json_file_safe(policy_path)
+
+    # Run the same protected-paths check used by guard integrity
+    _, violations = _check_protected_paths(policy, git_status_entries, workspace)
+
+    # Also check for dangerous operations
+    _, do_violations = _check_dangerous_operations(git_status_entries)
+    all_violations = violations + do_violations
+
+    if all_violations:
+        paths = []
+        for v in all_violations:
+            if "paths" in v:
+                paths.extend(v["paths"])
+            elif "path" in v:
+                paths.append(v["path"])
+        return {
+            "category": "protected-file-changes",
+            "severity": "WARNING",
+            "title": "Protected file changes detected",
+            "description": "{} file change(s) matching protected patterns".format(len(paths)),
+            "evidence": [{"type": "GIT_DIFF", "detail": p} for p in paths],
+            "resolutionHint": "Review changed protected files and revert if unintended",
+        }
+
+    # Report changed files as info
+    changed = [e["path"] for e in git_status_entries]
+    return {
+        "category": "protected-file-changes",
+        "severity": "INFO",
+        "title": "{} file(s) changed, none protected".format(len(changed)),
+        "description": "Git shows {} modified file(s), none match protected patterns".format(len(changed)),
+        "evidence": [{"type": "GIT_DIFF", "detail": p} for p in changed[:5]],
+    }
+
+
+def _sentinel_check_hidden_unresolved_work(workspace):
+    """Check 7: hidden-unresolved-work — READY tasks that may be orphaned."""
+    backlog_path = os.path.join(workspace, "state", "backlog.jsonl")
+    if not os.path.exists(backlog_path):
+        return {
+            "category": "hidden-unresolved-work",
+            "severity": "INFO",
+            "title": "No backlog file found",
+            "description": "backlog.jsonl not found — cannot check for orphaned work",
+            "evidence": [{"type": "MISSING_ARTIFACT", "detail": backlog_path}],
+        }
+
+    try:
+        backlog = read_jsonl(backlog_path)
+    except (json.JSONDecodeError, ValueError):
+        return {
+            "category": "hidden-unresolved-work",
+            "severity": "INFO",
+            "title": "Backlog file is unreadable",
+            "description": "backlog.jsonl cannot be parsed — skipping orphaned work check",
+            "evidence": [{"type": "FILE_PATH", "detail": backlog_path}],
+        }
+
+    ready_tasks = [t for t in backlog if t.get("status") == "READY"]
+
+    if ready_tasks:
+        task_ids = [t.get("taskId", "unknown") for t in ready_tasks]
+        return {
+            "category": "hidden-unresolved-work",
+            "severity": "INFO",
+            "title": "{} READY task(s) in backlog".format(len(ready_tasks)),
+            "description": "Found {} READY task(s) that have not been picked up: {}".format(
+                len(ready_tasks), ", ".join(task_ids)
+            ),
+            "evidence": [{"type": "STATE_FIELD", "detail": "taskId: {}, status: READY".format(tid)} for tid in task_ids],
+        }
+
+    return {
+        "category": "hidden-unresolved-work",
+        "severity": "INFO",
+        "title": "No orphaned READY tasks",
+        "description": "All tasks in backlog are processed (no READY tasks waiting)",
+        "evidence": [{"type": "STATE_FIELD", "detail": "backlog has {} task(s), 0 READY".format(len(backlog))}],
+    }
+
+
+def _sentinel_check_manual_state_mutation(workspace):
+    """Check 8: manual-state-mutation — team-state.json phase must be a known value."""
+    state_path = os.path.join(workspace, "state", "team-state.json")
+    if not os.path.exists(state_path):
+        return {
+            "category": "manual-state-mutation",
+            "severity": "CRITICAL",
+            "title": "Team state file missing",
+            "description": "team-state.json not found — workspace state is unknown",
+            "evidence": [{"type": "MISSING_ARTIFACT", "detail": state_path}],
+            "resolutionHint": "Run init-workspace to restore team-state.json",
+        }
+
+    state = read_json_file_safe(state_path)
+    if state is None:
+        return {
+            "category": "manual-state-mutation",
+            "severity": "CRITICAL",
+            "title": "Team state file is invalid JSON",
+            "description": "team-state.json exists but cannot be parsed as JSON",
+            "evidence": [{"type": "FILE_PATH", "detail": state_path}],
+            "resolutionHint": "Restore team-state.json from git or reinitialize workspace",
+        }
+
+    phase = state.get("currentPhase", "")
+    if phase not in _KNOWN_PHASES:
+        return {
+            "category": "manual-state-mutation",
+            "severity": "CRITICAL",
+            "title": "Invalid phase value in team-state",
+            "description": "currentPhase '{}' is not a known phase value. Known phases: {}".format(
+                phase, ", ".join(sorted(_KNOWN_PHASES - {""}))
+            ),
+            "evidence": [
+                {"type": "STATE_FIELD", "detail": "currentPhase: {}".format(phase)},
+                {"type": "FILE_PATH", "detail": state_path},
+            ],
+            "resolutionHint": "Restore currentPhase to a valid phase value",
+        }
+
+    return {
+        "category": "manual-state-mutation",
+        "severity": "INFO",
+        "title": "Phase '{}' is valid".format(phase or "(empty)"),
+        "description": "team-state.json has a valid currentPhase value",
+        "evidence": [{"type": "STATE_FIELD", "detail": "currentPhase: {}".format(phase)}],
+    }
+
+
+def _sentinel_check_evidence_manipulation(workspace):
+    """Check 9: evidence-manipulation — evidence refs in continuation-decision.json must point to existing files."""
+    decision_path = os.path.join(workspace, "state", "continuation-decision.json")
+    if not os.path.exists(decision_path):
+        return {
+            "category": "evidence-manipulation",
+            "severity": "INFO",
+            "title": "No continuation decision file",
+            "description": "continuation-decision.json not found — no evidence references to check",
+            "evidence": [{"type": "MISSING_ARTIFACT", "detail": decision_path}],
+        }
+
+    decision = read_json_file_safe(decision_path)
+    if decision is None:
+        return {
+            "category": "evidence-manipulation",
+            "severity": "INFO",
+            "title": "Continuation decision file is unreadable",
+            "description": "continuation-decision.json exists but cannot be parsed — skipping evidence check",
+            "evidence": [{"type": "FILE_PATH", "detail": decision_path}],
+        }
+
+    # Collect evidence references — could be in various fields
+    evidence_refs = []
+    for field in ("evidence", "evidenceIds", "checkEvidence"):
+        val = decision.get(field, None)
+        if isinstance(val, list):
+            evidence_refs.extend(val)
+        elif isinstance(val, str) and val:
+            evidence_refs.append(val)
+
+    # Also check check entries for evidence paths
+    checks = decision.get("checks", [])
+    if isinstance(checks, list):
+        for check in checks:
+            if isinstance(check, dict):
+                for ev_field in ("evidence", "evidencePath", "artifactPath"):
+                    val = check.get(ev_field, None)
+                    if isinstance(val, list):
+                        evidence_refs.extend(val)
+                    elif isinstance(val, str) and val:
+                        evidence_refs.append(val)
+
+    if not evidence_refs:
+        return {
+            "category": "evidence-manipulation",
+            "severity": "INFO",
+            "title": "No evidence references in continuation decision",
+            "description": "continuation-decision.json contains no file evidence references",
+            "evidence": [{"type": "FILE_PATH", "detail": decision_path}],
+        }
+
+    # Resolve workspace root for relative path checking
+    workspace_root = os.path.dirname(workspace)
+    missing_refs = []
+    for ref in evidence_refs:
+        # Try as relative to workspace root first, then workspace itself
+        candidate = os.path.join(workspace_root, ref)
+        if not os.path.exists(candidate):
+            candidate = os.path.join(workspace, ref)
+        if not os.path.exists(candidate):
+            # Could be an absolute path or a ref to a non-file entity — only flag if looks like a path
+            if "/" in ref or "\\" in ref:
+                missing_refs.append(ref)
+
+    if missing_refs:
+        return {
+            "category": "evidence-manipulation",
+            "severity": "WARNING",
+            "title": "Missing evidence references in continuation decision",
+            "description": "{} evidence reference(s) in continuation-decision.json point to missing files".format(
+                len(missing_refs)
+            ),
+            "evidence": [{"type": "MISSING_ARTIFACT", "detail": ref} for ref in missing_refs],
+            "resolutionHint": "Ensure referenced evidence files exist or update continuation-decision.json",
+        }
+
+    return {
+        "category": "evidence-manipulation",
+        "severity": "INFO",
+        "title": "All evidence references resolve",
+        "description": "{} evidence reference(s) in continuation-decision.json all point to existing files".format(
+            len(evidence_refs)
+        ),
+        "evidence": [{"type": "FILE_PATH", "detail": decision_path}],
+    }
+
+
+def cmd_run_sentinel(args):
+    """READ-ONLY sentinel inspection command.
+
+    Runs 9 integrity checks on the workspace and produces a structured JSON
+    report matching schemas/sentinel-inspection.schema.json.
+
+    Does not modify any files except writing its own report to
+    .teamloop/runs/<run-id>/sentinel-inspection.json.
+    """
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # Determine runId
+    run_id = _sentinel_get_run_id(workspace)
+
+    # Ensure the run directory exists for the report
+    run_dir = os.path.join(workspace, "runs", run_id)
+    os.makedirs(run_dir, exist_ok=True)
+
+    # Run all 9 checks
+    findings = [
+        _sentinel_check_scope_policy_weakening(workspace),
+        _sentinel_check_gate_policy_weakening(workspace),
+        _sentinel_check_schema_integrity(workspace),
+        _sentinel_check_test_suppression(workspace),
+        _sentinel_check_state_mutation(workspace),
+        _sentinel_check_protected_file_changes(workspace),
+        _sentinel_check_hidden_unresolved_work(workspace),
+        _sentinel_check_manual_state_mutation(workspace),
+        _sentinel_check_evidence_manipulation(workspace),
+    ]
+
+    # Compute counts for summary
+    critical_count = sum(1 for f in findings if f["severity"] == "CRITICAL")
+    warning_count = sum(1 for f in findings if f["severity"] == "WARNING")
+    info_count = sum(1 for f in findings if f["severity"] == "INFO")
+
+    # Determine overall status
+    if critical_count > 0:
+        overall_status = "FAIL"
+    elif warning_count > 0:
+        overall_status = "WARNING"
+    else:
+        overall_status = "PASS"
+
+    report = {
+        "schemaVersion": 1,
+        "runId": run_id,
+        "inspectedAtUtc": utc_now_iso(),
+        "findings": findings,
+        "overallStatus": overall_status,
+        "summary": {
+            "totalFindings": len(findings),
+            "criticalCount": critical_count,
+            "warningCount": warning_count,
+            "infoCount": info_count,
+        },
+    }
+
+    # Write report to run directory
+    report_path = os.path.join(run_dir, "sentinel-inspection.json")
+    write_json(report_path, report)
+
+    # Print to stdout
+    print(json.dumps(report, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
 # Workspace path resolution
 # ---------------------------------------------------------------------------
 
@@ -2732,6 +3307,10 @@ def main():
     p_wcd.add_argument("--blockers-summary", default="", help="Summary of blockers")
     p_wcd.add_argument("--evidence", default=[], action="append", help="Evidence item (repeatable)")
 
+    # run-sentinel
+    p_sentinel = subparsers.add_parser("run-sentinel", help="Run read-only sentinel integrity inspection")
+    p_sentinel.add_argument("--workspace", "-w", default=".teamloop")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -2751,6 +3330,7 @@ def main():
         "memory-doctor": cmd_memory_doctor,
         "write-continuation-decision": cmd_write_continuation_decision,
         "check-guard-integrity": cmd_check_guard_integrity,
+        "run-sentinel": cmd_run_sentinel,
     }
 
     commands[args.command](args)
