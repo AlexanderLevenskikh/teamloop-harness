@@ -4924,6 +4924,230 @@ def cmd_performance_report(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: test-select
+# ---------------------------------------------------------------------------
+
+def _load_test_layers(project_root):
+    """Load test-layers.json from the tests/ directory."""
+    path = os.path.join(project_root, "tests", "test-layers.json")
+    if not os.path.exists(path):
+        return None
+    return read_json(path)
+
+
+def _load_impact_map(project_root):
+    """Load impact-map.json from the tests/ directory."""
+    path = os.path.join(project_root, "tests", "impact-map.json")
+    if not os.path.exists(path):
+        return None
+    return read_json(path)
+
+
+def _get_git_changed_files_test_select(git_root):
+    """Get changed files from git for test-select --affected mode."""
+    return _get_git_changed_files(git_root)
+
+
+def _impact_map_lookup(changed_files, impact_map):
+    """Look up changed files against the impact map to determine affected layers.
+
+    Returns (layers_set, reasons_dict).
+    """
+    layers = set()
+    reasons = {}
+    mappings = impact_map.get("mappings", [])
+
+    # Build a mapping: matched_pattern -> list of file paths
+    matched_by_pattern = {}
+
+    for fp in changed_files:
+        matched = False
+        for mapping in mappings:
+            for pat in mapping.get("patterns", []):
+                if fnmatch.fnmatch(fp, pat):
+                    for layer in mapping.get("layers", []):
+                        layers.add(layer)
+                    reason_key = pat
+                    reason_val = mapping.get("reason", pat)
+                    reasons.setdefault(reason_key, reason_val)
+                    matched_by_pattern.setdefault(pat, []).append(fp)
+                    matched = True
+                    break
+            if matched:
+                break
+        if not matched:
+            # Use default mapping
+            default = impact_map.get("default", {})
+            for layer in default.get("layers", []):
+                layers.add(layer)
+            default_reason = default.get("reason", "unknown file")
+            reasons.setdefault("<default>", default_reason)
+
+    return layers, reasons
+
+
+def _select_tests_by_layers(layers, test_layers_data):
+    """Select test IDs that belong to any of the specified layers.
+
+    Returns sorted list of test IDs.
+    """
+    tests_map = test_layers_data.get("tests", {})
+    selected = set()
+    for test_id, test_layers in tests_map.items():
+        if any(l in layers for l in test_layers):
+            selected.add(test_id)
+    return sorted(selected)
+
+
+def cmd_test_select(args):
+    """Select tests based on layers, affected files, or full run."""
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # Load test layers
+    test_layers_data = _load_test_layers(project_root)
+    if test_layers_data is None:
+        print("Error: tests/test-layers.json not found", file=sys.stderr)
+        sys.exit(1)
+
+    layers_def = test_layers_data.get("layers", {})
+    tests_map = test_layers_data.get("tests", {})
+    now = utc_now_iso()
+
+    # ---- --list-layers ----
+    if args.list_layers:
+        output = {
+            "mode": "list-layers",
+            "layers": {},
+            "timestampUtc": now,
+        }
+        for layer_name, layer_desc in layers_def.items():
+            count = sum(1 for tid, tl in tests_map.items() if layer_name in tl)
+            output["layers"][layer_name] = {
+                "description": layer_desc,
+                "testCount": count,
+            }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+        return
+
+    # ---- Determine layers and selected tests ----
+    selected_layers_set = set()
+    selection_reasons = {}
+    changed_files = []
+
+    # Layer selection via --layer flag
+    if args.layer:
+        for layer_name in args.layer:
+            if layer_name not in layers_def:
+                print(f"Error: unknown layer '{layer_name}'. Available: {', '.join(sorted(layers_def.keys()))}", file=sys.stderr)
+                sys.exit(1)
+            selected_layers_set.add(layer_name)
+            selection_reasons[layer_name] = f"Explicitly requested via --layer flag"
+
+    # Full run
+    if args.full:
+        selected_layers_set = set(layers_def.keys())
+        selection_reasons["full"] = "Full test run requested via --full flag"
+
+    # Affected run
+    if args.affected:
+        impact_map = _load_impact_map(project_root)
+        if impact_map is None:
+            print("Error: tests/impact-map.json not found for --affected mode", file=sys.stderr)
+            sys.exit(1)
+
+        git_root = project_root
+        changed_files = _get_git_changed_files_test_select(git_root)
+
+        if not changed_files:
+            # No changed files — select smoke only as safe baseline
+            selected_layers_set.add("smoke")
+            selection_reasons["no-changes"] = "No changed files detected; selecting smoke layer as safe baseline"
+        else:
+            layers_found, reasons = _impact_map_lookup(changed_files, impact_map)
+            selected_layers_set.update(layers_found)
+            selection_reasons.update(reasons)
+
+    # If nothing selected (shouldn't happen, but guard against it)
+    if not selected_layers_set:
+        print("Error: no selection mode specified. Use --layer, --affected, --full, or --list-layers.", file=sys.stderr)
+        sys.exit(1)
+
+    # Always include "full" if requested, otherwise compute from selected layers
+    selected_tests = _select_tests_by_layers(selected_layers_set, test_layers_data)
+
+    # ---- Build selection artifact ----
+    selected_layers_sorted = sorted(selected_layers_set)
+    artifact = {
+        "schemaVersion": 1,
+        "selectedLayers": selected_layers_sorted,
+        "selectedTests": selected_tests,
+        "selectionReasons": selection_reasons,
+        "timestampUtc": now,
+    }
+    if changed_files:
+        artifact["changedFiles"] = changed_files
+
+    # ---- Write artifact file ----
+    output_path = args.output or os.path.join(".teamloop", "state", "test-selection.json")
+    if not os.path.isabs(output_path):
+        output_path = os.path.join(os.getcwd(), output_path)
+
+    # Ensure parent directory exists
+    parent_dir = os.path.dirname(output_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
+    write_json(output_path, artifact)
+
+    # ---- --explain flag ----
+    if args.explain:
+        print("=== Test Selection Explanation ===")
+        if args.full:
+            mode_str = "--full"
+        elif args.affected:
+            mode_str = "--affected"
+        else:
+            layer_joined = " ".join(args.layer)
+            mode_str = f"--layer {layer_joined}"
+        print(f"Mode: {mode_str}")
+        print(f"Selected layers: {', '.join(selected_layers_sorted)}")
+        print(f"Total tests selected: {len(selected_tests)}")
+        print()
+        if changed_files:
+            print(f"Changed files ({len(changed_files)}):")
+            for cf in changed_files:
+                print(f"  - {cf}")
+            print()
+        for reason_key, reason_desc in selection_reasons.items():
+            print(f"  [{reason_key}] {reason_desc}")
+        print()
+        if args.layer:
+            for layer_name in args.layer:
+                test_ids = [tid for tid, tl in tests_map.items() if layer_name in tl]
+                print(f"Layer '{layer_name}': {len(test_ids)} test(s)")
+                for tid in test_ids[:20]:
+                    print(f"    {tid}")
+                if len(test_ids) > 20:
+                    print(f"    ... and {len(test_ids) - 20} more")
+        elif args.affected or args.full:
+            print("Selected test IDs:")
+            for tid in selected_tests[:20]:
+                print(f"    {tid}")
+            if len(selected_tests) > 20:
+                print(f"    ... and {len(selected_tests) - 20} more")
+        print()
+        print(f"Selection artifact written to: {output_path}")
+        print()
+        print("=== End Explanation ===")
+    else:
+        # Machine-readable output
+        print(json.dumps(artifact, ensure_ascii=False, indent=2))
+
+    # Write to the specified output path as machine-readable artifact
+    # (already done above with write_json)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -5057,6 +5281,15 @@ def main():
     p_perf_report = subparsers.add_parser("performance-report", help="Print concise performance trace report")
     add_execution_identity(p_perf_report)
 
+    # test-select
+    p_test_select = subparsers.add_parser("test-select", help="Select tests by layer, affected files, or full run")
+    p_test_select.add_argument("--list-layers", action="store_true", help="List available layers and test counts")
+    p_test_select.add_argument("--layer", action="append", help="Select tests in the given layer (repeatable)")
+    p_test_select.add_argument("--affected", action="store_true", help="Select tests affected by git changes")
+    p_test_select.add_argument("--full", action="store_true", help="Select all tests")
+    p_test_select.add_argument("--explain", action="store_true", help="Output human-readable explanation")
+    p_test_select.add_argument("--output", "-o", default="", help="Output path for selection artifact (default: .teamloop/state/test-selection.json)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5087,6 +5320,7 @@ def main():
         "route-role": cmd_route_role,
         "record-performance": cmd_record_performance,
         "performance-report": cmd_performance_report,
+        "test-select": cmd_test_select,
     }
 
     commands[args.command](args)
