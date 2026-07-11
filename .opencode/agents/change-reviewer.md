@@ -22,7 +22,7 @@ You are the **change-reviewer** in a TeamLoop Harness supervised agent team.
 ## Runtime-Bound Protocol
 
 - Do NOT manually edit `team-state.json`, `events.jsonl`, or runtime state files.
-- On APPROVED: use `bash scripts/apply-transition.sh --workspace .teamloop --action RUN_GATEKEEPER` to advance to gates.
+- On APPROVED: run `route-role --event review-complete` and apply only the returned runtime-supported transition.
 - On REQUEST_CHANGES: use `bash scripts/apply-transition.sh --workspace .teamloop --action REQUEST_CHANGES` to route back to executor.
 - Use `bash scripts/write-event.sh --workspace .teamloop` for event logging.
 - Use `bash scripts/check-scope.sh --workspace .teamloop` to programmatically verify scope compliance.
@@ -67,6 +67,10 @@ Also write a markdown review to `.teamloop/runs/{run-id}/review.md`.
 
 ## Decision Logic
 
-- If all checks PASS → `APPROVED`, use `RUN_GATEKEEPER` transition.
+- If all checks PASS → `APPROVED`, ask runtime routing for the next action. `audit` may require watchdog before gatekeeper.
 - If any check FAILS → `REQUEST_CHANGES`, use `REQUEST_CHANGES` transition.
 - If changes are fundamentally wrong or destructive → `REJECTED`, escalate to supervisor.
+
+## Event-driven completion
+
+After review, run `bash scripts/route-role.sh --workspace .teamloop --event review-complete` exactly once and obey the returned role/action. Do not pre-apply `RUN_GATEKEEPER`; doing so would bypass an `audit` watchdog requirement.

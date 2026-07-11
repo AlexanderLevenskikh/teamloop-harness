@@ -1,120 +1,155 @@
 # Testing TeamLoop Harness
 
-This file is a practical checklist for validating the harness before using it on bigger projects.
+This checklist validates both the MVP+ hardening runtime and the Fast Execution Contract.
 
-## 1. Self-test the runtime
+## Full regression suites
+
+### Bash
 
 ```bash
 PY=/usr/bin/python3 bash tests/run-tests.sh
 ```
 
-Expected:
+Expected for this revision:
 
 ```text
-Results: 51/51 passed, 0 failed
+Results: 185/185 passed, 0 failed
 ```
 
-The test suite covers workspace initialization, schema validation, JSONL escaping, state transitions, gate pass/fail behavior, scope safety, task-slicer routing, and prompt golden checks.
+The runner also supports bounded diagnostic ranges without skipping tests in normal CI:
 
-## 2. Validate the smallest useful loop
+```bash
+TEAMLOOP_TEST_FROM=151 TEAMLOOP_TEST_TO=185 \
+  PY=/usr/bin/python3 bash tests/run-tests.sh
+```
 
-Use a temporary git repository and point `HARNESS` to this repository.
+### PowerShell
+
+```powershell
+pwsh -NoProfile -File tests/run-tests.ps1
+```
+
+Expected for this revision:
+
+```text
+Results: 87/87 passed, 0 failed
+```
+
+PowerShell coverage mirrors the critical profile, manifest, no-progress, fake-clock, routing, sentinel, and wrapper contracts. A platform that cannot execute PowerShell must report it as **not executed**, never as PASS.
+
+## Coverage map
+
+| Area | Representative coverage |
+|---|---|
+| Core lifecycle | initialization, dispatch, transitions, identity preservation, scope and gate behavior |
+| Memory | schema-valid JSONL, verified evidence, superseded references, missing subsystem behavior |
+| Continuation | schema-valid decisions, terminal transitions, blocker semantics |
+| Guard and sentinel | protected paths (including unstaged-path parsing), dangerous operations, nine unique sentinel checks, docs drift |
+| Final gate | PASS/failure propagation, schema artifact, reviewed-content integrity, orphaned task detection |
+| Fast profiles | deterministic `fast`/`standard`/`audit`, protected-scope escalation |
+| Immutable contract | idempotent materialization, manual mutation, task/scope/profile/policy drift |
+| No-progress | identical snapshots, material reset, performance-only noise, pure suppression-only pseudo-progress, real implementation after a TODO |
+| Routing | runtime-owned decisions, watchdog recovery, audit watchdog → project gates, no watchdog self-loop, mandatory final sentinel/final gate |
+| Performance | fake clock, trace schema, deterministic role-invocation comparison |
+| OpenCode | runtime command order, no direct runtime-owned state mutation |
+
+## Fresh-workspace smoke
 
 ```bash
 HARNESS=/absolute/path/to/teamloop-harness
 TMP=$(mktemp -d)
-mkdir -p "$TMP/project/src"
-cd "$TMP/project"
-git init -q
-
-bash "$HARNESS/scripts/init-workspace.sh" --workspace .teamloop --profile generic-software-task
-bash "$HARNESS/scripts/validate-state.sh" --workspace .teamloop
-
-cat > .teamloop/state/backlog.jsonl <<'JSONL'
-{"schemaVersion":1,"taskId":"task-001","title":"Create src file","status":"READY","priority":"P1","origin":"manual-smoke","scope":["src/**"],"allowedWrites":["src/**",".teamloop/**"],"forbiddenWrites":["README.md"],"requiredEvidence":["scope check passes"],"successCriteria":["src/ok.txt exists"],"forbiddenActions":["do not edit README.md"],"humanRequired":false,"blockers":[]}
-JSONL
-
-bash "$HARNESS/scripts/next-action.sh" --workspace .teamloop
-bash "$HARNESS/scripts/apply-transition.sh" --workspace .teamloop --action RUN_EXECUTOR --task-id task-001
-printf 'ok\n' > src/ok.txt
-bash "$HARNESS/scripts/check-scope.sh" --workspace .teamloop
-bash "$HARNESS/scripts/apply-transition.sh" --workspace .teamloop --action RUN_GATEKEEPER
-bash "$HARNESS/scripts/run-gates.sh" --workspace .teamloop
-bash "$HARNESS/scripts/validate-state.sh" --workspace .teamloop
-```
-
-Expected: scope passes, gates pass, state validates.
-
-## 3. Check safety after task completion
-
-After a task reaches `SAFE_CHECKPOINT`, stale task scope must not keep granting permissions.
-
-```bash
-bash "$HARNESS/scripts/apply-transition.sh" --workspace .teamloop --action CONTINUE_LOOP
-printf 'should fail\n' > src/stale-scope.txt
-bash "$HARNESS/scripts/check-scope.sh" --workspace .teamloop
-```
-
-Expected: scope check fails unless a new active task explicitly allows `src/**`.
-
-## 4. Check task-slicer routing
-
-```bash
-TMP=$(mktemp -d)
 cd "$TMP"
 git init -q
-bash "$HARNESS/scripts/init-workspace.sh" --workspace .teamloop --profile generic-software-task
-bash "$HARNESS/scripts/apply-transition.sh" --workspace .teamloop --action RUN_TASK_SLICER
+git config user.email test@teamloop.local
+git config user.name Test
 
-cat > .teamloop/state/backlog.jsonl <<'JSONL'
-{"schemaVersion":1,"taskId":"task-001","title":"Ready task","status":"READY","priority":"P1","origin":"manual-smoke","scope":["src/**"],"allowedWrites":["src/**",".teamloop/**"],"forbiddenWrites":[],"requiredEvidence":["ok"],"successCriteria":["ok"],"forbiddenActions":[],"humanRequired":false,"blockers":[]}
+bash "$HARNESS/scripts/init-workspace.sh" --workspace .teamloop --profile generic-software-task
+git add . && git commit -qm init
+
+cat >> .teamloop/state/backlog.jsonl <<'JSONL'
+{"schemaVersion":1,"taskId":"task-smoke","title":"Fast smoke","status":"READY","priority":"P2","origin":"manual-smoke","scope":["src/**"],"allowedWrites":["src/**",".teamloop/**"],"forbiddenWrites":[],"requiredEvidence":["scope and gates pass"],"successCriteria":["src/ok.txt exists"],"forbiddenActions":["do not weaken gates"],"humanRequired":false,"blockers":[]}
 JSONL
 
+bash "$HARNESS/scripts/apply-transition.sh" --workspace .teamloop --action RUN_EXECUTOR --task-id task-smoke
+bash "$HARNESS/scripts/prepare-execution.sh" --workspace .teamloop
+bash "$HARNESS/scripts/validate-execution-contract.sh" --workspace .teamloop
+bash "$HARNESS/scripts/validate-state.sh" --workspace .teamloop
+```
+
+Expected: profile `fast`, immutable contract PASS, state valid.
+
+## No-progress smoke
+
+Without a relevant change:
+
+```bash
+bash "$HARNESS/scripts/record-progress.sh" --workspace .teamloop
+bash "$HARNESS/scripts/record-progress.sh" --workspace .teamloop
 bash "$HARNESS/scripts/next-action.sh" --workspace .teamloop
 ```
 
-Expected: `RUN_EXECUTOR` with `taskId=task-001`, not `RUN_TASK_SLICER`.
+Expected: `NO_PROGRESS_DETECTED`, then `RUN_WATCHDOG`.
 
-## 5. First real-project trials
+After watchdog diagnosis:
 
-Start with small tasks:
+```bash
+bash "$HARNESS/scripts/route-role.sh" --workspace .teamloop --event watchdog-complete
+bash "$HARNESS/scripts/apply-transition.sh" --workspace .teamloop --action RETRY_EXECUTOR
+```
 
-- docs-only change;
-- one failing unit test;
-- one small refactor with clear scope;
-- one shell gate such as `npm test -- --runInBand`, `dotnet test`, or `pytest`;
-- one deliberate scope violation to confirm the guard catches it.
+Expected: `RETRY_EXECUTOR` preserves the current task and run. A materially different scoped change must be made before the next snapshot.
 
-Avoid first testing on broad refactors, dependency upgrades, or multi-directory migrations. Those are good later stress tests, but not first validation targets.
+## Event-driven routing smoke
 
-## 6. Evidence to inspect
+```bash
+bash "$HARNESS/scripts/route-role.sh" --workspace .teamloop --event implementation-complete
+bash "$HARNESS/scripts/route-role.sh" --workspace .teamloop --event final-handoff
+bash "$HARNESS/scripts/route-role.sh" --workspace .teamloop --event sentinel-complete
+```
 
-After a run, inspect:
+For `fast`, the first command normally routes to gatekeeper. The final two must route to sentinel and final gate respectively.
+
+## Performance trace smoke
+
+```bash
+bash "$HARNESS/scripts/performance-report.sh" --workspace .teamloop
+```
+
+Inspect:
+
+```text
+.teamloop/runs/<run-id>/performance-trace.json
+```
+
+The report must contain observed phase counts and a policy-level before/after role-invocation comparison. Timing-only changes must not alter progress signatures.
+
+## Final handoff
+
+Before handoff:
+
+```bash
+bash "$HARNESS/scripts/run-sentinel.sh" --workspace .teamloop
+bash "$HARNESS/scripts/check-guard-integrity.sh" --workspace .teamloop
+bash "$HARNESS/scripts/memory-doctor.sh" --workspace .teamloop
+bash "$HARNESS/scripts/final-gate.sh" --workspace .teamloop
+```
+
+For an optimized run, a missing final sentinel is a blocking final-gate failure. `final-gate-result.json` is written to `.teamloop/state/` and the run directory.
+
+## Evidence to inspect
 
 ```text
 .teamloop/state/team-state.json
-.teamloop/state/backlog.jsonl
-.teamloop/state/events.jsonl
-.teamloop/state/run-ledger.jsonl
-.teamloop/runs/<run-id>/gate-result.json
+.teamloop/state/continuation-decision.json
+.teamloop/state/final-gate-result.json
+.teamloop/runs/<run-id>/execution-policy.json
+.teamloop/runs/<run-id>/execution-manifest.json
+.teamloop/runs/<run-id>/execution-contract-validation.json
+.teamloop/runs/<run-id>/role-routing-history.jsonl
+.teamloop/runs/<run-id>/progress-history.jsonl
+.teamloop/runs/<run-id>/no-progress-result.json
+.teamloop/runs/<run-id>/performance-trace.json
+.teamloop/runs/<run-id>/sentinel-inspection.json
 ```
 
-Useful questions:
-
-- Did every runtime step leave `validate-state` passing?
-- Did `next-action` route to the expected role?
-- Did the task scope match the changed files?
-- Did gates update state correctly on pass and fail?
-- Did the loop continue instead of stopping too early?
-- Did any prompt instruct the agent to manually edit runtime state?
-
-## 7. Suggested maturity ladder
-
-```text
-Level 0: tests/run-tests.sh passes
-Level 1: manual toy repo smoke passes
-Level 2: OpenCode dry run on a docs-only task
-Level 3: OpenCode run on one real code/test fix
-Level 4: repeated runs without state desync
-Level 5: one small migration-style task campaign
-```
+A report is not proof by itself. Verify that the claimed content exists in the checked-out Git `HEAD` and that current hashes still match reviewed evidence.

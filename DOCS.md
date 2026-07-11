@@ -4,6 +4,9 @@
 
 ---
 
+> **Актуальное дополнение:** профили `fast` / `standard` / `audit`, immutable execution manifest, no-progress detector, event-driven role routing и performance trace описаны в [docs/FAST_EXECUTION.md](docs/FAST_EXECUTION.md). Командный справочник и тестовые totals ниже в этом историческом документе могут быть менее полными, чем README/TESTING.
+
+
 ## Архитектура
 
 ```

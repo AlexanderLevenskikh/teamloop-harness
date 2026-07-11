@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NoProgressResult",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "schemaId",
+    "runId",
+    "taskId",
+    "status",
+    "signature",
+    "identicalSnapshotStreak",
+    "threshold",
+    "nextAction",
+    "reason",
+    "createdAtUtc",
+    "progressClassification"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "schemaId": {
+      "type": "string",
+      "const": "teamloop-no-progress-result/v1"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^run-"
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^task-"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "INSUFFICIENT_HISTORY",
+        "PROGRESS_OBSERVED",
+        "NO_PROGRESS_DETECTED",
+        "STRATEGY_CHANGE_REQUIRED"
+      ]
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 64
+    },
+    "identicalSnapshotStreak": {
+      "type": "integer"
+    },
+    "threshold": {
+      "type": "integer",
+      "minimum": 2
+    },
+    "nextAction": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "createdAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "progressClassification": {
+      "type": "string",
+      "enum": [
+        "INITIAL_OR_MATERIAL",
+        "MATERIAL_CHANGE",
+        "SEMANTICALLY_UNCHANGED",
+        "SUPPRESSION_ONLY_NOT_PROGRESS"
+      ]
+    },
+    "handledAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

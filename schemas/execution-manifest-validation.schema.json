@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ExecutionManifestValidation",
+  "type": "object",
+  "required": ["schemaVersion", "schemaId", "runId", "taskId", "status", "checks", "errors", "checkedAtUtc"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "schemaId": {"type": "string", "const": "teamloop-execution-manifest-validation/v1"},
+    "runId": {"type": "string", "pattern": "^run-"},
+    "taskId": {"type": "string"},
+    "status": {"type": "string", "enum": ["PASS", "FAIL"]},
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "summary"],
+        "properties": {
+          "name": {"type": "string"},
+          "status": {"type": "string", "enum": ["PASS", "FAIL"]},
+          "summary": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "errors": {"type": "array", "items": {"type": "string"}},
+    "checkedAtUtc": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

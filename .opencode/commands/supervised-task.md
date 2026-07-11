@@ -10,93 +10,48 @@ Requested task or command arguments:
 
 $ARGUMENTS
 
-Run or continue a TeamLoop supervised delivery task.
+Run or continue exactly one bounded TeamLoop action. Runtime commands are the source of truth; prompts consume routing decisions and never make their own verification optional.
 
-## Usage
+## Runtime order
 
-```
-/supervised-task              Start or continue the supervised loop
-/supervised-task status       Print current state summary
-/supervised-task continue     Continue from current phase
-/supervised-task research     Trigger research phase
-/supervised-task fix-gate     Fix a failed gate
-```
+1. Run `bash scripts/next-action.sh --workspace .teamloop`.
+2. For `RUN_EXECUTOR`, apply the transition with the returned task id, then run:
+   `bash scripts/prepare-execution.sh --workspace .teamloop [--profile fast|standard|audit]`.
+   For an existing run, re-run `prepare-execution`; identical inputs must be reported as reused.
+3. Run `bash scripts/validate-execution-contract.sh --workspace .teamloop` before dispatch.
+4. Execute exactly one bounded role action. Record external role/process timing with `record-performance.sh` when available.
+5. After the role action, run `check-scope`, `validate-execution-contract`, and `validate-state`.
+6. Run `record-progress`. If it reports `NO_PROGRESS_DETECTED`, do not repeat the same automatic action. Run `next-action` and obey its watchdog/research/blocker routing.
+7. Use `route-role --event <event>` for conditional reviewer/watchdog/sentinel decisions. Do not invoke every role unconditionally.
+8. Gatekeeper runs `run-gates`; no role writes `gate-result.json` manually.
+9. Record continuation decisions only through `write-continuation-decision` or existing runtime transitions.
+10. Before final handoff, route `final-handoff`, run the required sentinel, then run `bash scripts/final-gate.sh --workspace .teamloop` (or the matching PowerShell wrapper).
+11. Print `performance-report` in the checkpoint report when a trace exists.
 
-## Runtime-Bound Protocol
+## Execution profiles
 
-The agent MUST use runtime scripts as the single source of truth. Do NOT read state files manually to infer what to do.
+- `fast`: one executor-like role by default; reviewer/watchdog/pre-final sentinel only on deterministic triggers. Final sentinel and final gate remain mandatory.
+- `standard`: executor plus reviewer; watchdog and pre-final sentinel are triggered, not automatic.
+- `audit`: executor, reviewer, watchdog, and sentinel are required; all deterministic checks remain enabled.
 
-1. **Determine next step**: Run `bash scripts/next-action.sh --workspace .teamloop`. Treat its JSON output as authoritative.
-2. **Enter the returned action**: If the returned action is supported by `apply-transition`, run `bash scripts/apply-transition.sh --workspace .teamloop --action <ACTION> [--task-id <ID>]` before delegating the role. `RUN_EXECUTOR` requires the returned `taskId`.
-3. **Delegate exactly one role**: Invoke only the role named by `nextAction`. Let that role complete its bounded responsibility and advance the runtime through its documented command.
-4. **Run gates**: Gatekeeper must use `bash scripts/run-gates.sh --workspace .teamloop`. Do not create or edit `gate-result.json` manually.
-5. **Validate before checkpoint**: Before any `SAFE_CHECKPOINT` or final handoff, run `bash scripts/validate-state.sh --workspace .teamloop`. If it fails, fix the root cause first.
-6. **Write events**: Use `bash scripts/write-event.sh --workspace .teamloop --type ... --actor ... --summary ...`. Do not append to `events.jsonl` manually.
-7. **Run sentinel**: Use `bash scripts/run-sentinel.sh --workspace .teamloop` for read-only sentinel integrity inspection.
-8. **Final gate**: Use `bash scripts/check-guard-integrity.sh --workspace .teamloop` for protected path detection and schema validity. Use `bash scripts/write-continuation-decision.sh --workspace .teamloop` to record continuation decisions.
+A requested `fast` profile is escalated to `audit` when protected runtime scope, unresolved high/critical findings, prior no-progress, or other runtime policy requires it.
 
-Only edit state files directly when no script exists for the needed operation, and record the reason in an event.
+## Runtime-bound roles
 
-## Available Role Agents
+Available bounded roles are `discovery`, `researcher`, `research-lead`, `task-slicer`, `executor`, `change-reviewer`, `gatekeeper`, `watchdog`, and `sentinel`. Runtime policy decides which role is next; prompts never self-select optional verification. Do not hand off unfinished implementation as a vague “developer action”.
 
-- **discovery**: Initial problem analysis and requirement gathering.
-- **researcher**: Technical investigation and solution research.
-- **research-lead**: Reviews research artifacts and findings for quality.
-- **task-slicer**: Breaks research into bounded executable tasks.
-- **executor**: Implements tasks within scope constraints.
-- **change-reviewer**: Reviews code changes for scope violations.
-- **gatekeeper**: Runs automated gate checks on completed work.
+## Runtime-owned artifacts
 
-## How It Works
+Never directly edit JSON/JSONL files under `.teamloop/state`, execution policy/manifest files, progress history, no-progress result, performance trace, gate results, sentinel reports, or final-gate results. Use runtime writers only. Markdown role notes may be written where the active task permits them.
 
-1. Run `bash scripts/next-action.sh --workspace .teamloop` to determine the next step.
-2. Apply the returned transition when required; include `--task-id` for `RUN_EXECUTOR`.
-3. Route exactly one bounded action to the matching role agent.
-4. Let the role use its documented runtime transition on completion.
-5. Run `bash scripts/validate-state.sh --workspace .teamloop` before checkpoint or handoff.
+## No-op behavior
 
-## Modes
+An unchanged run must terminate truthfully. Reused policy/manifest validation plus an unchanged progress signature is not permission to dispatch all roles again. On the configured threshold it becomes `NO_PROGRESS_DETECTED` and routes away from an identical retry.
 
-### `/supervised-task`
+## Final invariants
 
-Primary entry point. Calls `bash scripts/next-action.sh` and routes to the next role automatically. Does NOT ask the user if there is a clear next action. Only stops for `HUMAN_DECISION_REQUIRED` or `DONE`.
-
-### `/supervised-task status`
-
-Prints current state:
-```
-Status: <status>
-Phase: <currentPhase>
-Task: <currentTaskId>
-Run: <currentRunId>
-Human Required: <humanRequired>
-Goal: <goal>
-```
-
-### `/supervised-task continue`
-
-Resumes from `SAFE_CHECKPOINT` or any in-progress state. Calls `bash scripts/next-action.sh` to determine where to continue.
-
-### `/supervised-task research`
-
-Forces transition to `NEEDS_RESEARCH` phase using `bash scripts/apply-transition.sh --action RUN_RESEARCHER`. Use when the executor cannot proceed due to unknowns.
-
-### `/supervised-task fix-gate`
-
-Reroutes from `GATE_FAILED` to the executor with gate failure context using `bash scripts/apply-transition.sh --action GATE_FAILED`.
-
-## Critical Constraints
-
-- Must not write `DONE` with failed gates.
-- Must not write `DONE` with open tasks.
-- Must not transition to `HUMAN_DECISION_REQUIRED` without a blocker record.
-- Must not say "no further work" without a `BLOCKED_NO_AGENT_EXECUTABLE_TASKS` verdict from task-slicer or gatekeeper.
-- Must not accept "developer action" or "manual review" as final handoff.
-
-## Invariants
-
-```
-MANUAL_REVIEW is not HUMAN_REQUIRED.
-SAFE_CHECKPOINT is not DONE.
-RESEARCH_COMPLETE is not DONE.
-```
+- Scope, evidence, runtime-state integrity, required project gates, final sentinel, and final gate cannot be disabled by a profile.
+- `MANUAL_REVIEW ≠ HUMAN_REQUIRED`.
+- `SAFE_CHECKPOINT ≠ DONE`.
+- `RESEARCH_COMPLETE ≠ DONE`.
+- `AGENT_SAID_DONE ≠ ACTUALLY_DONE`.

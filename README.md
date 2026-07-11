@@ -34,7 +34,7 @@ All scripts have `.sh` and `.ps1` variants. See [TEAMLOOP.md](TEAMLOOP.md) for f
     continuation-decision.json # Terminal state decision
     blockers.jsonl            # Human-required blockers
   memory/                     # Structured memory (lessons, decisions, antipatterns)
-  runs/                       # Per-run artifacts
+  runs/                       # Per-run artifacts, immutable contracts, progress, traces
   research/                   # Research reports
   policies/                   # scope-policy, gate-policy, role-policy
   profiles/                   # active-profile.json
@@ -51,6 +51,8 @@ All scripts have `.sh` and `.ps1` variants. See [TEAMLOOP.md](TEAMLOOP.md) for f
 | executor | Implements tasks within scope |
 | change-reviewer | Reviews diff and task alignment |
 | gatekeeper | Runs formal gates |
+| watchdog | Diagnoses deterministic no-progress and contradictory runtime behavior |
+| sentinel | Performs policy-required read-only integrity inspection |
 
 ## Scripts
 
@@ -67,6 +69,25 @@ All scripts have `.sh` and `.ps1` variants. See [TEAMLOOP.md](TEAMLOOP.md) for f
 | `check-guard-integrity` | Check protected paths and schema integrity |
 | `write-continuation-decision` | Write continuation decision records |
 | `run-sentinel` | Read-only sentinel integrity inspection |
+| `prepare-execution` | Resolve profile, freeze immutable manifest, validate the bounded contract |
+| `resolve-execution-policy` | Persist deterministic `fast` / `standard` / `audit` routing policy |
+| `materialize-execution-manifest` | Freeze task revision, scope, gates, evidence, and policy fingerprints |
+| `validate-execution-contract` | Reject manual mutation and task/scope/profile/policy drift |
+| `record-progress` | Record semantic progress and detect blind retry loops |
+| `route-role` | Persist deterministic event-driven role routing decisions |
+| `record-performance` | Record best-effort runtime performance phases |
+| `performance-report` | Print trace totals and deterministic routing comparison |
+| `final-gate` | Aggregate state, memory, continuation, scope, gates, sentinel, guard, review, contract, and no-progress checks |
+
+## Fast Execution Contract
+
+`prepare-execution` resolves one of three machine-readable profiles:
+
+- `fast`: one executor-like role by default; review/watchdog are trigger-driven;
+- `standard`: executor + reviewer; watchdog is trigger-driven;
+- `audit`: executor + reviewer + watchdog + sentinel.
+
+Profiles never disable scope, evidence, required project gates, final sentinel, final gate, or runtime-state integrity. Each run freezes an immutable execution policy/manifest, records semantic progress, blocks identical retries, and emits a best-effort performance trace. See [docs/FAST_EXECUTION.md](docs/FAST_EXECUTION.md).
 
 ## Memory
 
@@ -83,16 +104,16 @@ Terminal transitions auto-write `.teamloop/state/continuation-decision.json` wit
 
 ## Final Gate
 
-A campaign-ready final gate is the 4-command chain:
+Run required pre-handoff inspection, then the real aggregator:
 
 ```bash
 bash scripts/run-sentinel.sh --workspace .teamloop
 bash scripts/check-guard-integrity.sh --workspace .teamloop
 bash scripts/memory-doctor.sh --workspace .teamloop
-bash scripts/validate-state.sh --workspace .teamloop
+bash scripts/final-gate.sh --workspace .teamloop
 ```
 
-All four must pass before DONE.
+`final-gate` writes `.teamloop/state/final-gate-result.json` and fails on blocking state, scope, gate, sentinel, reviewed-content, immutable-contract, or unresolved no-progress defects. A missing final sentinel is blocking for optimized runs.
 
 ## The Team Loop
 

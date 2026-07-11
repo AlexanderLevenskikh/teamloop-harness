@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RoleRoutingDecision",
+  "type": "object",
+  "required": [
+    "schemaVersion", "schemaId", "runId", "taskId", "profile", "event",
+    "nextAction", "role", "reason", "required", "finalGateCannotBeBypassed",
+    "finalSentinelCannotBeBypassed", "createdAtUtc", "semanticFingerprint", "integrity"
+  ],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "schemaId": {"type": "string", "const": "teamloop-role-routing-decision/v1"},
+    "runId": {"type": "string", "pattern": "^run-"},
+    "taskId": {"type": "string", "pattern": "^task-"},
+    "profile": {"type": "string", "enum": ["fast", "standard", "audit"]},
+    "event": {"type": "string", "enum": ["implementation-complete", "review-complete", "watchdog-complete", "gate-failed", "pre-final", "final-handoff", "sentinel-complete"]},
+    "nextAction": {"type": "string", "enum": ["RUN_CHANGE_REVIEWER", "RUN_GATEKEEPER", "RUN_WATCHDOG", "RUN_SENTINEL", "RUN_FINAL_GATE", "RETRY_EXECUTOR"]},
+    "role": {"type": "string", "enum": ["executor", "change-reviewer", "gatekeeper", "watchdog", "sentinel", "final-gate"]},
+    "reason": {"type": "string", "minLength": 1},
+    "required": {"type": "boolean"},
+    "finalGateCannotBeBypassed": {"type": "boolean", "const": true},
+    "finalSentinelCannotBeBypassed": {"type": "boolean", "const": true},
+    "createdAtUtc": {"type": "string", "format": "date-time"},
+    "semanticFingerprint": {"type": "string", "minLength": 64, "maxLength": 64},
+    "integrity": {
+      "type": "object",
+      "required": ["algorithm", "semanticSha256"],
+      "properties": {
+        "algorithm": {"type": "string", "const": "sha256"},
+        "semanticSha256": {"type": "string", "minLength": 64, "maxLength": 64}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

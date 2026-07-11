@@ -14,12 +14,12 @@ An agent team must not hand unfinished work back to the user just because a suba
 
 ## The Team Loop
 
-Complete lifecycle тАФ from discovery through final gate to either continuation or handoff:
+Complete lifecycle — from discovery through final gate to either continuation or handoff:
 
 ```
-discover тЖТ plan тЖТ execute тЖТ review тЖТ gate тЖТ sentinel тЖТ guard тЖТ memory тЖТ validate
+discover → plan → execute → review → gate → sentinel → guard → memory → validate
    |          |         |          |         |          |          |         |        |
-   тЦ╝          тЦ╝         тЦ╝          тЦ╝         тЦ╝          тЦ╝          тЦ╝         тЦ╝        тЦ╝
+   ▼          ▼         ▼          ▼         ▼          ▼          ▼         ▼        ▼
  DISCOVERY  PLANNING  EXECUTING  REVIEWING  NEEDS_GATE  SENTINEL  GUARD     MEMORY   VALIDATED
                                               CHECK      CHECK     CHECK
 ```
@@ -28,20 +28,20 @@ Each phase has a dedicated role and a set of checks:
 
 | Phase | Role | Key action | Gate |
 |-------|------|-----------|------|
-| DISCOVERY | discoverer | gather context | тАФ |
-| PLANNING | planner | produce backlog | тАФ |
+| DISCOVERY | discoverer | gather context | — |
+| PLANNING | planner | produce backlog | — |
 | EXECUTING | executor | implement within scope | `check-scope` |
-| REVIEWING | change-reviewer | verify against criteria | тАФ |
+| REVIEWING | change-reviewer | verify against criteria | — |
 | NEEDS_GATE | gatekeeper | run gate-policy | `run-gates` |
 | SENTINEL CHECK | sentinel | 9 safety inspections | `run-sentinel` |
 | GUARD CHECK | guard | protected-path integrity | `check-guard-integrity` |
 | MEMORY CHECK | memory-doctor | lessons/evidence integrity | `memory-doctor` |
-| VALIDATED | тАФ | full state validation | `validate-state` |
+| VALIDATED | — | full state validation | `validate-state` |
 
 After gates pass, the loop returns to `next-action` which routes to either:
-- `RUN_EXECUTOR` тАФ next READY task exists;
-- `CONTINUE` тАФ backlog consumed, safe checkpoint;
-- `HUMAN_DECISION_REQUIRED` тАФ classified blocker with evidence and questions.
+- `RUN_EXECUTOR` — next READY task exists;
+- `CONTINUE` — backlog consumed, safe checkpoint;
+- `HUMAN_DECISION_REQUIRED` — classified blocker with evidence and questions.
 
 ## Core Principles
 
@@ -87,11 +87,11 @@ Persistent cross-task memory lives in `.teamloop/memory/`. It survives between t
 
 ```
 .teamloop/memory/
-  lessons.jsonl           тАФ curated lessons learned (ACTIVE, SUPERSEDED, DEPRECATED)
-  antipatterns.jsonl      тАФ anti-patterns to avoid (ACTIVE, REJECTED)
-  decisions.jsonl         тАФ product and technical decisions (ACTIVE, SUPERSEDED)
-  evidence-map.jsonl      тАФ evidence records linked to lessons/antipatterns
-  project-profile.json    тАФ project-specific memory configuration
+  lessons.jsonl           — curated lessons learned (ACTIVE, SUPERSEDED, DEPRECATED)
+  antipatterns.jsonl      — anti-patterns to avoid (ACTIVE, REJECTED)
+  decisions.jsonl         — product and technical decisions (ACTIVE, SUPERSEDED)
+  evidence-map.jsonl      — evidence records linked to lessons/antipatterns
+  project-profile.json    — project-specific memory configuration
 ```
 
 ### Lessons
@@ -99,9 +99,9 @@ Persistent cross-task memory lives in `.teamloop/memory/`. It survives between t
 Each lesson has a `lessonId`, `title`, `description`, and `status`. Active lessons require at least one `evidenceId` pointing to a record in `evidence-map.jsonl`.
 
 Valid statuses:
-- **ACTIVE** тАФ currently applicable; requires verified evidence.
-- **SUPERSEDED** тАФ replaced by a newer lesson; `supersededBy` must reference an existing lesson.
-- **DEPRECATED** тАФ retired; no evidence required.
+- **ACTIVE** — currently applicable; requires verified evidence.
+- **SUPERSEDED** — replaced by a newer lesson; `supersededBy` must reference an existing lesson.
+- **DEPRECATED** — retired; no evidence required.
 
 ### Evidence Map
 
@@ -133,7 +133,7 @@ Output is JSON with a `status` field (`PASS`, `FAIL`, `WARNING`) and an array of
 
 ## Sentinel / Integrity Inspection
 
-The sentinel is a read-only safety inspector that runs 9 independent checks across the workspace. It never modifies state тАФ it produces a report in `.teamloop/runs/run-{id}/sentinel-inspection.json`.
+The sentinel is a read-only safety inspector that runs 9 independent checks across the workspace. It never modifies state — it produces a report in `.teamloop/runs/run-{id}/sentinel-inspection.json`.
 
 ### Invocation
 
@@ -159,9 +159,9 @@ python scripts/teamloop-core.py run-sentinel --workspace .teamloop
 
 ### Severity Levels
 
-- **CRITICAL** тАФ overall status becomes `FAIL`; `validate-state` rejects the workspace.
-- **WARNING** тАФ overall status becomes `WARNING`; workspace remains valid but flagged.
-- **INFO** тАФ informational finding; does not affect overall status.
+- **CRITICAL** — overall status becomes `FAIL`; `validate-state` rejects the workspace.
+- **WARNING** — overall status becomes `WARNING`; workspace remains valid but flagged.
+- **INFO** — informational finding; does not affect overall status.
 
 ### Sentinel Report
 
@@ -191,8 +191,8 @@ Place the policy at `.teamloop/policies/protected-paths.json`.
 
 ### Enforcement Levels
 
-- **error** тАФ violations cause `check-guard-integrity` to exit 1 with `status: FAIL`.
-- **warn** тАФ violations are reported but command exits 0 (status still `FAIL` internally).
+- **error** — violations cause `check-guard-integrity` to exit 1 with `status: FAIL`.
+- **warn** — violations are reported but command exits 0 (status still `FAIL` internally).
 
 ### Invocation
 
@@ -204,56 +204,73 @@ python scripts/teamloop-core.py check-guard-integrity --workspace .teamloop
 
 ### Checks Performed
 
-1. **protected-path-violations** тАФ staged changes to protected paths.
-2. **test-file-deleted** тАФ staged deletion of files in `tests/`.
-3. **schema-integrity** тАФ all schema files in `schemas/` parse as valid JSON.
-4. **policy-schema-match** тАФ protected-paths.json validates against its schema.
+1. **protected-path-violations** — staged changes to protected paths.
+2. **test-file-deleted** — staged deletion of files in `tests/`.
+3. **schema-integrity** — all schema files in `schemas/` parse as valid JSON.
+4. **policy-schema-match** — protected-paths.json validates against its schema.
 
 Without a policy file, the command returns `PASS` with a note that no policy exists.
 
-## Final Gate Chain
+## Final Gate
 
-Before any handoff, completion claim, or campaign transition, the full gate chain must pass. This is the 4-command equivalent of a comprehensive pre-handoff check:
+The final gate is an actual runtime aggregator, not a documentation-only command list.
 
 ```bash
 bash scripts/run-sentinel.sh --workspace .teamloop
 bash scripts/check-guard-integrity.sh --workspace .teamloop
-python scripts/teamloop-core.py memory-doctor --workspace .teamloop
-bash scripts/validate-state.sh --workspace .teamloop
+bash scripts/memory-doctor.sh --workspace .teamloop
+bash scripts/final-gate.sh --workspace .teamloop
 ```
 
-| Command | Validates | Failure means |
-|---------|-----------|---------------|
-| `run-sentinel` | 9 safety inspections across state, scope, gates, tests, memory | Workspace has CRITICAL or WARNING findings |
-| `check-guard-integrity` | Protected paths, test deletion, schema integrity | Unauthorized changes to critical files |
-| `memory-doctor` | Lessons, evidence, antipatterns, decisions | Memory subsystem has issues |
-| `validate-state` | All runtime state files | State is invalid or inconsistent |
+It writes `.teamloop/state/final-gate-result.json` and a per-run copy. Checks include state, memory, continuation, scope, project gates, active task/run consistency, blockers, stale artifacts, sentinel, guard integrity, reviewed-content integrity, immutable execution-contract integrity, and unresolved no-progress. Optimized runs cannot pass without a final sentinel report.
 
-All four must exit 0 (PASS) before declaring `SAFE_CHECKPOINT` or `DONE`.
+## Fast Execution Runtime
+
+Before one bounded role action, the supervisor runs `next-action` and `prepare-execution`. The runtime resolves `fast`, `standard`, or `audit`, then freezes:
+
+```text
+.teamloop/runs/<run-id>/execution-policy.json
+.teamloop/runs/<run-id>/execution-manifest.json
+.teamloop/runs/<run-id>/execution-contract-validation.json
+```
+
+The contract is content-addressed and excludes timestamps/performance from semantic fingerprints. Identical materialization is idempotent; changed task, scope, profile, gate/policy inputs, or manual mutation fail and require a fresh run/task revision.
+
+Role decisions are runtime-owned and appended to `role-routing-history.jsonl`. Progress is recorded in `progress-history.jsonl`; `no-progress-result.json` blocks blind repeats. Two identical semantic snapshots normally produce `NO_PROGRESS_DETECTED → RUN_WATCHDOG`. After watchdog diagnosis, `RETRY_EXECUTOR` preserves the task/run identity but requires a materially different strategy. Suppression-only removal of TODO/warning/finding signals without changed executable evidence does not count as progress.
+
+For `audit`, reviewer completion routes to watchdog and watchdog completion routes to project gates; the mandatory final sentinel still runs immediately before `final-gate`. Stale gate, sentinel, or reviewed-content artifacts from another run cannot satisfy the current immutable execution contract.
+
+Performance tracing is best-effort in `performance-trace.json`; failures in tracing never corrupt semantic state. See [docs/FAST_EXECUTION.md](docs/FAST_EXECUTION.md) for profile tables, trigger rules, recovery, and examples.
 
 ## Workspace
 
 Default workspace: `.teamloop/`
 
 Key files:
-- `.teamloop/state/team-state.json` тАФ current team state
-- `.teamloop/state/events.jsonl` тАФ append-only event ledger
-- `.teamloop/state/backlog.jsonl` тАФ task backlog
-- `.teamloop/state/current-task.json` тАФ currently active task
-- `.teamloop/state/continuation-decision.json` тАФ last continuation decision
-- `.teamloop/state/run-ledger.jsonl` тАФ run history
-- `.teamloop/policies/scope-policy.json` тАФ scope guard rules
-- `.teamloop/policies/gate-policy.json` тАФ gate execution rules
-- `.teamloop/policies/protected-paths.json` тАФ guard integrity protected paths
-- `.teamloop/profiles/active-profile.json` тАФ active domain profile
-- `.teamloop/memory/lessons.jsonl` тАФ memory lessons
-- `.teamloop/memory/evidence-map.jsonl` тАФ evidence records
-- `.teamloop/memory/antipatterns.jsonl` тАФ anti-patterns
-- `.teamloop/memory/decisions.jsonl` тАФ decisions
-- `.teamloop/memory/project-profile.json` тАФ memory configuration
-- `.teamloop/runs/run-{id}/gate-result.json` тАФ gate execution result
-- `.teamloop/runs/run-{id}/sentinel-inspection.json` тАФ sentinel report
-- `.teamloop/research/` тАФ research reports
+- `.teamloop/state/team-state.json` — current team state
+- `.teamloop/state/events.jsonl` — append-only event ledger
+- `.teamloop/state/backlog.jsonl` — task backlog
+- `.teamloop/state/current-task.json` — currently active task
+- `.teamloop/state/continuation-decision.json` — last continuation decision
+- `.teamloop/state/run-ledger.jsonl` — run history
+- `.teamloop/policies/scope-policy.json` — scope guard rules
+- `.teamloop/policies/gate-policy.json` — gate execution rules
+- `.teamloop/policies/protected-paths.json` — guard integrity protected paths
+- `.teamloop/profiles/active-profile.json` — active domain profile
+- `.teamloop/memory/lessons.jsonl` — memory lessons
+- `.teamloop/memory/evidence-map.jsonl` — evidence records
+- `.teamloop/memory/antipatterns.jsonl` — anti-patterns
+- `.teamloop/memory/decisions.jsonl` — decisions
+- `.teamloop/memory/project-profile.json` — memory configuration
+- `.teamloop/runs/run-{id}/gate-result.json` — gate execution result
+- `.teamloop/runs/run-{id}/sentinel-inspection.json` — sentinel report
+- `.teamloop/runs/run-{id}/execution-policy.json` — resolved role-routing policy
+- `.teamloop/runs/run-{id}/execution-manifest.json` — immutable bounded execution contract
+- `.teamloop/runs/run-{id}/role-routing-history.jsonl` — runtime-owned role decisions
+- `.teamloop/runs/run-{id}/progress-history.jsonl` — semantic progress snapshots
+- `.teamloop/runs/run-{id}/no-progress-result.json` — no-progress decision
+- `.teamloop/runs/run-{id}/performance-trace.json` — performance instrumentation
+- `.teamloop/research/` — research reports
 
 ## Completion Semantics
 
@@ -302,6 +319,15 @@ RESEARCH_COMPLETE is not DONE.
 | `check-guard-integrity` | Check for unauthorized changes to protected files |
 | `memory-doctor` | Diagnose memory subsystem issues |
 | `write-continuation-decision` | Write a continuation decision to state |
+| `prepare-execution` | Resolve policy, materialize and validate immutable run contract |
+| `resolve-execution-policy` | Persist deterministic execution profile |
+| `materialize-execution-manifest` | Freeze bounded task/scope/gate/evidence inputs |
+| `validate-execution-contract` | Detect mutation and stale/drifted inputs |
+| `record-progress` | Detect semantic progress or no-progress |
+| `route-role` | Persist event-triggered role decision |
+| `record-performance` | Append best-effort trace phase |
+| `performance-report` | Summarize trace and deterministic routing comparison |
+| `final-gate` | Aggregate all blocking handoff checks |
 
 ## Profiles
 

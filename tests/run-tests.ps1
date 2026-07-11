@@ -60,18 +60,25 @@ function Init-TestWorkspace {
 function Invoke-PythonScript {
     param([string]$Command, [string[]]$ExtraArgs = @())
     $fullArgs = @($Command) + $ExtraArgs + @("--workspace", $script:workspaceAbs)
-    Set-Location $script:testRepoDir
-    $output = & python "$scriptDir/teamloop-core.py" @fullArgs 2>$null
-    return $output
+    Push-Location $script:testRepoDir
+    try {
+        return & python "$scriptDir/teamloop-core.py" @fullArgs 2>$null
+    } finally {
+        Pop-Location
+    }
 }
 
 function Invoke-PythonScriptWithExit {
     param([string]$Command, [string[]]$ExtraArgs = @())
     $fullArgs = @($Command) + $ExtraArgs + @("--workspace", $script:workspaceAbs)
-    Set-Location $script:testRepoDir
-    $output = & python "$scriptDir/teamloop-core.py" @fullArgs 2>$null
-    $exitCode = $LASTEXITCODE
-    return @{ output = $output; exitCode = $exitCode }
+    Push-Location $script:testRepoDir
+    try {
+        $output = & python "$scriptDir/teamloop-core.py" @fullArgs 2>$null
+        $exitCode = $LASTEXITCODE
+        return @{ output = $output; exitCode = $exitCode }
+    } finally {
+        Pop-Location
+    }
 }
 
 function Assert-True {
@@ -673,11 +680,12 @@ Test-Run "GuardIntegrity: CommandExists" {
 
 Test-Run "GuardIntegrity: MissingPolicyPasses" {
     Init-TestWorkspace
+    Remove-Item (Join-Path $script:workspaceAbs "policies\protected-paths.json") -Force -ErrorAction SilentlyContinue
     $result = Invoke-PythonScriptWithExit "check-guard-integrity"
     if (-not (Assert-Equal $result.exitCode 0 ("check-guard-integrity without policy should exit 0, got: " + $result.exitCode))) { return $false }
     $output = $result.output -join "`n"
-    if ($output -notmatch '"status".*PASS|"status": "PASS"') {
-        Write-Host "  FAIL: check-guard-integrity should return PASS status without policy, got: $output" -ForegroundColor Red
+    if ($output -notmatch '"status"\s*:\s*"NOT_CONFIGURED"') {
+        Write-Host "  FAIL: check-guard-integrity should report NOT_CONFIGURED without policy, got: $output" -ForegroundColor Red
         return $false
     }
     Cleanup-Workspace
@@ -1098,6 +1106,7 @@ Test-Run "Campaign: ReviewEvidence_ValidContent" {
 
 Test-Run "Campaign: GuardNotConfigured" {
     Init-TestWorkspace
+    Remove-Item (Join-Path $script:workspaceAbs "policies\protected-paths.json") -Force -ErrorAction SilentlyContinue
     # No protected-paths.json — should report NOT_CONFIGURED
     $result = Invoke-PythonScriptWithExit "check-guard-integrity"
     $output = $result.output -join "`n"
@@ -1135,6 +1144,10 @@ Test-Run "Campaign: MojibakeDetection" {
         Write-Host "  FAIL: TEAMLOOP.md should contain the ≠ (U+2260) symbol" -ForegroundColor Red
         return $false
     }
+    if ($content -match 'тЙа|тАФ|тЖТ|тЦ╝') {
+        Write-Host "  FAIL: TEAMLOOP.md contains known encoding corruption" -ForegroundColor Red
+        return $false
+    }
     Cleanup-Workspace
     return $true
 }
@@ -1168,6 +1181,356 @@ Test-Run "Campaign: FinalGate_PSWrapperExists" {
         return $false
     }
     Cleanup-Workspace
+    return $true
+}
+
+
+# ============================================================
+# FAST EXECUTION CONTRACT TESTS
+# ============================================================
+$script:fastRunId = ""
+
+function Start-FastExecutionTask {
+    param(
+        [string]$TaskId,
+        [string]$Priority = "P2",
+        [string]$Scope = "src/**",
+        [string]$Allowed = "src/**"
+    )
+    $task = @{
+        schemaVersion = 1
+        taskId = $TaskId
+        title = "Fast execution PowerShell test"
+        status = "READY"
+        priority = $Priority
+        origin = "fast-execution-powershell-tests"
+        scope = @($Scope)
+        allowedWrites = @($Allowed, ".teamloop/**")
+        requiredEvidence = @("test evidence")
+        successCriteria = @("scenario passes")
+        forbiddenActions = @("do not weaken gates")
+        humanRequired = $false
+        blockers = @()
+    } | ConvertTo-Json -Compress -Depth 8
+    Append-JsonLine -Path (Join-Path $script:workspaceAbs "state\backlog.jsonl") -Line $task
+    $output = Invoke-PythonScript -Command "apply-transition" -ExtraArgs @("--action", "RUN_EXECUTOR", "--task-id", $TaskId)
+    $data = ($output -join "`n") | ConvertFrom-Json
+    $script:fastRunId = $data.runId
+    return -not [string]::IsNullOrWhiteSpace($script:fastRunId)
+}
+
+Test-Run "FastExecution PS: LowRiskResolvesFast" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-fast" -Priority "P2")) { return $false }
+    $output = Invoke-PythonScript -Command "prepare-execution"
+    $data = ($output -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $data.profile "fast" "low-risk task should resolve fast")) { return $false }
+    $policy = Get-Content (Join-Path $script:workspaceAbs "runs\$script:fastRunId\execution-policy.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not (Assert-Equal $policy.requiredRoles.Count 1 "fast should require one executor-like role")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: StandardRequiresReviewer" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-standard" -Priority "P1")) { return $false }
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    $output = Invoke-PythonScript -Command "route-role" -ExtraArgs @("--event", "implementation-complete")
+    $data = ($output -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $data.nextAction "RUN_CHANGE_REVIEWER" "standard should route reviewer")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: AuditRequiresAllRoles" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-audit" -Priority "P0")) { return $false }
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    $policy = Get-Content (Join-Path $script:workspaceAbs "runs\$script:fastRunId\execution-policy.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not (Assert-Equal $policy.selectedProfile "audit" "P0 should resolve audit")) { return $false }
+    foreach ($role in @("executor", "change-reviewer", "watchdog", "sentinel")) {
+        if ($policy.requiredRoles -notcontains $role) {
+            Write-Host "  FAIL: audit profile missing required role $role" -ForegroundColor Red
+            return $false
+        }
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: ProtectedScopeEscalatesAudit" {
+    Init-TestWorkspace
+    Copy-Item (Join-Path $projectRoot "templates\workspace\policies\protected-paths.json") (Join-Path $script:workspaceAbs "policies\protected-paths.json") -Force
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-protected" -Priority "P2" -Scope "scripts/**" -Allowed "scripts/**")) { return $false }
+    $output = Invoke-PythonScript -Command "prepare-execution" -ExtraArgs @("--profile", "fast")
+    $data = ($output -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $data.profile "audit" "protected fast request must escalate")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: ManifestIdempotent" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-idempotent")) { return $false }
+    $first = ((Invoke-PythonScript -Command "prepare-execution") -join "`n") | ConvertFrom-Json
+    $second = ((Invoke-PythonScript -Command "prepare-execution") -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $second.policyReused $true "second policy materialization should be reused")) { return $false }
+    if (-not (Assert-Equal $first.manifestFingerprint $second.manifestFingerprint "manifest fingerprint should remain stable")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: ManualManifestMutationFails" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-mutation")) { return $false }
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    $manifestPath = Join-Path $script:workspaceAbs "runs\$script:fastRunId\execution-manifest.json"
+    $manifest = Get-Content $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $manifest.executionProfile = "audit"
+    Write-JsonFile -Path $manifestPath -Content ($manifest | ConvertTo-Json -Depth 12)
+    $result = Invoke-PythonScriptWithExit -Command "validate-execution-contract"
+    if (-not (Assert-True ($result.exitCode -ne 0) "manual manifest mutation must fail")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: IdenticalSnapshotsDetectNoProgress" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-no-progress")) { return $false }
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    Invoke-PythonScript -Command "record-progress" | Out-Null
+    $output = Invoke-PythonScript -Command "record-progress"
+    $data = ($output -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $data.result.status "NO_PROGRESS_DETECTED" "identical snapshots should trigger no-progress")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: MaterialChangeResetsStreak" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-material")) { return $false }
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    Invoke-PythonScript -Command "record-progress" | Out-Null
+    $src = Join-Path $script:testRepoDir "src"
+    New-Item -ItemType Directory -Path $src -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $src "change.txt"), "material`n", [System.Text.UTF8Encoding]::new($false))
+    $data = ((Invoke-PythonScript -Command "record-progress") -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $data.result.status "PROGRESS_OBSERVED" "material scoped diff should reset streak")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: SuppressionOnlyIsNotProgress" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-suppression")) { return $false }
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    $src = Join-Path $script:testRepoDir "src"
+    New-Item -ItemType Directory -Path $src -Force | Out-Null
+    $file = Join-Path $src "work.py"
+    [System.IO.File]::WriteAllText($file, "# TODO: restore behavior`n", [System.Text.UTF8Encoding]::new($false))
+    Invoke-PythonScript -Command "record-progress" | Out-Null
+    [System.IO.File]::WriteAllText($file, "", [System.Text.UTF8Encoding]::new($false))
+    $data = ((Invoke-PythonScript -Command "record-progress") -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $data.result.progressClassification "SUPPRESSION_ONLY_NOT_PROGRESS" "TODO deletion alone must not count as progress")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: WatchdogRecoveryDoesNotLoop" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-watchdog")) { return $false }
+    $originalRun = $script:fastRunId
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    Invoke-PythonScript -Command "record-progress" | Out-Null
+    Invoke-PythonScript -Command "record-progress" | Out-Null
+    $route = ((Invoke-PythonScript -Command "route-role" -ExtraArgs @("--event", "watchdog-complete")) -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $route.nextAction "RETRY_EXECUTOR" "watchdog completion should require changed retry")) { return $false }
+    $retry = ((Invoke-PythonScript -Command "apply-transition" -ExtraArgs @("--action", "RETRY_EXECUTOR")) -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $retry.runId $originalRun "retry should preserve run identity")) { return $false }
+    $next = ((Invoke-PythonScript -Command "next-action") -join "`n") | ConvertFrom-Json
+    if (-not (Assert-True ($next.nextAction -ne "RUN_WATCHDOG") "watchdog must not route to itself after strategy acknowledgement")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: FakeClockTrace" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-clock")) { return $false }
+    $oldClock = $env:TEAMLOOP_FAKE_CLOCK_MS
+    try {
+        $env:TEAMLOOP_FAKE_CLOCK_MS = '[100,125]'
+        Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    } finally {
+        $env:TEAMLOOP_FAKE_CLOCK_MS = $oldClock
+    }
+    $trace = Get-Content (Join-Path $script:workspaceAbs "runs\$script:fastRunId\performance-trace.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+    $phase = $trace.phases | Where-Object { $_.phase -eq "execution-contract-creation-validation" } | Select-Object -Last 1
+    if (-not (Assert-Equal $phase.durationMs 25 "fake clock should produce deterministic 25ms duration")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: SchemasWrappersAndPrompt" {
+    foreach ($name in @("execution-policy", "execution-manifest", "execution-manifest-validation", "performance-trace", "progress-snapshot", "no-progress-result", "role-routing-decision")) {
+        if (-not (Test-Path (Join-Path $projectRoot "schemas\$name.schema.json"))) {
+            Write-Host "  FAIL: missing schema $name" -ForegroundColor Red
+            return $false
+        }
+    }
+    foreach ($name in @("prepare-execution", "resolve-execution-policy", "materialize-execution-manifest", "validate-execution-contract", "record-progress", "route-role", "record-performance", "performance-report")) {
+        if (-not (Test-Path (Join-Path $scriptDir "$name.ps1"))) {
+            Write-Host "  FAIL: missing PowerShell wrapper $name.ps1" -ForegroundColor Red
+            return $false
+        }
+    }
+    $prompt = Get-Content (Join-Path $projectRoot ".opencode\commands\supervised-task.md") -Raw -Encoding UTF8
+    if ($prompt -notmatch 'prepare-execution' -or $prompt -notmatch 'record-progress' -or $prompt -notmatch 'final-gate\.sh') {
+        Write-Host "  FAIL: supervised-task prompt is not runtime-bound" -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+
+Test-Run "FastExecution PS: OptimizedFinalGateRequiresSentinel" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-final")) { return $false }
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    $result = Invoke-PythonScriptWithExit -Command "final-gate"
+    $output = $result.output -join "`n"
+    if (-not (Assert-True ($result.exitCode -ne 0) "optimized final gate must require final sentinel")) { return $false }
+    if ($output -notmatch 'requires a final sentinel inspection') {
+        Write-Host "  FAIL: mandatory sentinel failure missing: $output" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+
+Test-Run "FastExecution PS: OptimizedFinalGatePass" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-optimized-pass")) { return $false }
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    $src = Join-Path $script:testRepoDir "src"
+    New-Item -ItemType Directory -Path $src -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $src "ok.txt"), "ok`n", [System.Text.UTF8Encoding]::new($false))
+    Invoke-PythonScript -Command "record-progress" | Out-Null
+    Invoke-PythonScript -Command "apply-transition" -ExtraArgs @("--action", "RUN_GATEKEEPER") | Out-Null
+    Invoke-PythonScript -Command "run-gates" | Out-Null
+    Invoke-PythonScript -Command "run-sentinel" | Out-Null
+    $result = Invoke-PythonScriptWithExit -Command "final-gate"
+    if (-not (Assert-Equal $result.exitCode 0 "optimized final gate should pass after same-run sentinel and gates")) { return $false }
+    $data = ($result.output -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $data.overallStatus "PASS" "optimized final gate result")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: StaleSentinelCannotSatisfyCurrentRun" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-old-sentinel")) { return $false }
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    Invoke-PythonScript -Command "run-sentinel" | Out-Null
+    $task = @{
+        schemaVersion = 1; taskId = "task-ps-current-no-sentinel"; title = "Current run"
+        status = "READY"; priority = "P2"; origin = "fast-execution-powershell-tests"
+        scope = @("src/**"); allowedWrites = @("src/**", ".teamloop/**")
+        requiredEvidence = @("test"); successCriteria = @("test")
+        forbiddenActions = @(); humanRequired = $false; blockers = @()
+    } | ConvertTo-Json -Compress -Depth 8
+    Append-JsonLine -Path (Join-Path $script:workspaceAbs "state\backlog.jsonl") -Line $task
+    $newRun = ((Invoke-PythonScript -Command "apply-transition" -ExtraArgs @("--action", "RUN_EXECUTOR", "--task-id", "task-ps-current-no-sentinel")) -join "`n") | ConvertFrom-Json
+    $script:fastRunId = $newRun.runId
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    $result = Invoke-PythonScriptWithExit -Command "final-gate"
+    $output = $result.output -join "`n"
+    if (-not (Assert-True ($result.exitCode -ne 0) "stale sentinel from another run must not satisfy final gate")) { return $false }
+    if ($output -notmatch [regex]::Escape("runs/$script:fastRunId/sentinel-inspection.json is missing")) {
+        Write-Host "  FAIL: final gate did not require same-run sentinel: $output" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: MaterialImplementationAfterTodoCountsProgress" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-material-after-todo")) { return $false }
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    $src = Join-Path $script:testRepoDir "src"
+    New-Item -ItemType Directory -Path $src -Force | Out-Null
+    $file = Join-Path $src "work.py"
+    [System.IO.File]::WriteAllText($file, "# TODO: restore behavior`n", [System.Text.UTF8Encoding]::new($false))
+    Invoke-PythonScript -Command "record-progress" | Out-Null
+    [System.IO.File]::WriteAllText($file, "value = 1`n", [System.Text.UTF8Encoding]::new($false))
+    $data = ((Invoke-PythonScript -Command "record-progress") -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $data.result.status "PROGRESS_OBSERVED" "material implementation should count as progress")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "FastExecution PS: AuditWatchdogRoutesProjectGates" {
+    Init-TestWorkspace
+    if (-not (Start-FastExecutionTask -TaskId "task-ps-audit-route" -Priority "P0")) { return $false }
+    Invoke-PythonScript -Command "prepare-execution" | Out-Null
+    $review = ((Invoke-PythonScript -Command "route-role" -ExtraArgs @("--event", "review-complete")) -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $review.nextAction "RUN_WATCHDOG" "audit review should route watchdog")) { return $false }
+    $watchdog = ((Invoke-PythonScript -Command "route-role" -ExtraArgs @("--event", "watchdog-complete")) -join "`n") | ConvertFrom-Json
+    if (-not (Assert-Equal $watchdog.nextAction "RUN_GATEKEEPER" "audit watchdog must route project gates before final sentinel")) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Guard PS: UnstagedProtectedPathParsing" {
+    Init-TestWorkspace
+    $scriptsDir = Join-Path $script:testRepoDir "scripts"
+    New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null
+    $scriptFile = Join-Path $scriptsDir "demo.sh"
+    [System.IO.File]::WriteAllText($scriptFile, "#!/usr/bin/env bash`necho ok`n", [System.Text.UTF8Encoding]::new($false))
+    git -C $script:testRepoDir add scripts/demo.sh | Out-Null
+    git -C $script:testRepoDir commit -m "add protected script" --no-verify | Out-Null
+    Add-Content -Path $scriptFile -Value "# changed" -Encoding UTF8
+    $policyPath = Join-Path $script:workspaceAbs "policies\protected-paths.json"
+    $policy = Get-Content $policyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $policy.enforcementLevel = "error"
+    Write-JsonFile -Path $policyPath -Content ($policy | ConvertTo-Json -Depth 12)
+    $result = Invoke-PythonScriptWithExit -Command "check-guard-integrity"
+    $output = $result.output -join "`n"
+    if (-not (Assert-True ($result.exitCode -ne 0) "unstaged protected modification must fail guard")) { return $false }
+    if ($output -notmatch 'scripts/demo\.sh') {
+        Write-Host "  FAIL: guard corrupted unstaged path parsing: $output" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "OpenCode PS: ReviewerRoutingIsRuntimeBound" {
+    $reviewer = Join-Path $projectRoot ".opencode\agents\change-reviewer.md"
+    $content = Get-Content $reviewer -Raw -Encoding UTF8
+    if ($content -notmatch 'route-role\.sh.*review-complete') {
+        Write-Host "  FAIL: reviewer prompt must use runtime routing" -ForegroundColor Red
+        return $false
+    }
+    if ($content -match 'On APPROVED: use .*RUN_GATEKEEPER') {
+        Write-Host "  FAIL: reviewer prompt still bypasses audit watchdog" -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+
+
+Test-Run "OpenCode PS: FastExecutionAgentCopiesSynchronized" {
+    foreach ($name in @("executor", "change-reviewer", "gatekeeper", "watchdog", "sentinel")) {
+        $runtime = Join-Path $projectRoot ".opencode\agents\$name.md"
+        $adapter = Join-Path $projectRoot "adapters\opencode\agents\$name.md"
+        $runtimeBytes = [System.IO.File]::ReadAllBytes($runtime)
+        $adapterBytes = [System.IO.File]::ReadAllBytes($adapter)
+        if ($runtimeBytes.Length -ne $adapterBytes.Length -or (Compare-Object $runtimeBytes $adapterBytes)) {
+            Write-Host "  FAIL: OpenCode agent copy drifted: $name" -ForegroundColor Red
+            return $false
+        }
+    }
     return $true
 }
 

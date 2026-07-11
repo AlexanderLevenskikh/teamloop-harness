@@ -9,14 +9,21 @@ CORE="$PROJECT_ROOT/scripts/teamloop-core.py"
 TOTAL=0
 PASSED=0
 FAILED=0
+DISCOVERED=0
+TEST_FROM="${TEAMLOOP_TEST_FROM:-1}"
+TEST_TO="${TEAMLOOP_TEST_TO:-999999}"
 
 test_run() {
     local name="$1"
     shift
     local func_name="$1"
+    DISCOVERED=$((DISCOVERED + 1))
+    if (( DISCOVERED < TEST_FROM || DISCOVERED > TEST_TO )); then
+        return 0
+    fi
     TOTAL=$((TOTAL + 1))
     echo ""
-    echo "[$TOTAL] $name"
+    echo "[$DISCOVERED] $name"
 
     local tmpfile
     tmpfile=$(mktemp)
@@ -99,7 +106,11 @@ run_core() {
     local cmd="$1"
     shift
     if [[ -n "$TEST_REPO_DIR" ]]; then
-        cd "$TEST_REPO_DIR"
+        (
+            cd "$TEST_REPO_DIR"
+            "$PY" "$CORE" "$cmd" --workspace "$WORKSPACE_ABS" "$@"
+        )
+        return $?
     fi
     "$PY" "$CORE" "$cmd" --workspace "$WORKSPACE_ABS" "$@"
 }
@@ -1498,18 +1509,7 @@ test_102() {
     init_test_workspace
     run_core apply-transition --action SET_SAFE_CHECKPOINT >/dev/null 2>&1
     local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
-    local schema_file="$PROJECT_ROOT/schemas/continuation-decision.schema.json"
-    "$PY" -c "
-import json, sys
-from jsonschema import validate, ValidationError
-decision = json.load(open(sys.argv[1]))
-schema = json.load(open(sys.argv[2]))
-try:
-    validate(instance=decision, schema=schema)
-except ValidationError as e:
-    print(f'Schema validation failed: {e.message}', file=sys.stderr)
-    sys.exit(1)
-" "$decision_file" "$schema_file" 2>/dev/null || { echo "Auto-written continuation-decision.json does not match schema"; return 1; }
+    "$PY" "$CORE" validate-artifact --schema continuation-decision --json-file "$decision_file" >/dev/null 2>&1 || { echo "Auto-written continuation-decision.json does not match schema"; return 1; }
     cleanup_workspace
     return 0
 }
@@ -1556,8 +1556,9 @@ test_105() {
 }
 
 test_106() {
-    # GuardIntegrity: MissingPolicyPasses — without protected-paths.json, command returns PASS
+    # GuardIntegrity: MissingPolicyPasses — without protected-paths.json, command returns non-blocking status
     init_test_workspace
+    rm -f "$WORKSPACE_ABS/policies/protected-paths.json"
     set +e
     local gout grc
     gout=$(run_core check-guard-integrity 2>&1)
@@ -1740,19 +1741,8 @@ test_114() {
 test_115() {
     # GuardIntegrity: DefaultPolicyMatchesSchema — default policy validates against schema
     local policy_file="$PROJECT_ROOT/templates/workspace/policies/protected-paths.json"
-    local schema_file="$PROJECT_ROOT/schemas/protected-path-policy.schema.json"
     [[ -f "$policy_file" ]] || { echo "Default protected-paths.json missing"; return 1; }
-    "$PY" -c "
-import json, sys
-from jsonschema import validate, ValidationError
-policy = json.load(open(sys.argv[1]))
-schema = json.load(open(sys.argv[2]))
-try:
-    validate(instance=policy, schema=schema)
-except ValidationError as e:
-    print(f'Schema validation failed: {e.message}', file=sys.stderr)
-    sys.exit(1)
-" "$policy_file" "$schema_file" 2>/dev/null || { echo "Default policy does not match schema"; return 1; }
+    "$PY" "$CORE" validate-artifact --schema protected-path-policy --json-file "$policy_file" >/dev/null 2>&1 || { echo "Default policy does not match schema"; return 1; }
     return 0
 }
 
@@ -2278,18 +2268,7 @@ test_81() {
     init_test_workspace
     run_core write-continuation-decision --decision CONTINUE --phase EXECUTING_TASK >/dev/null 2>&1
     local decision_file="$WORKSPACE_ABS/state/continuation-decision.json"
-    local schema_file="$PROJECT_ROOT/schemas/continuation-decision.schema.json"
-    "$PY" -c "
-import json, sys
-from jsonschema import validate, ValidationError
-decision = json.load(open(sys.argv[1]))
-schema = json.load(open(sys.argv[2]))
-try:
-    validate(instance=decision, schema=schema)
-except ValidationError as e:
-    print(f'Schema validation failed: {e.message}', file=sys.stderr)
-    sys.exit(1)
-" "$decision_file" "$schema_file" 2>/dev/null || { echo "continuation-decision.json does not match schema"; return 1; }
+    "$PY" "$CORE" validate-artifact --schema continuation-decision --json-file "$decision_file" >/dev/null 2>&1 || { echo "continuation-decision.json does not match schema"; return 1; }
     cleanup_workspace
     return 0
 }
@@ -2825,6 +2804,7 @@ test_144() {
 # Test 145: GuardNotConfigured
 test_145() {
     init_test_workspace
+    rm -f "$WORKSPACE_ABS/policies/protected-paths.json"
     # No protected-paths.json — guard should report NOT_CONFIGURED, not PASS
     set +e
     local out rc
@@ -2863,8 +2843,12 @@ test_147() {
     # Check for the literal mojibake text
     local content
     content=$(cat "$teamloop_file")
-    # Check that the correct symbol exists
+    # Check that the correct symbols exist and known CP866 mojibake tokens do not.
     echo "$content" | grep -q '≠' || { echo "TEAMLOOP.md should contain the ≠ symbol"; return 1; }
+    if grep -Eq 'тЙа|тАФ|тЖТ|тЦ╝' "$teamloop_file"; then
+        echo "TEAMLOOP.md contains known encoding corruption"
+        return 1
+    fi
     cleanup_workspace
     return 0
 }
@@ -2915,6 +2899,585 @@ test_run "Campaign: MojibakeDetection" test_147
 test_run "Campaign: CrossTaskCleanup_Preserved" test_148
 test_run "Campaign: FinalGate_BashWrapperExists" test_149
 test_run "Campaign: FinalGate_PSWrapperExists" test_150
+
+# ============================================================
+# FAST EXECUTION CONTRACT TESTS 151-170
+# ============================================================
+
+FAST_RUN_ID=""
+
+start_fast_execution_task() {
+    local task_id="$1" priority="$2" scope_pattern="$3" allowed_pattern="$4"
+    "$PY" - "$WORKSPACE_ABS/state/backlog.jsonl" "$task_id" "$priority" "$scope_pattern" "$allowed_pattern" <<'PY'
+import json,sys
+path,task_id,priority,scope,allowed=sys.argv[1:]
+task={
+  "schemaVersion":1,"taskId":task_id,"title":"Fast execution test",
+  "status":"READY","priority":priority,"origin":"fast-execution-tests",
+  "scope":[scope],"allowedWrites":[allowed,".teamloop/**"],
+  "requiredEvidence":["test evidence"],"successCriteria":["scenario passes"],
+  "forbiddenActions":["do not weaken gates"],"humanRequired":False,"blockers":[]
+}
+with open(path,"a",encoding="utf-8") as f:
+    f.write(json.dumps(task)+"\n")
+PY
+    local out
+    out=$(run_core apply-transition --action RUN_EXECUTOR --task-id "$task_id") || return 1
+    FAST_RUN_ID=$(json_str "$out" runId)
+    [[ -n "$FAST_RUN_ID" ]] || { echo "run id missing"; return 1; }
+}
+
+test_151() {
+    init_test_workspace
+    start_fast_execution_task task-fast-profile P2 "src/**" "src/**"
+    local out
+    out=$(run_core prepare-execution)
+    [[ "$(json_str "$out" profile)" == "fast" ]] || { echo "low-risk task should resolve fast: $out"; return 1; }
+    "$PY" - "$WORKSPACE_ABS/runs/$FAST_RUN_ID/execution-policy.json" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1]))
+assert p['requiredRoles']==['executor'],p
+assert 'watchdog' in p['conditionalRoles'],p
+PY
+    cleanup_workspace
+}
+
+test_152() {
+    init_test_workspace
+    start_fast_execution_task task-standard-profile P1 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    local out
+    out=$(run_core route-role --event implementation-complete)
+    [[ "$(json_str "$out" nextAction)" == "RUN_CHANGE_REVIEWER" ]] || { echo "standard should route reviewer: $out"; return 1; }
+    [[ "$(json_str "$out" role)" != "watchdog" ]] || { echo "standard should not unconditionally route watchdog"; return 1; }
+    cleanup_workspace
+}
+
+test_153() {
+    init_test_workspace
+    start_fast_execution_task task-audit-profile P0 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    "$PY" - "$WORKSPACE_ABS/runs/$FAST_RUN_ID/execution-policy.json" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1]))
+assert p['selectedProfile']=='audit',p
+assert set(['executor','change-reviewer','watchdog','sentinel']).issubset(p['requiredRoles']),p
+PY
+    cleanup_workspace
+}
+
+test_154() {
+    init_test_workspace
+    cp "$PROJECT_ROOT/templates/workspace/policies/protected-paths.json" "$WORKSPACE_ABS/policies/protected-paths.json"
+    start_fast_execution_task task-protected-fast P2 "scripts/**" "scripts/**"
+    local out
+    out=$(run_core prepare-execution --profile fast)
+    [[ "$(json_str "$out" profile)" == "audit" ]] || { echo "protected task must escalate to audit: $out"; return 1; }
+    grep -q 'PROFILE_ESCALATED_TO_AUDIT' "$WORKSPACE_ABS/runs/$FAST_RUN_ID/execution-policy.json" || { echo "escalation reason missing"; return 1; }
+    cleanup_workspace
+}
+
+test_155() {
+    init_test_workspace
+    start_fast_execution_task task-idempotent P2 "src/**" "src/**"
+    local first second
+    first=$(run_core prepare-execution)
+    second=$(run_core prepare-execution)
+    [[ "$(json_str "$first" policyReused)" == "False" || "$(json_str "$first" policyReused)" == "false" ]] || { echo "first policy should be new: $first"; return 1; }
+    [[ "$(json_str "$second" policyReused)" == "True" || "$(json_str "$second" policyReused)" == "true" ]] || { echo "second policy should be reused: $second"; return 1; }
+    [[ "$(json_str "$first" manifestFingerprint)" == "$(json_str "$second" manifestFingerprint)" ]] || { echo "manifest fingerprint changed"; return 1; }
+    cleanup_workspace
+}
+
+test_156() {
+    init_test_workspace
+    start_fast_execution_task task-drift P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    "$PY" - "$WORKSPACE_ABS/state/current-task.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['allowedWrites']=['other/**','.teamloop/**']; open(p,'w').write(json.dumps(d))
+PY
+    set +e
+    local out rc
+    out=$(run_core prepare-execution 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "changed scope should reject existing run"; return 1; }
+    echo "$out" | grep -qi 'fresh run\|inputs changed' || { echo "clear drift error missing: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_157() {
+    init_test_workspace
+    start_fast_execution_task task-manual-mutation P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    "$PY" - "$WORKSPACE_ABS/runs/$FAST_RUN_ID/execution-manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['executionProfile']='audit'; open(p,'w').write(json.dumps(d))
+PY
+    set +e
+    local out rc
+    out=$(run_core validate-execution-contract 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "manual manifest mutation should fail"; return 1; }
+    echo "$out" | grep -qi 'integrity\|mutation' || { echo "integrity reason missing: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_158() {
+    init_test_workspace
+    start_fast_execution_task task-scope-drift P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    "$PY" - "$WORKSPACE_ABS/state/current-task.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['successCriteria'].append('changed after freeze'); open(p,'w').write(json.dumps(d))
+PY
+    set +e
+    local out rc
+    out=$(run_core validate-execution-contract 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "task revision drift should fail"; return 1; }
+    echo "$out" | grep -qi 'revision\|drift' || { echo "task drift reason missing: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_159() {
+    init_test_workspace
+    start_fast_execution_task task-no-progress P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    run_core record-progress >/dev/null
+    local out
+    out=$(run_core record-progress)
+    "$PY" - <<PY
+import json
+r=json.loads('''$out''')['result']
+assert r['status']=='NO_PROGRESS_DETECTED',r
+assert r['identicalSnapshotStreak']==2,r
+PY
+    cleanup_workspace
+}
+
+test_160() {
+    init_test_workspace
+    start_fast_execution_task task-progress-reset P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    run_core record-progress >/dev/null
+    mkdir -p "$TEST_REPO_DIR/src"; echo material > "$TEST_REPO_DIR/src/change.txt"
+    local out
+    out=$(run_core record-progress)
+    "$PY" - <<PY
+import json
+r=json.loads('''$out''')['result']
+assert r['status']=='PROGRESS_OBSERVED',r
+assert r['identicalSnapshotStreak']==1,r
+PY
+    cleanup_workspace
+}
+
+test_161() {
+    init_test_workspace
+    start_fast_execution_task task-perf-no-progress P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    run_core record-progress >/dev/null
+    run_core record-performance --phase role-dispatch --duration-ms 999 --role-count 1 >/dev/null
+    local out
+    out=$(run_core record-progress)
+    echo "$out" | grep -q 'NO_PROGRESS_DETECTED' || { echo "performance-only change incorrectly counted as progress: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_162() {
+    init_test_workspace
+    start_fast_execution_task task-watchdog-route P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    run_core record-progress >/dev/null
+    run_core record-progress >/dev/null
+    local out
+    out=$(run_core next-action)
+    [[ "$(json_str "$out" nextAction)" == "RUN_WATCHDOG" ]] || { echo "no-progress should route watchdog: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_163() {
+    init_test_workspace
+    start_fast_execution_task task-final-invariants P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    local sentinel final
+    sentinel=$(run_core route-role --event final-handoff)
+    final=$(run_core route-role --event sentinel-complete)
+    [[ "$(json_str "$sentinel" nextAction)" == "RUN_SENTINEL" ]] || { echo "fast final sentinel skipped: $sentinel"; return 1; }
+    [[ "$(json_str "$final" nextAction)" == "RUN_FINAL_GATE" ]] || { echo "fast final gate skipped: $final"; return 1; }
+    cleanup_workspace
+}
+
+test_164() {
+    init_test_workspace
+    start_fast_execution_task task-valid-commands P2 "src/**" "src/**"
+    run_core resolve-execution-policy >/dev/null
+    run_core validate-state >/dev/null || { echo "resolve policy left invalid state"; return 1; }
+    run_core materialize-execution-manifest >/dev/null
+    run_core validate-state >/dev/null || { echo "manifest command left invalid state"; return 1; }
+    run_core validate-execution-contract >/dev/null
+    run_core record-performance --phase role-dispatch --duration-ms 1 --role-count 1 >/dev/null
+    run_core performance-report >/dev/null
+    run_core route-role --event implementation-complete >/dev/null
+    run_core record-progress >/dev/null
+    run_core validate-state >/dev/null || { echo "new commands left invalid state"; return 1; }
+    cleanup_workspace
+}
+
+test_165() {
+    init_test_workspace
+    start_fast_execution_task task-malformed-history P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    echo '{bad json' > "$WORKSPACE_ABS/runs/$FAST_RUN_ID/progress-history.jsonl"
+    set +e
+    local out rc
+    out=$(run_core record-progress 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "malformed progress history should fail"; return 1; }
+    echo "$out" | grep -qi 'malformed JSON' || { echo "malformed history reason missing: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_166() {
+    init_test_workspace
+    start_fast_execution_task task-fake-clock P2 "src/**" "src/**"
+    TEAMLOOP_FAKE_CLOCK_MS='[100,125]' run_core prepare-execution >/dev/null
+    local duration
+    duration=$("$PY" - "$WORKSPACE_ABS/runs/$FAST_RUN_ID/performance-trace.json" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); print([x['durationMs'] for x in p['phases'] if x['phase']=='execution-contract-creation-validation'][-1])
+PY
+)
+    [[ "$duration" == "25.0" || "$duration" == "25" ]] || { echo "fake clock duration should be 25ms, got $duration"; return 1; }
+    cleanup_workspace
+}
+
+test_167() {
+    for name in execution-policy execution-manifest execution-manifest-validation performance-trace progress-snapshot no-progress-result role-routing-decision; do
+        [[ -f "$PROJECT_ROOT/schemas/$name.schema.json" ]] || { echo "missing schema $name"; return 1; }
+    done
+    for name in prepare-execution resolve-execution-policy materialize-execution-manifest validate-execution-contract record-progress route-role record-performance performance-report; do
+        [[ -x "$PROJECT_ROOT/scripts/$name.sh" ]] || { echo "missing executable $name.sh"; return 1; }
+        [[ -f "$PROJECT_ROOT/scripts/$name.ps1" ]] || { echo "missing $name.ps1"; return 1; }
+    done
+}
+
+test_168() {
+    init_test_workspace
+    start_fast_execution_task task-final-no-progress P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    run_core record-progress >/dev/null
+    run_core record-progress >/dev/null
+    set +e
+    local out rc
+    out=$(run_core final-gate 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "final gate must fail unresolved no-progress"; return 1; }
+    echo "$out" | grep -q 'no-progress-result' || { echo "final gate no-progress check missing: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_169() {
+    init_test_workspace
+    start_fast_execution_task task-sentinel-count P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    local out total
+    out=$(run_core run-sentinel)
+    total=$(echo "$out" | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["summary"]["totalFindings"])')
+    [[ "$total" == "9" ]] || { echo "sentinel should run 9 unique checks, got $total"; return 1; }
+    cleanup_workspace
+}
+
+test_170() {
+    grep -q 'prepare-execution.sh' "$PROJECT_ROOT/.opencode/commands/supervised-task.md" || { echo "supervised-task missing prepare-execution"; return 1; }
+    grep -q 'record-progress' "$PROJECT_ROOT/.opencode/commands/supervised-task.md" || { echo "supervised-task missing progress control"; return 1; }
+    grep -q 'final-gate.sh' "$PROJECT_ROOT/.opencode/commands/supervised-task.md" || { echo "supervised-task missing real final gate"; return 1; }
+    ! grep -q 'Only edit state files directly' "$PROJECT_ROOT/.opencode/commands/supervised-task.md" || { echo "prompt still permits direct runtime state edits"; return 1; }
+    cmp -s "$PROJECT_ROOT/.opencode/commands/supervised-task.md" "$PROJECT_ROOT/adapters/opencode/commands/supervised-task.md" || { echo "OpenCode command copies drifted"; return 1; }
+}
+
+
+test_171() {
+    init_test_workspace
+    start_fast_execution_task task-suppression-only P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    mkdir -p "$TEST_REPO_DIR/src"
+    printf '# TODO: restore behavior\n' > "$TEST_REPO_DIR/src/work.py"
+    run_core record-progress >/dev/null
+    : > "$TEST_REPO_DIR/src/work.py"
+    local out
+    out=$(run_core record-progress)
+    echo "$out" | "$PY" -c 'import json,sys; r=json.load(sys.stdin)["result"]; assert r["status"]=="NO_PROGRESS_DETECTED",r; assert r["progressClassification"]=="SUPPRESSION_ONLY_NOT_PROGRESS",r; assert "suppression-only" in r["reason"],r' || return 1
+    cleanup_workspace
+}
+
+test_172() {
+    init_test_workspace
+    start_fast_execution_task task-watchdog-recovery P2 "src/**" "src/**"
+    local original_run="$FAST_RUN_ID"
+    run_core prepare-execution >/dev/null
+    run_core record-progress >/dev/null
+    run_core record-progress >/dev/null
+    local route retry
+    route=$(run_core route-role --event watchdog-complete)
+    [[ "$(json_str "$route" nextAction)" == "RETRY_EXECUTOR" ]] || { echo "watchdog recovery should require changed retry: $route"; return 1; }
+    retry=$(run_core apply-transition --action RETRY_EXECUTOR)
+    [[ "$(json_str "$retry" runId)" == "$original_run" ]] || { echo "RETRY_EXECUTOR must preserve run identity: $retry"; return 1; }
+    [[ "$(json_str "$retry" taskId)" == "task-watchdog-recovery" ]] || { echo "RETRY_EXECUTOR must preserve task identity: $retry"; return 1; }
+    local status
+    status=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$WORKSPACE_ABS/runs/$FAST_RUN_ID/no-progress-result.json")
+    [[ "$status" == "STRATEGY_CHANGE_REQUIRED" ]] || { echo "watchdog should acknowledge no-progress recovery, got $status"; return 1; }
+    local next
+    next=$(run_core next-action)
+    [[ "$(json_str "$next" nextAction)" != "RUN_WATCHDOG" ]] || { echo "watchdog must not self-loop after strategy routing: $next"; return 1; }
+    run_core validate-state >/dev/null || { echo "watchdog recovery left invalid state"; return 1; }
+    cleanup_workspace
+}
+
+test_173() {
+    init_test_workspace
+    start_fast_execution_task task-routing-integrity P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    run_core route-role --event implementation-complete >/dev/null
+    local history="$WORKSPACE_ABS/runs/$FAST_RUN_ID/role-routing-history.jsonl"
+    "$PY" -c 'import json,sys; p=sys.argv[1]; row=json.loads(open(p,encoding="utf-8").readline()); row["reason"]="manually changed"; open(p,"w",encoding="utf-8").write(json.dumps(row)+"\n")' "$history"
+    set +e
+    local out rc
+    out=$(run_core validate-state 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "mutated role routing decision should fail validation"; return 1; }
+    echo "$out" | grep -Eqi 'role-routing.*integrity|manual mutation' || { echo "role routing integrity reason missing: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_174() {
+    init_test_workspace
+    start_fast_execution_task task-final-sentinel-required P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    set +e
+    local out rc
+    out=$(run_core final-gate 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "optimized final gate must require sentinel"; return 1; }
+    echo "$out" | grep -q 'requires a final sentinel inspection' || { echo "missing mandatory sentinel failure: $out"; return 1; }
+    cleanup_workspace
+}
+
+
+test_175() {
+    init_test_workspace
+    start_fast_execution_task task-perf-comparison P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    local out
+    out=$(run_core performance-report)
+    echo "$out" | "$PY" -c 'import json,sys; c=json.load(sys.stdin)["deterministicRoutingComparison"]; assert c["beforeRoleInvocationCount"]==4,c; assert c["afterProfile"]=="fast",c; assert c["afterRoleInvocationCount"]==2,c; assert c["avoidedUnconditionalRoleInvocations"]==2,c; assert c["wallClockClaim"] is False,c' || return 1
+    cleanup_workspace
+}
+
+
+test_176() {
+    init_test_workspace
+    start_fast_execution_task task-optimized-final-pass P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    mkdir -p "$TEST_REPO_DIR/src"
+    printf 'ok\n' > "$TEST_REPO_DIR/src/ok.txt"
+    run_core record-progress >/dev/null
+    run_core apply-transition --action RUN_GATEKEEPER >/dev/null
+    run_core run-gates >/dev/null
+    run_core run-sentinel >/dev/null
+    local out
+    out=$(run_core final-gate) || { echo "optimized final gate should pass after same-run sentinel and gates: $out"; return 1; }
+    echo "$out" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); assert d["overallStatus"]=="PASS",d; checks={c["name"]:c for c in d["checks"]}; assert checks["sentinel-result"]["status"]=="PASS",checks; assert checks["execution-contract-integrity"]["status"]=="PASS",checks' || return 1
+    cleanup_workspace
+}
+
+test_177() {
+    init_test_workspace
+    start_fast_execution_task task-old-sentinel P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    run_core run-sentinel >/dev/null
+    "$PY" - "$WORKSPACE_ABS/state/backlog.jsonl" <<'PY'
+import json,sys
+p=sys.argv[1]
+t={"schemaVersion":1,"taskId":"task-current-no-sentinel","title":"Current run","status":"READY","priority":"P2","origin":"fast-execution-tests","scope":["src/**"],"allowedWrites":["src/**",".teamloop/**"],"requiredEvidence":["test"],"successCriteria":["test"],"forbiddenActions":[],"humanRequired":False,"blockers":[]}
+with open(p,"a",encoding="utf-8") as f: f.write(json.dumps(t)+"\n")
+PY
+    local newer
+    newer=$(run_core apply-transition --action RUN_EXECUTOR --task-id task-current-no-sentinel)
+    FAST_RUN_ID=$(json_str "$newer" runId)
+    run_core prepare-execution >/dev/null
+    set +e
+    local out rc
+    out=$(run_core final-gate 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "stale sentinel from another run must not satisfy final gate"; return 1; }
+    echo "$out" | grep -q "runs/$FAST_RUN_ID/sentinel-inspection.json is missing" || { echo "final gate did not require same-run sentinel: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_178() {
+    init_test_workspace
+    start_fast_execution_task task-material-after-todo P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    mkdir -p "$TEST_REPO_DIR/src"
+    printf '# TODO: restore behavior\n' > "$TEST_REPO_DIR/src/work.py"
+    run_core record-progress >/dev/null
+    printf 'value = 1\n' > "$TEST_REPO_DIR/src/work.py"
+    local out
+    out=$(run_core record-progress)
+    echo "$out" | "$PY" -c 'import json,sys; r=json.load(sys.stdin)["result"]; assert r["status"]=="PROGRESS_OBSERVED",r; assert r["progressClassification"]=="MATERIAL_CHANGE",r' || return 1
+    cleanup_workspace
+}
+
+test_179() {
+    init_test_workspace
+    start_fast_execution_task task-audit-routing P0 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    local impl review watchdog
+    impl=$(run_core route-role --event implementation-complete)
+    [[ "$(json_str "$impl" nextAction)" == "RUN_CHANGE_REVIEWER" ]] || { echo "audit must review first: $impl"; return 1; }
+    review=$(run_core route-role --event review-complete)
+    [[ "$(json_str "$review" nextAction)" == "RUN_WATCHDOG" ]] || { echo "audit must run watchdog after review: $review"; return 1; }
+    watchdog=$(run_core route-role --event watchdog-complete)
+    [[ "$(json_str "$watchdog" nextAction)" == "RUN_GATEKEEPER" ]] || { echo "audit watchdog must route to project gates before final sentinel: $watchdog"; return 1; }
+    cleanup_workspace
+}
+
+test_180() {
+    init_test_workspace
+    mkdir -p "$TEST_REPO_DIR/scripts"
+    printf '#!/usr/bin/env bash\necho ok\n' > "$TEST_REPO_DIR/scripts/demo.sh"
+    git -C "$TEST_REPO_DIR" add scripts/demo.sh
+    git -C "$TEST_REPO_DIR" commit -m "add protected script" --no-verify >/dev/null
+    printf '# changed\n' >> "$TEST_REPO_DIR/scripts/demo.sh"
+    "$PY" - "$WORKSPACE_ABS/policies/protected-paths.json" <<'PY'
+import json,sys
+p=sys.argv[1]
+d=json.load(open(p,encoding="utf-8")); d["enforcementLevel"]="error"
+open(p,"w",encoding="utf-8").write(json.dumps(d,ensure_ascii=False,indent=2)+"\n")
+PY
+    set +e
+    local out rc
+    out=$(run_core check-guard-integrity 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "unstaged protected modification must fail guard: $out"; return 1; }
+    echo "$out" | grep -q 'scripts/demo.sh' || { echo "guard corrupted unstaged path parsing: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_181() {
+    init_test_workspace
+    start_fast_execution_task task-old-gate P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    run_core run-sentinel >/dev/null
+    run_core apply-transition --action RUN_GATEKEEPER >/dev/null
+    run_core run-gates >/dev/null
+    "$PY" - "$WORKSPACE_ABS/state/backlog.jsonl" <<'PY'
+import json,sys
+p=sys.argv[1]
+t={"schemaVersion":1,"taskId":"task-current-no-gate","title":"Current run","status":"READY","priority":"P2","origin":"fast-execution-tests","scope":["src/**"],"allowedWrites":["src/**",".teamloop/**"],"requiredEvidence":["test"],"successCriteria":["test"],"forbiddenActions":[],"humanRequired":False,"blockers":[]}
+with open(p,"a",encoding="utf-8") as f: f.write(json.dumps(t)+"\n")
+PY
+    local newer
+    newer=$(run_core apply-transition --action RUN_EXECUTOR --task-id task-current-no-gate)
+    FAST_RUN_ID=$(json_str "$newer" runId)
+    run_core prepare-execution >/dev/null
+    run_core run-sentinel >/dev/null
+    set +e
+    local out rc
+    out=$(run_core final-gate 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "stale gate from another run must not satisfy final gate"; return 1; }
+    echo "$out" | grep -q "runs/$FAST_RUN_ID/gate-result.json is missing" || { echo "final gate did not require same-run gates: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_182() {
+    init_test_workspace
+    start_fast_execution_task task-review-timing P1 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    mkdir -p "$TEST_REPO_DIR/src"
+    printf 'value = 1\n' > "$TEST_REPO_DIR/src/reviewed.py"
+    run_core apply-transition --action RUN_CHANGE_REVIEWER >/dev/null
+    [[ ! -f "$WORKSPACE_ABS/runs/$FAST_RUN_ID/review-evidence.json" ]] || { echo "entering reviewer must not fabricate approval evidence"; return 1; }
+    run_core apply-transition --action RUN_GATEKEEPER >/dev/null
+    [[ -f "$WORKSPACE_ABS/runs/$FAST_RUN_ID/review-evidence.json" ]] || { echo "review approval transition should capture evidence"; return 1; }
+    cleanup_workspace
+}
+
+test_183() {
+    init_test_workspace
+    start_fast_execution_task task-missing-current-review P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    mkdir -p "$TEST_REPO_DIR/src"
+    printf 'value = 1\n' > "$TEST_REPO_DIR/src/work.py"
+    run_core run-sentinel >/dev/null
+    run_core apply-transition --action RUN_GATEKEEPER >/dev/null
+    run_core run-gates >/dev/null
+    rm -f "$WORKSPACE_ABS/runs/$FAST_RUN_ID/review-evidence.json"
+    set +e
+    local out rc
+    out=$(run_core final-gate 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "changed content without same-run evidence must fail final gate"; return 1; }
+    echo "$out" | grep -q "runs/$FAST_RUN_ID/review-evidence.json is missing" || { echo "missing same-run review evidence reason absent: $out"; return 1; }
+    cleanup_workspace
+}
+
+test_184() {
+    local reviewer="$PROJECT_ROOT/.opencode/agents/change-reviewer.md"
+    grep -q 'route-role.sh.*review-complete' "$reviewer" || { echo "reviewer prompt must use runtime routing"; return 1; }
+    ! grep -q 'On APPROVED: use .*RUN_GATEKEEPER' "$reviewer" || { echo "reviewer prompt still bypasses audit watchdog"; return 1; }
+    cmp -s "$reviewer" "$PROJECT_ROOT/adapters/opencode/agents/change-reviewer.md" || { echo "reviewer prompt copies drifted"; return 1; }
+}
+
+
+test_185() {
+    local rel
+    for rel in executor change-reviewer gatekeeper watchdog sentinel; do
+        cmp -s "$PROJECT_ROOT/.opencode/agents/$rel.md" "$PROJECT_ROOT/adapters/opencode/agents/$rel.md" || {
+            echo "OpenCode agent copy drifted: $rel"
+            return 1
+        }
+    done
+}
+
+test_run "FastExecution: LowRiskResolvesFast" test_151
+test_run "FastExecution: StandardRequiresReviewer" test_152
+test_run "FastExecution: AuditRequiresAllRoles" test_153
+test_run "FastExecution: ProtectedScopeEscalatesAudit" test_154
+test_run "FastExecution: ManifestIdempotent" test_155
+test_run "FastExecution: ChangedInputsRejected" test_156
+test_run "FastExecution: ManualMutationFails" test_157
+test_run "FastExecution: ScopeDriftFails" test_158
+test_run "FastExecution: IdenticalSnapshotsDetectNoProgress" test_159
+test_run "FastExecution: MaterialChangeResetsStreak" test_160
+test_run "FastExecution: PerformanceChangeIgnored" test_161
+test_run "FastExecution: NextActionRoutesWatchdog" test_162
+test_run "FastExecution: FastKeepsFinalInvariants" test_163
+test_run "FastExecution: SuccessfulCommandsLeaveValidState" test_164
+test_run "FastExecution: MalformedHistoryFails" test_165
+test_run "FastExecution: FakeClockDeterministic" test_166
+test_run "FastExecution: SchemasAndWrappersExist" test_167
+test_run "FastExecution: FinalGateBlocksNoProgress" test_168
+test_run "FastExecution: SentinelUniqueChecks" test_169
+test_run "FastExecution: OpenCodeRuntimeBound" test_170
+test_run "FastExecution: SuppressionOnlyIsNotProgress" test_171
+test_run "FastExecution: WatchdogRecoveryDoesNotLoop" test_172
+test_run "FastExecution: RoleRoutingIntegrity" test_173
+test_run "FastExecution: OptimizedFinalGateRequiresSentinel" test_174
+test_run "FastExecution: DeterministicPerformanceComparison" test_175
+test_run "FastExecution: OptimizedFinalGatePass" test_176
+test_run "FastExecution: StaleSentinelCannotSatisfyCurrentRun" test_177
+test_run "FastExecution: MaterialImplementationAfterTodoCountsProgress" test_178
+test_run "FastExecution: AuditWatchdogRoutesProjectGates" test_179
+test_run "Guard: UnstagedProtectedPathParsing" test_180
+test_run "FastExecution: StaleGateCannotSatisfyCurrentRun" test_181
+test_run "ReviewEvidence: CapturedOnlyAfterApproval" test_182
+test_run "FastExecution: ChangedContentRequiresSameRunEvidence" test_183
+test_run "OpenCode: ReviewerRoutingIsRuntimeBound" test_184
+test_run "OpenCode: FastExecutionAgentCopiesSynchronized" test_185
 
 # ============================================================
 # SUMMARY

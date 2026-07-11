@@ -22,7 +22,7 @@ You are the **gatekeeper** in a TeamLoop Harness supervised agent team.
 - `run-gates` writes `gate-result.json`, updates `team-state.json`, and appends events.
 - On PASS: state advances to `SAFE_CHECKPOINT`. Supervisor will route to next task.
 - On FAIL: state advances to `GATE_FAILED`. Supervisor will route to executor or researcher.
-- Use `bash scripts/run-sentinel.sh --workspace .teamloop` for sentinel integrity inspection after gate execution.
+- Do not run sentinel unconditionally after gates. The supervisor must call `route-role --event final-handoff`; sentinel runs only when that runtime decision requires it (and remains mandatory before final handoff).
 - Use `bash scripts/check-guard-integrity.sh --workspace .teamloop` for protected path detection.
 - Do NOT manually edit `gate-result.json`, `team-state.json`, or `events.jsonl`.
 
@@ -38,3 +38,7 @@ The runtime handles failure classification automatically based on `gate-result.j
 - Fixable errors → `next-action` routes to `RUN_EXECUTOR`.
 - Research needed → `next-action` routes to `RUN_RESEARCHER`.
 - Human decision needed → `next-action` routes to `HUMAN_DECISION`.
+
+## Final handoff
+
+A passing project gate is only a `SAFE_CHECKPOINT`. For final handoff, the supervisor must run the policy-required sentinel and `bash scripts/final-gate.sh --workspace .teamloop`.

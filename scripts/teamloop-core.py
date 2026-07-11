@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import fnmatch
+import teamloop_fast_execution as fast_execution
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +202,7 @@ def cmd_init_workspace(args):
             pass
 
     # Policies
-    for name in ["gate-policy.json", "role-policy.json"]:
+    for name in ["gate-policy.json", "role-policy.json", "protected-paths.json"]:
         src = os.path.join(template_dir, "policies", name)
         dst = os.path.join(target_dir, "policies", name)
         shutil.copy2(src, dst)
@@ -382,6 +383,72 @@ def cmd_validate_state(args):
             if gr is not None:
                 schema_errors = validate_against_schema(gr, schema_map.get("gate-result", {}), f"runs/{run_name}/gate-result.json")
                 errors.extend(schema_errors)
+
+    # --- Fast-execution run artifacts ---
+    if os.path.isdir(runs_dir):
+        fast_artifact_schemas = {
+            "execution-policy.json": "execution-policy",
+            "execution-manifest.json": "execution-manifest",
+            "execution-contract-validation.json": "execution-manifest-validation",
+            "performance-trace.json": "performance-trace",
+            "no-progress-result.json": "no-progress-result",
+        }
+        for run_name in os.listdir(runs_dir):
+            run_path = os.path.join(runs_dir, run_name)
+            if not os.path.isdir(run_path):
+                continue
+            present_contract_parts = []
+            for filename, schema_name in fast_artifact_schemas.items():
+                artifact_path = os.path.join(run_path, filename)
+                if not os.path.exists(artifact_path):
+                    continue
+                artifact = read_json_file_safe(artifact_path)
+                if artifact is None:
+                    errors.append(f"runs/{run_name}/{filename}: invalid JSON")
+                    continue
+                schema = schema_map.get(schema_name, {})
+                errors.extend(validate_against_schema(artifact, schema, f"runs/{run_name}/{filename}"))
+                if filename in ("execution-policy.json", "execution-manifest.json"):
+                    present_contract_parts.append(filename)
+                    if not fast_execution.verify_integrity(artifact):
+                        errors.append(f"runs/{run_name}/{filename}: semantic integrity mismatch or manual mutation")
+            routing_history_path = os.path.join(run_path, "role-routing-history.jsonl")
+            if os.path.exists(routing_history_path):
+                try:
+                    for line_no, decision in enumerate(read_jsonl(routing_history_path), 1):
+                        errors.extend(validate_against_schema(
+                            decision, schema_map.get("role-routing-decision", {}),
+                            f"runs/{run_name}/role-routing-history.jsonl line {line_no}"
+                        ))
+                        if not fast_execution.verify_integrity(decision):
+                            errors.append(
+                                f"runs/{run_name}/role-routing-history.jsonl line {line_no}: "
+                                "semantic integrity mismatch or manual mutation"
+                            )
+                except (json.JSONDecodeError, ValueError) as exc:
+                    errors.append(f"runs/{run_name}/role-routing-history.jsonl: JSON parse error: {exc}")
+            history_path = os.path.join(run_path, "progress-history.jsonl")
+            if os.path.exists(history_path):
+                try:
+                    for line_no, snapshot in enumerate(read_jsonl(history_path), 1):
+                        errors.extend(validate_against_schema(
+                            snapshot, schema_map.get("progress-snapshot", {}),
+                            f"runs/{run_name}/progress-history.jsonl line {line_no}"
+                        ))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    errors.append(f"runs/{run_name}/progress-history.jsonl: JSON parse error: {exc}")
+            # Live drift validation is required for the active run only. Completed
+            # historical runs retain immutable evidence but are not invalidated by
+            # later policy evolution.
+            if state is not None and state.get("currentRunId") == run_name and len(present_contract_parts) == 2:
+                try:
+                    contract_result = fast_execution.validate_contract(workspace, run_name, write_result=False)
+                    errors.extend(
+                        f"runs/{run_name}/execution-contract: {msg}"
+                        for msg in contract_result.get("errors", [])
+                    )
+                except Exception as exc:
+                    errors.append(f"runs/{run_name}/execution-contract: validation error: {exc}")
 
     # --- research files ---
     research_dir = os.path.join(workspace, "research")
@@ -802,7 +869,7 @@ def _check_guard_integrity_for_validate(workspace, project_root):
         return errors, warnings
 
     # Get git status entries
-    git_status_entries = _get_git_status_entries()
+    git_status_entries = _get_git_status_entries(os.path.dirname(os.path.abspath(workspace)))
 
     # Check 1: protected paths
     pp_check, pp_violations = _check_protected_paths(policy, git_status_entries, workspace)
@@ -1378,13 +1445,27 @@ def _collect_memory_counts(memory_dir):
 
 
 def cmd_next_action(args):
+    started = fast_execution.clock_ms()
     workspace = resolve_workspace(args.workspace)
     state = read_json(os.path.join(workspace, "state", "team-state.json"))
+    state_loaded = fast_execution.clock_ms()
     phase = state.get("currentPhase", "")
     status = state.get("status", "")
     human_required = state.get("humanRequired", False)
 
-    result = _compute_next_action(phase, status, human_required, workspace)
+    no_progress_route = fast_execution.active_no_progress_route(workspace)
+    result = no_progress_route or _compute_next_action(phase, status, human_required, workspace)
+    run_id = state.get("currentRunId", "")
+    fast_execution.record_trace_phase(
+        workspace, run_id, "state-load", state_loaded - started,
+        files=["state/team-state.json", "state/backlog.jsonl"],
+    )
+    fast_execution.record_trace_phase(
+        workspace, run_id, "next-action-resolution", fast_execution.clock_ms() - state_loaded,
+        files=["no-progress-result.json"],
+        decision="NO_OP" if result.get("nextAction") in ("STOP", "NO_READY_TASK") else "EXECUTED",
+        details=result.get("reason", result.get("nextAction", "")),
+    )
     print(json.dumps(result, ensure_ascii=False))
 
 
@@ -1470,8 +1551,10 @@ _TRANSITIONS = {
     "RUN_RESEARCH_LEAD": ("NEEDS_RESEARCH_REVIEW", False, False),
     "RUN_TASK_SLICER": ("NEEDS_TASK_SLICING", False, False),
     "RUN_EXECUTOR": ("EXECUTING_TASK", True, True),
+    "RETRY_EXECUTOR": ("EXECUTING_TASK", False, False),
     "RUN_CHANGE_REVIEWER": ("NEEDS_CHANGE_REVIEW", False, False),
     "RUN_GATEKEEPER": ("NEEDS_GATE", False, False),
+    "RUN_WATCHDOG": ("EXECUTING_TASK", False, False),
     "CONTINUE_LOOP": ("READY_FOR_NEXT_TASK", False, False),
     "SET_SAFE_CHECKPOINT": ("SAFE_CHECKPOINT", False, False),
     "SET_HUMAN_REQUIRED": ("HUMAN_DECISION_REQUIRED", False, False),
@@ -1486,6 +1569,8 @@ _TRANSITIONS_PRESERVE_IDENTITY = frozenset([
     "RUN_GATEKEEPER",
     "GATE_FAILED",
     "REQUEST_CHANGES",
+    "RUN_WATCHDOG",
+    "RETRY_EXECUTOR",
 ])
 
 def _maybe_write_continuation_decision(workspace, action, state, task_id, run_id):
@@ -1590,6 +1675,7 @@ def _maybe_write_continuation_decision(workspace, action, state, task_id, run_id
 
 
 def cmd_apply_transition(args):
+    started = fast_execution.clock_ms()
     workspace = resolve_workspace(args.workspace)
     action = args.action
     task_id = args.task_id or ""
@@ -1605,6 +1691,7 @@ def cmd_apply_transition(args):
         sys.exit(1)
 
     state = read_json(os.path.join(workspace, "state", "team-state.json"))
+    previous_phase = state.get("currentPhase", "")
     now = utc_now_iso()
     run_id = ""
 
@@ -1672,18 +1759,22 @@ def cmd_apply_transition(args):
     # ---- Auto-write continuation decision for terminal transitions ----
     _maybe_write_continuation_decision(workspace, action, state, task_id, run_id)
 
-    # ---- Phase 5: Write review evidence on CHANGE_REVIEW pass ----
-    if action == "RUN_CHANGE_REVIEWER":
+    # Capture review evidence only after an independent review has completed.
+    # Entering RUN_CHANGE_REVIEWER merely starts review and must never be
+    # recorded as an approval.
+    if action == "RUN_GATEKEEPER" and previous_phase == "NEEDS_CHANGE_REVIEW":
         try:
-            _write_review_evidence(workspace, task_id, reviewer="change-reviewer")
+            _write_review_evidence(
+                workspace, task_id, reviewer="change-reviewer", run_id=run_id
+            )
         except Exception as exc:
             print(
-                f"Warning: failed to write review evidence on CHANGE_REVIEWER: {exc}",
+                f"Warning: failed to write review evidence after review approval: {exc}",
                 file=sys.stderr,
             )
 
     # ---- Phase 6: Check dirty reviewed state before exec/review transitions ----
-    if action in ("RUN_EXECUTOR", "RUN_CHANGE_REVIEWER"):
+    if action in ("RUN_EXECUTOR", "RETRY_EXECUTOR", "RUN_CHANGE_REVIEWER"):
         try:
             dirty_warnings = _check_dirty_reviewed_state(workspace)
             if dirty_warnings:
@@ -1717,6 +1808,21 @@ def cmd_apply_transition(args):
     if run_id:
         event["runId"] = run_id
     append_jsonl(os.path.join(workspace, "state", "events.jsonl"), event)
+
+    if creates_run and run_id:
+        fast_execution.merge_pending_trace(workspace, run_id)
+    fast_execution.record_trace_phase(
+        workspace, run_id, "state-transition-write",
+        fast_execution.clock_ms() - started,
+        files=["state/team-state.json", "state/backlog.jsonl", "state/run-ledger.jsonl", "state/events.jsonl"],
+        role_count=0,
+        decision="EXECUTED", details=action,
+    )
+    if action.startswith("RUN_"):
+        fast_execution.record_trace_phase(
+            workspace, run_id, "role-dispatch", 0.0, role_count=1,
+            decision="EXECUTED", details=action,
+        )
 
     result = {
         "transitionApplied": True,
@@ -1796,6 +1902,7 @@ def cmd_write_event(args):
 # ---------------------------------------------------------------------------
 
 def cmd_check_scope(args):
+    started = fast_execution.clock_ms()
     workspace = resolve_workspace(args.workspace)
 
     scope_policy_path = os.path.join(workspace, "policies", "scope-policy.json")
@@ -1886,6 +1993,13 @@ def cmd_check_scope(args):
         "violations": violations
     }
 
+    run_id = state.get("currentRunId", "")
+    fast_execution.record_trace_phase(
+        workspace, run_id, "scope-validation", fast_execution.clock_ms() - started,
+        process_count=1, files=["policies/scope-policy.json", "state/current-task.json"],
+        decision="EXECUTED" if overall == "PASS" else "FAILED",
+        details=summary,
+    )
     print(json.dumps(result, ensure_ascii=False))
 
     if overall == "FAIL":
@@ -1990,6 +2104,7 @@ def _glob_to_regex(pattern):
 # ---------------------------------------------------------------------------
 
 def cmd_run_gates(args):
+    started = fast_execution.clock_ms()
     workspace = resolve_workspace(args.workspace)
 
     gate_policy_path = os.path.join(workspace, "policies", "gate-policy.json")
@@ -2182,7 +2297,14 @@ def cmd_run_gates(args):
 
         # Phase 5: Write review evidence on GATE_PASS
         try:
-            _write_review_evidence(workspace, task_id, reviewer="gatekeeper", gate_result="PASS")
+            _write_review_evidence(
+                workspace,
+                task_id,
+                reviewer="gatekeeper",
+                gate_result="PASS",
+                run_id=run_id,
+                preserve_existing=True,
+            )
         except Exception as exc:
             print(
                 f"Warning: failed to write review evidence on GATE_PASS: {exc}",
@@ -2251,6 +2373,12 @@ def cmd_run_gates(args):
         }
         append_jsonl(os.path.join(workspace, "state", "events.jsonl"), event)
 
+    fast_execution.record_trace_phase(
+        workspace, run_id, "project-gates", fast_execution.clock_ms() - started,
+        process_count=len(gates), files=["policies/gate-policy.json", "gate-result.json"],
+        decision="EXECUTED" if overall == "PASS" else "FAILED",
+        details=f"{len(checks)} gate check(s); overall={overall}",
+    )
     print(json.dumps(gate_result, ensure_ascii=False))
 
     if overall == "FAIL":
@@ -2279,6 +2407,36 @@ def cmd_validate_task(args):
             print(f"  - {err}")
         sys.exit(1)
     print("TASK VALIDATION PASSED")
+
+
+# ---------------------------------------------------------------------------
+# Command: validate-artifact (generic schema validation support)
+# ---------------------------------------------------------------------------
+
+def cmd_validate_artifact(args):
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    schema_name = args.schema
+    if schema_name.endswith(".schema.json"):
+        schema_file = schema_name
+    else:
+        schema_file = schema_name + ".schema.json"
+    schema_path = os.path.join(project_root, "schemas", schema_file)
+    if not os.path.exists(schema_path):
+        print(f"ARTIFACT VALIDATION FAILED: schema '{schema_name}' not found", file=sys.stderr)
+        sys.exit(1)
+    try:
+        data = read_json(args.json_file)
+        schema = read_json(schema_path)
+    except Exception as exc:
+        print(f"ARTIFACT VALIDATION FAILED: {exc}", file=sys.stderr)
+        sys.exit(1)
+    errors = validate_against_schema(data, schema, args.label or os.path.basename(args.json_file))
+    if errors:
+        print("ARTIFACT VALIDATION FAILED:")
+        for error in errors:
+            print(f"  - {error}")
+        sys.exit(1)
+    print("ARTIFACT VALIDATION PASSED")
 
 
 # ---------------------------------------------------------------------------
@@ -2393,6 +2551,22 @@ def _write_continuation_decision(workspace, decision, phase, task_id="", run_id=
                 "summary": blockers_summary
             })
 
+        # Integrate active no-progress evidence into the canonical continuation
+        # decision without creating a second continuation rule engine.
+        evidence = list(evidence or [])
+        if run_id:
+            no_progress_path = os.path.join(workspace, "runs", run_id, "no-progress-result.json")
+            no_progress = read_json_file_safe(no_progress_path)
+            if no_progress and no_progress.get("status") in ("NO_PROGRESS_DETECTED", "STRATEGY_CHANGE_REQUIRED"):
+                rel_np = os.path.relpath(no_progress_path, os.path.dirname(workspace))
+                if rel_np not in evidence:
+                    evidence.append(rel_np)
+                checks.append({
+                    "name": "no-progress-routing",
+                    "status": "PASS",
+                    "summary": "No-progress recovery is unresolved; identical automatic retry is blocked until watchdog/strategy routing completes"
+                })
+
         now = utc_now_iso()
 
         decision_obj = {
@@ -2440,6 +2614,11 @@ def _write_continuation_decision(workspace, decision, phase, task_id="", run_id=
         if run_id:
             event["runId"] = run_id
         append_jsonl(events_file, event)
+        fast_execution.record_trace_phase(
+            workspace, run_id, "continuation-decision", 0.0,
+            files=["state/continuation-decision.json", "state/events.jsonl"],
+            decision="EXECUTED", details=decision,
+        )
 
         return decision_obj
 
@@ -2553,7 +2732,7 @@ def cmd_check_guard_integrity(args):
     # ------------------------------------------------------------------
     # Get git changed files
     # ------------------------------------------------------------------
-    git_status_entries = _get_git_status_entries()
+    git_status_entries = _get_git_status_entries(os.path.dirname(os.path.abspath(workspace)))
 
     # ------------------------------------------------------------------
     # Check 1: protected-paths
@@ -2611,7 +2790,7 @@ def cmd_check_guard_integrity(args):
         sys.exit(1)
 
 
-def _get_git_status_entries():
+def _get_git_status_entries(repo_root=None):
     """Parse git status --porcelain into list of {status, path} dicts.
 
     Each entry has:
@@ -2621,21 +2800,25 @@ def _get_git_status_entries():
     """
     entries = []
     try:
+        git_prefix = ["git"] + (["-C", repo_root] if repo_root else [])
         result = subprocess.run(
-            ["git", "status", "--porcelain=v1"],
+            [*git_prefix, "status", "--porcelain=v1"],
             capture_output=True, text=True, timeout=10,
         )
         git_root_result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            [*git_prefix, "rev-parse", "--show-toplevel"],
             capture_output=True, text=True, timeout=10,
         )
         git_root = git_root_result.stdout.strip()
     except (subprocess.SubprocessError, FileNotFoundError):
         return entries
 
-    for line in result.stdout.split("\n"):
-        line = line.strip()
-        if not line:
+    for raw_line in result.stdout.splitlines():
+        # Porcelain v1 uses the first two columns as status.  Do not strip
+        # leading whitespace: an unstaged modification starts with " M", and
+        # stripping it shifts the path and silently corrupts guard matching.
+        line = raw_line.rstrip("\r")
+        if len(line) < 3:
             continue
 
         # porcelain v1: "XY path" or "XY old -> new"
@@ -2851,10 +3034,13 @@ _SCOPE_POLICY_BASELINE_FORBIDDEN = [".git/**", "node_modules/**"]
 
 
 def _sentinel_get_run_id(workspace):
-    """Return a runId string. Prefers currentRunId from team-state, else creates one."""
+    """Return the applicable run id, including the latest completed run."""
     state = read_json_file_safe(os.path.join(workspace, "state", "team-state.json"))
     if state and state.get("currentRunId"):
         return state["currentRunId"]
+    resolved = fast_execution.resolve_run_id(workspace)
+    if resolved:
+        return resolved
     return "run-{}".format(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S"))
 
 
@@ -3098,7 +3284,7 @@ def _sentinel_check_state_mutation(workspace):
 def _sentinel_check_protected_file_changes(workspace):
     """Check 6: protected-file-changes — reuse guard integrity check infrastructure."""
     # Reuse _get_git_status_entries from guard integrity
-    git_status_entries = _get_git_status_entries()
+    git_status_entries = _get_git_status_entries(os.path.dirname(os.path.abspath(workspace)))
 
     if not git_status_entries:
         return {
@@ -3341,6 +3527,7 @@ def cmd_run_sentinel(args):
     Does not modify any files except writing its own report to
     .teamloop/runs/<run-id>/sentinel-inspection.json.
     """
+    started = fast_execution.clock_ms()
     workspace = resolve_workspace(args.workspace)
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -3395,6 +3582,12 @@ def cmd_run_sentinel(args):
     report_path = os.path.join(run_dir, "sentinel-inspection.json")
     write_json(report_path, report)
 
+    fast_execution.record_trace_phase(
+        workspace, run_id, "sentinel-inspection", fast_execution.clock_ms() - started,
+        files=["sentinel-inspection.json", "state/team-state.json", "policies/scope-policy.json", "policies/gate-policy.json"],
+        decision="FAILED" if overall_status == "FAIL" else "EXECUTED",
+        details=f"{critical_count} critical, {warning_count} warning",
+    )
     # Print to stdout
     print(json.dumps(report, ensure_ascii=False))
 
@@ -3406,12 +3599,13 @@ def cmd_run_sentinel(args):
 def cmd_final_gate(args):
     """Aggregate final gate checks for pre-handoff validation.
 
-    Runs 11 independent checks and produces a structured JSON result
+    Runs the full configured set of independent checks and produces a structured JSON result
     matching schemas/final-gate.schema.json.  Writes the result to
     .teamloop/state/final-gate-result.json and prints JSON to stdout.
 
     Exit 0 if overallStatus is PASS or NOT_CONFIGURED, exit 1 if FAIL.
     """
+    started = fast_execution.clock_ms()
     workspace = resolve_workspace(args.workspace)
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -3419,11 +3613,14 @@ def cmd_final_gate(args):
 
     checks = []
     advisory_findings = []
+    subprocess_invocations = 0
 
     # ------------------------------------------------------------------
     # Helper: run a subprocess and return exit code
     # ------------------------------------------------------------------
     def _run_sub(cmd, timeout=30):
+        nonlocal subprocess_invocations
+        subprocess_invocations += 1
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout,
@@ -3896,6 +4093,258 @@ def cmd_final_gate(args):
             })
 
     # ------------------------------------------------------------------
+    # Check 12: execution-contract-integrity (optimization runs)
+    # ------------------------------------------------------------------
+    contract_run_id = fast_execution.resolve_run_id(
+        workspace, task_id=(state or {}).get("currentTaskId", "")
+    )
+    contract_present = bool(
+        contract_run_id and os.path.exists(os.path.join(
+            workspace, "runs", contract_run_id, "execution-manifest.json"
+        ))
+    )
+    if not contract_present:
+        checks.append({
+            "name": "execution-contract-integrity",
+            "status": "SKIP",
+            "description": "no execution manifest found for the applicable run; legacy run",
+            "blocking": False,
+        })
+    else:
+        try:
+            contract_result = fast_execution.validate_contract(
+                workspace, contract_run_id, write_result=True
+            )
+            policy_data = read_json_file_safe(os.path.join(
+                workspace, "runs", contract_run_id, "execution-policy.json"
+            )) or {}
+            invariants = policy_data.get("invariants", {})
+            invariant_names = (
+                "scopeIntegrityCannotBeDisabled",
+                "evidenceIntegrityCannotBeDisabled",
+                "runtimeStateIntegrityCannotBeDisabled",
+                "requiredProjectGatesCannotBeDisabled",
+                "finalSentinelCannotBeBypassed",
+                "finalGateCannotBeBypassed",
+            )
+            invariant_errors = [
+                name for name in invariant_names if invariants.get(name) is not True
+            ]
+            if contract_result.get("status") == "PASS" and not invariant_errors:
+                checks.append({
+                    "name": "execution-contract-integrity",
+                    "status": "PASS",
+                    "description": "execution policy and immutable manifest are valid and safety invariants remain enabled",
+                    "blocking": True,
+                    "evidenceArtifact": os.path.join(
+                        os.path.basename(workspace), "runs", contract_run_id,
+                        "execution-contract-validation.json"
+                    ),
+                })
+            else:
+                reasons = list(contract_result.get("errors", []))
+                if invariant_errors:
+                    reasons.append("disabled invariant(s): " + ", ".join(invariant_errors))
+                checks.append({
+                    "name": "execution-contract-integrity",
+                    "status": "FAIL",
+                    "description": "execution contract validation failed",
+                    "blocking": True,
+                    "reason": "; ".join(reasons[:8])[:500],
+                })
+        except Exception as exc:
+            checks.append({
+                "name": "execution-contract-integrity",
+                "status": "FAIL",
+                "description": "execution contract could not be validated",
+                "blocking": True,
+                "reason": str(exc)[:500],
+            })
+
+    # ------------------------------------------------------------------
+    # Check 13: no-progress-result
+    # ------------------------------------------------------------------
+    no_progress_path = (
+        os.path.join(workspace, "runs", contract_run_id, "no-progress-result.json")
+        if contract_run_id else ""
+    )
+    no_progress = read_json_file_safe(no_progress_path) if no_progress_path else None
+    if no_progress is None:
+        checks.append({
+            "name": "no-progress-result",
+            "status": "SKIP",
+            "description": "no progress snapshot has been recorded for the applicable run",
+            "blocking": False,
+        })
+    elif no_progress.get("status") in ("NO_PROGRESS_DETECTED", "STRATEGY_CHANGE_REQUIRED"):
+        checks.append({
+            "name": "no-progress-result",
+            "status": "FAIL",
+            "description": "unresolved no-progress condition blocks final handoff",
+            "blocking": True,
+            "reason": str(no_progress.get("reason", no_progress.get("status", "NO_PROGRESS_DETECTED")))[:500],
+            "evidenceArtifact": os.path.relpath(no_progress_path, os.path.dirname(workspace)),
+        })
+    else:
+        checks.append({
+            "name": "no-progress-result",
+            "status": "PASS",
+            "description": f"no-progress detector status is {no_progress.get('status', 'unknown')}",
+            "blocking": True,
+            "evidenceArtifact": os.path.relpath(no_progress_path, os.path.dirname(workspace)),
+        })
+
+    # Optimized execution contracts preserve the existing mandatory final
+    # sentinel invariant.  A missing sentinel is not a legacy advisory once a
+    # manifest exists for this run.
+    if contract_present:
+        contract_manifest = read_json_file_safe(os.path.join(
+            workspace, "runs", contract_run_id, "execution-manifest.json"
+        )) or {}
+
+        manifest_scope_violations = fast_execution.scope_violations(
+            workspace, contract_manifest
+        )
+        for check in checks:
+            if check.get("name") != "scope-validation":
+                continue
+            if manifest_scope_violations:
+                check.update({
+                    "status": "FAIL",
+                    "description": "immutable execution manifest scope validation failed",
+                    "blocking": True,
+                    "reason": "; ".join(
+                        f"{item['file']}: {item['reason']}"
+                        for item in manifest_scope_violations[:8]
+                    )[:500],
+                })
+            else:
+                check.update({
+                    "status": "PASS",
+                    "description": "all current changes remain within immutable manifest scope",
+                    "blocking": True,
+                })
+                check.pop("reason", None)
+            break
+
+        # A stale gate from another run must never satisfy the current immutable
+        # execution contract.
+        current_gate_path = os.path.join(
+            workspace, "runs", contract_run_id, "gate-result.json"
+        )
+        current_gate = read_json_file_safe(current_gate_path)
+        for check in checks:
+            if check.get("name") != "latest-gate-result":
+                continue
+            if current_gate is None:
+                check.update({
+                    "status": "FAIL",
+                    "description": "execution contract requires project gates for the same run",
+                    "blocking": True,
+                    "reason": f"runs/{contract_run_id}/gate-result.json is missing or invalid",
+                })
+            elif current_gate.get("status") != "PASS":
+                check.update({
+                    "status": "FAIL",
+                    "description": "current-run gate-result.json did not pass",
+                    "blocking": True,
+                    "reason": f"current-run gate status is {current_gate.get('status', 'unknown')}",
+                    "evidenceArtifact": os.path.relpath(current_gate_path, os.path.dirname(workspace)),
+                })
+            else:
+                check.update({
+                    "status": "PASS",
+                    "description": "current-run project gates passed",
+                    "blocking": True,
+                    "evidenceArtifact": os.path.relpath(current_gate_path, os.path.dirname(workspace)),
+                })
+            break
+
+        # Review/content evidence is bound to the same run.  This prevents a
+        # stale approved artifact from an earlier task from validating new
+        # implementation changes.
+        current_review_path = os.path.join(
+            workspace, "runs", contract_run_id, "review-evidence.json"
+        )
+        content_changed = fast_execution.has_scoped_repository_change(
+            workspace, contract_manifest
+        )
+        review_errors = (
+            _validate_review_evidence(workspace, current_review_path)
+            if os.path.exists(current_review_path) else []
+        )
+        for check in checks:
+            if check.get("name") != "reviewed-content-integrity":
+                continue
+            if content_changed and not os.path.exists(current_review_path):
+                check.update({
+                    "status": "FAIL",
+                    "description": "changed scoped content has no same-run review/gate evidence",
+                    "blocking": True,
+                    "reason": f"runs/{contract_run_id}/review-evidence.json is missing",
+                })
+            elif review_errors:
+                check.update({
+                    "status": "FAIL",
+                    "description": "same-run reviewed content integrity failed",
+                    "blocking": True,
+                    "reason": "; ".join(review_errors[:8])[:500],
+                    "evidenceArtifact": os.path.relpath(current_review_path, os.path.dirname(workspace)),
+                })
+            elif os.path.exists(current_review_path):
+                check.update({
+                    "status": "PASS",
+                    "description": "same-run reviewed content hashes remain valid",
+                    "blocking": True,
+                    "evidenceArtifact": os.path.relpath(current_review_path, os.path.dirname(workspace)),
+                })
+            else:
+                check.update({
+                    "status": "SKIP",
+                    "description": "no scoped repository content changed during this run",
+                    "blocking": False,
+                })
+            break
+
+        current_sentinel_path = os.path.join(
+            workspace, "runs", contract_run_id, "sentinel-inspection.json"
+        )
+        current_sentinel = read_json_file_safe(current_sentinel_path)
+        for check in checks:
+            if check.get("name") != "sentinel-result":
+                continue
+            if current_sentinel is None:
+                check.update({
+                    "status": "FAIL",
+                    "description": "execution policy requires a final sentinel inspection for the same run before handoff",
+                    "blocking": True,
+                    "reason": f"runs/{contract_run_id}/sentinel-inspection.json is missing or invalid",
+                })
+            else:
+                current_findings = current_sentinel.get("findings", [])
+                current_critical = [
+                    finding for finding in current_findings
+                    if str(finding.get("severity", "")).upper() == "CRITICAL"
+                    and str(finding.get("status", "OPEN")).upper() not in ("RESOLVED", "CLOSED", "VERIFIED")
+                ]
+                if current_critical:
+                    check.update({
+                        "status": "FAIL",
+                        "description": f"current-run sentinel has {len(current_critical)} unresolved CRITICAL finding(s)",
+                        "blocking": True,
+                        "reason": "; ".join(str(f.get("title", "unnamed")) for f in current_critical[:5]),
+                        "evidenceArtifact": os.path.relpath(current_sentinel_path, os.path.dirname(workspace)),
+                    })
+                else:
+                    check.update({
+                        "status": "PASS",
+                        "description": "current-run sentinel inspection has no unresolved CRITICAL findings",
+                        "blocking": True,
+                        "evidenceArtifact": os.path.relpath(current_sentinel_path, os.path.dirname(workspace)),
+                    })
+            break
+
+    # ------------------------------------------------------------------
     # Compute overall status
     # ------------------------------------------------------------------
     # FAIL if any check is FAIL
@@ -3974,6 +4423,15 @@ def cmd_final_gate(args):
     run_dir = os.path.join(workspace, "runs", run_id)
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, "final-gate-result.json"), result)
+
+    trace_run_id = contract_run_id or fast_execution.resolve_run_id(workspace)
+    fast_execution.record_trace_phase(
+        workspace, trace_run_id, "final-gate", fast_execution.clock_ms() - started,
+        process_count=subprocess_invocations + 2,
+        files=["state/final-gate-result.json", "execution-contract-validation.json", "no-progress-result.json"],
+        decision="EXECUTED" if overall_status == "PASS" else "FAILED",
+        details=f"{len(checks)} checks; overall={overall_status}",
+    )
 
     # ------------------------------------------------------------------
     # Print JSON to stdout
@@ -4144,7 +4602,7 @@ def _find_review_evidence(workspace):
 
 
 def _write_review_evidence(workspace, task_id, reviewer="change-reviewer",
-                           gate_result=None):
+                           gate_result=None, run_id="", preserve_existing=False):
     """Write a review-evidence.json artifact with content hashes of changed files.
 
     Parameters
@@ -4162,6 +4620,19 @@ def _write_review_evidence(workspace, task_id, reviewer="change-reviewer",
     directory exists, to .teamloop/state/review-evidence.json.
     """
     try:
+        explicit_run_dir = os.path.join(workspace, "runs", run_id) if run_id else None
+        existing_path = (
+            os.path.join(explicit_run_dir, "review-evidence.json")
+            if explicit_run_dir else None
+        )
+        if preserve_existing and existing_path and os.path.exists(existing_path):
+            existing = read_json_file_safe(existing_path)
+            if existing is not None:
+                if gate_result is not None:
+                    existing["gateResult"] = gate_result
+                write_json(existing_path, existing)
+                return
+
         changed_files = _get_git_changed_files_for_review()
         commit_sha = _get_current_git_commit()
 
@@ -4204,7 +4675,7 @@ def _write_review_evidence(workspace, task_id, reviewer="change-reviewer",
             evidence["gateResult"] = gate_result
 
         # Determine write path
-        run_dir = _find_run_directory(workspace)
+        run_dir = explicit_run_dir or _find_run_directory(workspace)
         if run_dir is None:
             # Create a run directory for this evidence
             run_id = "run-{}-{}".format(
@@ -4212,6 +4683,8 @@ def _write_review_evidence(workspace, task_id, reviewer="change-reviewer",
                 os.getpid()
             )
             run_dir = os.path.join(workspace, "runs", run_id)
+            os.makedirs(run_dir, exist_ok=True)
+        else:
             os.makedirs(run_dir, exist_ok=True)
 
         evidence_path = os.path.join(run_dir, "review-evidence.json")
@@ -4224,7 +4697,7 @@ def _write_review_evidence(workspace, task_id, reviewer="change-reviewer",
         )
 
 
-def _validate_review_evidence(workspace):
+def _validate_review_evidence(workspace, evidence_path=None):
     """Validate review-evidence integrity against current working tree.
 
     Finds the most recent review-evidence.json and verifies:
@@ -4235,7 +4708,7 @@ def _validate_review_evidence(workspace):
     Returns list of error strings. Empty list means all checks passed.
     """
     errors = []
-    evidence_path = _find_review_evidence(workspace)
+    evidence_path = evidence_path or _find_review_evidence(workspace)
     if evidence_path is None:
         return errors
 
@@ -4369,6 +4842,209 @@ def resolve_workspace(workspace):
 
 
 # ---------------------------------------------------------------------------
+# Fast-execution contract, routing, progress, and performance commands
+# ---------------------------------------------------------------------------
+
+def _resolve_fast_run_id(workspace, explicit_run_id="", task_id=""):
+    run_id = fast_execution.resolve_run_id(workspace, explicit_run_id, task_id)
+    if not run_id:
+        print("Error: no active or matching run id; enter RUN_EXECUTOR or pass --run-id", file=sys.stderr)
+        sys.exit(1)
+    return run_id
+
+
+def cmd_resolve_execution_policy(args):
+    workspace = resolve_workspace(args.workspace)
+    run_id = _resolve_fast_run_id(workspace, args.run_id, args.task_id)
+    started = fast_execution.clock_ms()
+    try:
+        policy, reused = fast_execution.materialize_policy(
+            workspace, run_id, args.task_id, args.profile, args.no_progress_threshold
+        )
+        fast_execution.record_trace_phase(
+            workspace, run_id, "execution-policy-resolution",
+            fast_execution.clock_ms() - started,
+            files=["state/team-state.json", "state/backlog.jsonl", "policies/protected-paths.json"],
+            decision="REUSED" if reused else "EXECUTED",
+        )
+        output = dict(policy)
+        output["reused"] = reused
+        print(json.dumps(output, ensure_ascii=False))
+    except fast_execution.FastExecutionError as exc:
+        fast_execution.record_trace_phase(
+            workspace, run_id, "execution-policy-resolution",
+            fast_execution.clock_ms() - started, decision="FAILED", details=str(exc)
+        )
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_materialize_execution_manifest(args):
+    workspace = resolve_workspace(args.workspace)
+    run_id = _resolve_fast_run_id(workspace, args.run_id, args.task_id)
+    started = fast_execution.clock_ms()
+    try:
+        manifest, reused = fast_execution.materialize_manifest(workspace, run_id, args.task_id)
+        fast_execution.record_trace_phase(
+            workspace, run_id, "execution-manifest-materialization",
+            fast_execution.clock_ms() - started,
+            files=["execution-policy.json", "state/current-task.json", "policies/gate-policy.json"],
+            decision="REUSED" if reused else "EXECUTED",
+        )
+        output = dict(manifest)
+        output["reused"] = reused
+        print(json.dumps(output, ensure_ascii=False))
+    except fast_execution.FastExecutionError as exc:
+        fast_execution.record_trace_phase(
+            workspace, run_id, "execution-manifest-materialization",
+            fast_execution.clock_ms() - started, decision="FAILED", details=str(exc)
+        )
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_validate_execution_contract(args):
+    workspace = resolve_workspace(args.workspace)
+    run_id = _resolve_fast_run_id(workspace, args.run_id, args.task_id)
+    started = fast_execution.clock_ms()
+    try:
+        result = fast_execution.validate_contract(workspace, run_id, write_result=True)
+        fast_execution.record_trace_phase(
+            workspace, run_id, "execution-contract-validation",
+            fast_execution.clock_ms() - started,
+            files=["execution-policy.json", "execution-manifest.json", "state/team-state.json"],
+            decision="EXECUTED" if result.get("status") == "PASS" else "FAILED",
+        )
+        print(json.dumps(result, ensure_ascii=False))
+        if result.get("status") != "PASS":
+            sys.exit(1)
+    except fast_execution.FastExecutionError as exc:
+        fast_execution.record_trace_phase(
+            workspace, run_id, "execution-contract-validation",
+            fast_execution.clock_ms() - started, decision="FAILED", details=str(exc)
+        )
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_prepare_execution(args):
+    """Resolve policy, materialize manifest, and validate in one idempotent preflight."""
+    workspace = resolve_workspace(args.workspace)
+    run_id = _resolve_fast_run_id(workspace, args.run_id, args.task_id)
+    started = fast_execution.clock_ms()
+    try:
+        policy, policy_reused = fast_execution.materialize_policy(
+            workspace, run_id, args.task_id, args.profile, args.no_progress_threshold
+        )
+        manifest, manifest_reused = fast_execution.materialize_manifest(workspace, run_id, args.task_id)
+        validation = fast_execution.validate_contract(workspace, run_id, write_result=True)
+        result = {
+            "schemaVersion": 1,
+            "runId": run_id,
+            "taskId": policy.get("taskId", ""),
+            "profile": policy.get("selectedProfile", ""),
+            "policyReused": policy_reused,
+            "manifestReused": manifest_reused,
+            "policyFingerprint": policy.get("semanticFingerprint", ""),
+            "manifestFingerprint": manifest.get("semanticFingerprint", ""),
+            "status": validation.get("status", "FAIL"),
+            "validationArtifact": os.path.join(".teamloop", "runs", run_id, "execution-contract-validation.json"),
+        }
+        fast_execution.record_trace_phase(
+            workspace, run_id, "execution-contract-creation-validation",
+            fast_execution.clock_ms() - started,
+            files=["execution-policy.json", "execution-manifest.json", "execution-contract-validation.json"],
+            decision="REUSED" if policy_reused and manifest_reused else "EXECUTED",
+        )
+        print(json.dumps(result, ensure_ascii=False))
+        if validation.get("status") != "PASS":
+            sys.exit(1)
+    except fast_execution.FastExecutionError as exc:
+        fast_execution.record_trace_phase(
+            workspace, run_id, "execution-contract-creation-validation",
+            fast_execution.clock_ms() - started, decision="FAILED", details=str(exc)
+        )
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_record_progress(args):
+    workspace = resolve_workspace(args.workspace)
+    run_id = _resolve_fast_run_id(workspace, args.run_id, args.task_id)
+    started = fast_execution.clock_ms()
+    core_script = os.path.abspath(__file__)
+    try:
+        snapshot, result, process_count = fast_execution.record_progress(workspace, run_id, core_script)
+        fast_execution.record_trace_phase(
+            workspace, run_id, "progress-detection",
+            fast_execution.clock_ms() - started,
+            process_count=process_count,
+            files=["progress-history.jsonl", "no-progress-result.json"],
+            decision="NO_OP" if result.get("status") == "NO_PROGRESS_DETECTED" else "EXECUTED",
+            details=result.get("reason", ""),
+        )
+        print(json.dumps({"snapshot": snapshot, "result": result}, ensure_ascii=False))
+    except fast_execution.FastExecutionError as exc:
+        fast_execution.record_trace_phase(
+            workspace, run_id, "progress-detection",
+            fast_execution.clock_ms() - started, decision="FAILED", details=str(exc)
+        )
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_route_role(args):
+    workspace = resolve_workspace(args.workspace)
+    run_id = _resolve_fast_run_id(workspace, args.run_id, args.task_id)
+    started = fast_execution.clock_ms()
+    try:
+        result = fast_execution.route_role(workspace, run_id, args.event, args.severity)
+        fast_execution.append_jsonl(
+            os.path.join(workspace, "runs", run_id, "role-routing-history.jsonl"), result
+        )
+        if args.event == "watchdog-complete" and result.get("nextAction") == "RETRY_EXECUTOR":
+            fast_execution.acknowledge_no_progress_strategy(workspace, run_id)
+        fast_execution.record_trace_phase(
+            workspace, run_id, "role-routing",
+            fast_execution.clock_ms() - started,
+            files=["execution-policy.json", "no-progress-result.json", "role-routing-history.jsonl"],
+            decision="EXECUTED", details=result.get("reason", ""),
+        )
+        print(json.dumps(result, ensure_ascii=False))
+    except fast_execution.FastExecutionError as exc:
+        fast_execution.record_trace_phase(
+            workspace, run_id, "role-routing",
+            fast_execution.clock_ms() - started, decision="FAILED", details=str(exc)
+        )
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_record_performance(args):
+    workspace = resolve_workspace(args.workspace)
+    run_id = fast_execution.resolve_run_id(workspace, args.run_id, args.task_id)
+    fast_execution.record_trace_phase(
+        workspace, run_id, args.phase, args.duration_ms,
+        args.process_count, args.role_count, args.file,
+        args.decision, args.details,
+    )
+    print(json.dumps({
+        "recorded": True, "runId": run_id, "phase": args.phase,
+        "durationMs": args.duration_ms,
+    }, ensure_ascii=False))
+
+
+def cmd_performance_report(args):
+    workspace = resolve_workspace(args.workspace)
+    run_id = _resolve_fast_run_id(workspace, args.run_id, args.task_id)
+    try:
+        print(json.dumps(fast_execution.performance_report(workspace, run_id), ensure_ascii=False))
+    except fast_execution.FastExecutionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -4419,6 +5095,13 @@ def main():
     p_vtask.add_argument("--json-string", default="")
     p_vtask.add_argument("--workspace", "-w", default="", help="Ignored, for wrapper compatibility")
 
+    # validate-artifact
+    p_vartifact = subparsers.add_parser("validate-artifact", help="Validate any JSON artifact against a repository schema")
+    p_vartifact.add_argument("--schema", required=True, help="Schema basename, e.g. continuation-decision")
+    p_vartifact.add_argument("--json-file", required=True)
+    p_vartifact.add_argument("--label", default="")
+    p_vartifact.add_argument("--workspace", "-w", default="", help="Ignored, for wrapper compatibility")
+
     # validate-research
     p_vresearch = subparsers.add_parser("validate-research", help="Validate a research report inventory")
     p_vresearch.add_argument("--json-file", default="")
@@ -4453,6 +5136,48 @@ def main():
     p_fg = subparsers.add_parser("final-gate", help="Run final gate aggregator")
     p_fg.add_argument("--workspace", "-w", default=".teamloop")
 
+    def add_execution_identity(parser_obj):
+        parser_obj.add_argument("--workspace", "-w", default=".teamloop")
+        parser_obj.add_argument("--run-id", default="")
+        parser_obj.add_argument("--task-id", default="")
+
+    p_policy = subparsers.add_parser("resolve-execution-policy", help="Resolve and persist deterministic execution profile policy")
+    add_execution_identity(p_policy)
+    p_policy.add_argument("--profile", choices=["fast", "standard", "audit"], default="")
+    p_policy.add_argument("--no-progress-threshold", type=int, default=2)
+
+    p_manifest = subparsers.add_parser("materialize-execution-manifest", help="Materialize immutable bounded execution manifest")
+    add_execution_identity(p_manifest)
+
+    p_contract = subparsers.add_parser("validate-execution-contract", help="Validate execution policy and manifest integrity")
+    add_execution_identity(p_contract)
+
+    p_prepare = subparsers.add_parser("prepare-execution", help="Resolve policy, materialize manifest, and validate preflight")
+    add_execution_identity(p_prepare)
+    p_prepare.add_argument("--profile", choices=["fast", "standard", "audit"], default="")
+    p_prepare.add_argument("--no-progress-threshold", type=int, default=2)
+
+    p_progress = subparsers.add_parser("record-progress", help="Record stable progress snapshot and no-progress decision")
+    add_execution_identity(p_progress)
+
+    p_route = subparsers.add_parser("route-role", help="Resolve the next role from execution policy and deterministic triggers")
+    add_execution_identity(p_route)
+    p_route.add_argument("--event", required=True)
+    p_route.add_argument("--severity", default="")
+
+    p_perf_record = subparsers.add_parser("record-performance", help="Append a performance trace phase")
+    add_execution_identity(p_perf_record)
+    p_perf_record.add_argument("--phase", required=True)
+    p_perf_record.add_argument("--duration-ms", type=float, required=True)
+    p_perf_record.add_argument("--process-count", type=int, default=0)
+    p_perf_record.add_argument("--role-count", type=int, default=0)
+    p_perf_record.add_argument("--file", action="append", default=[])
+    p_perf_record.add_argument("--decision", choices=["EXECUTED", "REUSED", "NO_OP", "FAILED"], default="EXECUTED")
+    p_perf_record.add_argument("--details", default="")
+
+    p_perf_report = subparsers.add_parser("performance-report", help="Print concise performance trace report")
+    add_execution_identity(p_perf_report)
+
     args = parser.parse_args()
 
     if not args.command:
@@ -4468,12 +5193,21 @@ def main():
         "check-scope": cmd_check_scope,
         "run-gates": cmd_run_gates,
         "validate-task": cmd_validate_task,
+        "validate-artifact": cmd_validate_artifact,
         "validate-research": cmd_validate_research,
         "memory-doctor": cmd_memory_doctor,
         "write-continuation-decision": cmd_write_continuation_decision,
         "check-guard-integrity": cmd_check_guard_integrity,
         "run-sentinel": cmd_run_sentinel,
         "final-gate": cmd_final_gate,
+        "resolve-execution-policy": cmd_resolve_execution_policy,
+        "materialize-execution-manifest": cmd_materialize_execution_manifest,
+        "validate-execution-contract": cmd_validate_execution_contract,
+        "prepare-execution": cmd_prepare_execution,
+        "record-progress": cmd_record_progress,
+        "route-role": cmd_route_role,
+        "record-performance": cmd_record_performance,
+        "performance-report": cmd_performance_report,
     }
 
     commands[args.command](args)
