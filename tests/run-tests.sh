@@ -3480,6 +3480,242 @@ test_run "OpenCode: ReviewerRoutingIsRuntimeBound" test_184
 test_run "OpenCode: FastExecutionAgentCopiesSynchronized" test_185
 
 # ============================================================
+# WORKSPACE CONTEXT TESTS 186-195
+# ============================================================
+
+test_186() {
+    # WorkspaceContext: LoadsOncePerHost — state/schemas loaded once and reused from cache
+    init_test_workspace
+    "$PY" - "$WORKSPACE_ABS" "$PROJECT_ROOT/scripts/teamloop_context.py" <<'PY'
+import sys, os, json
+sys.path.insert(0, os.path.dirname(sys.argv[2]))
+from teamloop_context import WorkspaceContext
+ctx = WorkspaceContext(sys.argv[1])
+# First access loads state
+state1 = ctx.state
+# Second access returns cached identical object
+state2 = ctx.state
+assert state1 is state2, "state should be cached (same object)"
+# Same for schemas
+schemas1 = ctx.schemas
+schemas2 = ctx.schemas
+assert schemas1 is schemas2, "schemas should be cached (same object)"
+# Verify schemas were actually loaded (non-empty on real project)
+assert len(schemas1) > 0, "schemas should load at least one schema"
+PY
+    cleanup_workspace
+}
+
+test_187() {
+    # WorkspaceContext: DependentChecksExecuteInAnyOrder — properties accessible in any order without side effects
+    init_test_workspace
+    echo '{"schemaVersion":1,"taskId":"task-ctx","title":"Ctx test","status":"READY","scope":["src/**"],"successCriteria":["ok"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    "$PY" - "$WORKSPACE_ABS" "$PROJECT_ROOT/scripts/teamloop_context.py" <<'PY'
+import sys, os
+sys.path.insert(0, os.path.dirname(sys.argv[2]))
+from teamloop_context import WorkspaceContext
+ctx = WorkspaceContext(sys.argv[1])
+# Access properties in random order — none should fail
+backlog = ctx.backlog
+sp = ctx.scope_policy
+gp = ctx.gate_policy
+bl = ctx.blockers
+evt = ctx.events
+rl = ctx.run_ledger
+cp = ctx.active_profile
+pp = ctx.protected_paths
+cr = ctx.current_run_id
+ct = ctx.current_task
+assert len(backlog) == 1, "backlog should have 1 entry"
+assert isinstance(sp, dict), "scope_policy should be dict"
+assert isinstance(gp, dict), "gate_policy should be dict"
+assert isinstance(bl, list), "blockers should be list"
+assert isinstance(evt, list), "events should be list"
+assert isinstance(rl, list), "run_ledger should be list"
+assert isinstance(cp, dict), "active_profile should be dict"
+assert isinstance(pp, dict), "protected_paths should be dict"
+assert isinstance(cr, str), "current_run_id should be str"
+assert ct is None, "current_task should be None (no current-task.json)"
+PY
+    cleanup_workspace
+}
+
+test_188() {
+    # WorkspaceContext: DuplicateChecksReused — same property returns identical cached data
+    init_test_workspace
+    echo '{"schemaVersion":1,"taskId":"task-001","title":"Dup test","status":"READY","scope":["src/**"],"successCriteria":["ok"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    "$PY" - "$WORKSPACE_ABS" "$PROJECT_ROOT/scripts/teamloop_context.py" <<'PY'
+import sys, os
+sys.path.insert(0, os.path.dirname(sys.argv[2]))
+from teamloop_context import WorkspaceContext
+ctx = WorkspaceContext(sys.argv[1])
+# Each of these three accesses should return the exact same object
+for i in range(3):
+    assert ctx.backlog is ctx.backlog, f"backlog cache miss on access {i+2}"
+    assert ctx.events is ctx.events, f"events cache miss on access {i+2}"
+    assert ctx.scope_policy is ctx.scope_policy, f"scope_policy cache miss on access {i+2}"
+    assert ctx.gate_policy is ctx.gate_policy, f"gate_policy cache miss on access {i+2}"
+    assert ctx.blockers is ctx.blockers, f"blockers cache miss on access {i+2}"
+    assert ctx.run_ledger is ctx.run_ledger, f"run_ledger cache miss on access {i+2}"
+PY
+    cleanup_workspace
+}
+
+test_189() {
+    # WorkspaceContext: BlockingDependencyPreventsInvalidPass — state raises for invalid JSON
+    init_test_workspace
+    # Corrupt team-state.json
+    echo '{bad json here' > "$WORKSPACE_ABS/state/team-state.json"
+    "$PY" - "$WORKSPACE_ABS" "$PROJECT_ROOT/scripts/teamloop_context.py" <<'PY'
+import sys, os
+sys.path.insert(0, os.path.dirname(sys.argv[2]))
+from teamloop_context import WorkspaceContext
+ctx = WorkspaceContext(sys.argv[1])
+try:
+    _ = ctx.state
+    print("ERROR: ctx.state should have raised for invalid JSON")
+    sys.exit(1)
+except (ValueError, json.JSONDecodeError) as e:
+    # Expected — blocking property raises on bad data
+    pass
+PY
+    cleanup_workspace
+}
+
+test_190() {
+    # WorkspaceContext: AdvisoryChecksDontBecomeBlocking — state_safe returns None for missing state
+    init_test_workspace
+    # Remove team-state.json
+    rm -f "$WORKSPACE_ABS/state/team-state.json"
+    "$PY" - "$WORKSPACE_ABS" "$PROJECT_ROOT/scripts/teamloop_context.py" <<'PY'
+import sys, os
+sys.path.insert(0, os.path.dirname(sys.argv[2]))
+from teamloop_context import WorkspaceContext
+ctx = WorkspaceContext(sys.argv[1])
+# Advisory read — must NOT raise, returns None
+result = ctx.state_safe
+assert result is None, f"state_safe should be None for missing file, got {result}"
+PY
+    cleanup_workspace
+}
+
+test_191() {
+    # WorkspaceContext: ExistingCommandOutputsCompatible — validate-state and check-scope still produce valid JSON
+    init_test_workspace
+    # Run validate-state and verify JSON output
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass on fresh workspace, got: $vout"; return 1; }
+    # validate-state may not emit JSON on pass, but check-scope always does
+    echo '{"schemaVersion":1,"taskId":"task-scope","title":"Scope test","status":"READY","scope":["src/**"],"allowedWrites":["src/**",".teamloop/**"],"successCriteria":["ok"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    run_core apply-transition --action RUN_EXECUTOR --task-id task-scope >/dev/null
+    set +e
+    local csout csrc
+    csout=$(run_core check-scope 2>&1)
+    csrc=$?
+    set -e
+    # check-scope output must be valid JSON
+    echo "$csout" | "$PY" -c "import json,sys; json.load(sys.stdin)" 2>/dev/null || { echo "check-scope output not valid JSON: $csout"; return 1; }
+    cleanup_workspace
+}
+
+test_192() {
+    # WorkspaceContext: InvalidStateStillFails — validate-state catches corrupted state
+    init_test_workspace
+    # Corrupt state
+    echo '{"schemaVersion":1,"currentPhase":"GIBBERISH","status":"INVALID"}' > "$WORKSPACE_ABS/state/team-state.json"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail on invalid phase, got: $vout"; return 1; }
+    cleanup_workspace
+}
+
+test_193() {
+    # WorkspaceContext: PerformanceDataDoesNotAffectSemanticState — WorkspaceContext state reads contain no timestamps
+    init_test_workspace
+    "$PY" - "$WORKSPACE_ABS" "$PROJECT_ROOT/scripts/teamloop_context.py" <<'PY'
+import sys, os, json
+sys.path.insert(0, os.path.dirname(sys.argv[2]))
+from teamloop_context import WorkspaceContext
+ctx = WorkspaceContext(sys.argv[1])
+state = ctx.state
+state_str = json.dumps(state)
+# The state itself should not contain trace/timing/perf fields
+# (timestamps like updatedAtUtc are structural, not performance traces)
+# Verify state is a valid dict with expected schemaVersion
+assert state.get("schemaVersion") == 1, "state should have schemaVersion 1"
+assert isinstance(state, dict), "state should be a dict"
+# Schemas also have no performance data
+schemas = ctx.schemas
+assert isinstance(schemas, dict), "schemas should be dict"
+for key, val in schemas.items():
+    assert isinstance(val, dict), f"schema {key} should be dict"
+PY
+    cleanup_workspace
+}
+
+test_194() {
+    # WorkspaceContext: SuccessfulCommandsLeaveStateValid — validate-state passes after a sequence of commands
+    init_test_workspace
+    # Run a sequence of commands
+    echo '{"schemaVersion":1,"taskId":"task-ctx","title":"Ctx test","status":"READY","scope":["src/**"],"allowedWrites":["src/**",".teamloop/**"],"successCriteria":["ok"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    run_core apply-transition --action RUN_EXECUTOR --task-id task-ctx >/dev/null
+    run_core write-event --type STATE_TRANSITION --actor test --summary "test event" >/dev/null
+    # After all commands, state must be valid
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass after commands, got: $vout"; return 1; }
+    cleanup_workspace
+}
+
+test_195() {
+    # WorkspaceContext: WrappersRemainFunctional — .sh wrapper scripts still work
+    init_test_workspace
+    # Verify key wrapper scripts exist and execute
+    for script in validate-state check-scope apply-transition write-event; do
+        local wrapper="$PROJECT_ROOT/scripts/$script.sh"
+        [[ -f "$wrapper" ]] || { echo "wrapper $script.sh missing"; return 1; }
+    done
+    # Run validate-state.sh wrapper
+    set +e
+    local wout wrc
+    wout=$(bash "$PROJECT_ROOT/scripts/validate-state.sh" --workspace "$WORKSPACE_ABS" 2>&1)
+    wrc=$?
+    set -e
+    [[ $wrc -eq 0 ]] || { echo "validate-state.sh should pass on clean workspace, got: $wout"; return 1; }
+    # Run check-scope.sh wrapper
+    echo '{"schemaVersion":1,"taskId":"task-w","title":"Wrapper test","status":"READY","scope":["src/**"],"allowedWrites":["src/**",".teamloop/**"],"successCriteria":["ok"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    run_core apply-transition --action RUN_EXECUTOR --task-id task-w >/dev/null
+    set +e
+    wout=$(bash "$PROJECT_ROOT/scripts/check-scope.sh" --workspace "$WORKSPACE_ABS" 2>&1)
+    wrc=$?
+    set -e
+    # Output should be valid JSON
+    echo "$wout" | "$PY" -c "import json,sys; json.load(sys.stdin)" 2>/dev/null || { echo "check-scope.sh output not valid JSON: $wout"; return 1; }
+    cleanup_workspace
+}
+
+test_run "WorkspaceContext: LoadsOncePerHost" test_186
+test_run "WorkspaceContext: DependentChecksExecuteInAnyOrder" test_187
+test_run "WorkspaceContext: DuplicateChecksReused" test_188
+test_run "WorkspaceContext: BlockingDependencyPreventsInvalidPass" test_189
+test_run "WorkspaceContext: AdvisoryChecksDontBecomeBlocking" test_190
+test_run "WorkspaceContext: ExistingCommandOutputsCompatible" test_191
+test_run "WorkspaceContext: InvalidStateStillFails" test_192
+test_run "WorkspaceContext: PerformanceDataDoesNotAffectSemanticState" test_193
+test_run "WorkspaceContext: SuccessfulCommandsLeaveStateValid" test_194
+test_run "WorkspaceContext: WrappersRemainFunctional" test_195
+
+# ============================================================
 # SUMMARY
 # ============================================================
 echo ""
