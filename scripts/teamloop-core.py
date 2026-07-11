@@ -3515,8 +3515,9 @@ def cmd_final_gate(args):
     Exit 0 if overallStatus is PASS or NOT_CONFIGURED, exit 1 if FAIL.
     """
     started = fast_execution.clock_ms()
-    workspace = resolve_workspace(args.workspace)
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    host = WorkspaceContext(args.workspace)
+    workspace = host.workspace
+    project_root = host.project_root
     script_dir = os.path.dirname(os.path.abspath(__file__))
     core_script = os.path.join(script_dir, "teamloop-core.py")
 
@@ -3538,35 +3539,6 @@ def cmd_final_gate(args):
             return proc.returncode, proc.stdout, proc.stderr
         except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError) as e:
             return -1, "", str(e)
-
-    # ------------------------------------------------------------------
-    # Helper: get latest gate-result.json path and content
-    # ------------------------------------------------------------------
-    def _latest_gate_result():
-        runs_dir = os.path.join(workspace, "runs")
-        if not os.path.isdir(runs_dir):
-            return None
-        try:
-            run_dirs = sorted([
-                d for d in os.listdir(runs_dir)
-                if os.path.isdir(os.path.join(runs_dir, d))
-            ])
-        except OSError:
-            return None
-        for run_name in reversed(run_dirs):
-            gr_path = os.path.join(runs_dir, run_name, "gate-result.json")
-            if os.path.exists(gr_path):
-                return read_json_file_safe(gr_path)
-        return None
-
-    # ------------------------------------------------------------------
-    # Helper: get latest sentinel-inspection.json content
-    # ------------------------------------------------------------------
-    def _latest_sentinel():
-        sentinel_path = _sentinel_find_inspection_file(workspace)
-        if sentinel_path is None:
-            return None
-        return read_json_file_safe(sentinel_path)
 
     # ------------------------------------------------------------------
     # Check 1: state-validation
@@ -3628,7 +3600,7 @@ def cmd_final_gate(args):
     # ------------------------------------------------------------------
     # Check 3: continuation-decision
     # ------------------------------------------------------------------
-    state = read_json_file_safe(os.path.join(workspace, "state", "team-state.json"))
+    state = host.state_safe
     decision_file = os.path.join(workspace, "state", "continuation-decision.json")
     if os.path.exists(decision_file):
         decision = read_json_file_safe(decision_file)
@@ -3641,15 +3613,7 @@ def cmd_final_gate(args):
             })
         else:
             # Reuse the same consistency check that validate-state uses
-            schema_map = {}
-            schemas_dir = os.path.join(project_root, "schemas")
-            for name in os.listdir(schemas_dir):
-                if name.endswith(".schema.json"):
-                    base = name.replace(".schema.json", "")
-                    try:
-                        schema_map[base] = read_json(os.path.join(schemas_dir, name))
-                    except (ValueError, json.JSONDecodeError):
-                        pass
+            schema_map = host.schemas
             cd_errors = _validate_continuation_consistency(workspace, state or {}, schema_map)
             if cd_errors:
                 checks.append({
@@ -3700,7 +3664,10 @@ def cmd_final_gate(args):
     # ------------------------------------------------------------------
     # Check 5: latest-gate-result
     # ------------------------------------------------------------------
-    gr = _latest_gate_result()
+    gr_path = host.latest_gate_result()
+    gr = None
+    if gr_path:
+        gr = read_json_file_safe(gr_path)
     if gr is None:
         checks.append({
             "name": "latest-gate-result",
@@ -3736,7 +3703,7 @@ def cmd_final_gate(args):
     if state:
         state_task_id = state.get("currentTaskId", "")
         state_run_id = state.get("currentRunId", "")
-        ct = read_json_file_safe(os.path.join(workspace, "state", "current-task.json"))
+        ct = host.current_task
 
         if state_task_id:
             if ct is None:
@@ -3747,11 +3714,11 @@ def cmd_final_gate(args):
                 )
 
         if state_run_id:
-            run_dir = os.path.join(workspace, "runs", state_run_id)
+            run_dir = host.find_run_dir(state_run_id)
             if not os.path.isdir(run_dir):
                 # Check run-ledger as fallback
                 run_found = False
-                for entry in read_jsonl(os.path.join(workspace, "state", "run-ledger.jsonl")):
+                for entry in host.run_ledger:
                     if entry.get("runId") == state_run_id:
                         run_found = True
                         break
@@ -3779,7 +3746,7 @@ def cmd_final_gate(args):
     # ------------------------------------------------------------------
     blockers_path = os.path.join(workspace, "state", "blockers.jsonl")
     if os.path.exists(blockers_path):
-        blockers = read_jsonl(blockers_path)
+        blockers = host.blockers
         open_blockers = [b for b in blockers if not b.get("resolvedAtUtc")]
         if open_blockers:
             summaries = [b.get("summary", b.get("blockerId", "unnamed")) for b in open_blockers[:5]]
@@ -3812,14 +3779,14 @@ def cmd_final_gate(args):
 
     # Stale current-task.json: exists with IN_PROGRESS but team-state has no currentTaskId
     if state and not state.get("currentTaskId", ""):
-        ct = read_json_file_safe(os.path.join(workspace, "state", "current-task.json"))
+        ct = host.current_task
         if ct and ct.get("status") == "IN_PROGRESS":
             stale_issues.append("stale current-task.json with IN_PROGRESS while team-state has no currentTaskId")
 
     # Orphaned IN_PROGRESS tasks in backlog
     backlog_path = os.path.join(workspace, "state", "backlog.jsonl")
     if os.path.exists(backlog_path):
-        for task in read_jsonl(backlog_path):
+        for task in host.backlog:
             if task.get("status") == "IN_PROGRESS":
                 stale_issues.append(f"backlog task '{task.get('taskId', '?')}' still IN_PROGRESS")
 
@@ -3842,7 +3809,10 @@ def cmd_final_gate(args):
     # ------------------------------------------------------------------
     # Check 9: sentinel-result
     # ------------------------------------------------------------------
-    sentinel = _latest_sentinel()
+    sentinel_path = host.latest_sentinel_report()
+    sentinel = None
+    if sentinel_path:
+        sentinel = read_json_file_safe(sentinel_path)
     if sentinel is None:
         checks.append({
             "name": "sentinel-result",
@@ -3864,7 +3834,7 @@ def cmd_final_gate(args):
                 "blocking": True,
                 "reason": "; ".join(titles),
                 "evidenceArtifact": os.path.relpath(
-                    _sentinel_find_inspection_file(workspace) or "",
+                    sentinel_path or "",
                     os.path.dirname(workspace)
                 ),
             })
