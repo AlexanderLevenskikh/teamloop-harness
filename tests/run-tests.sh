@@ -1774,6 +1774,365 @@ test_116() {
 }
 
 # ============================================================
+# SENTINEL REGRESSION TESTS 117-132
+# ============================================================
+
+test_117() {
+    # Sentinel_Pass_CleanWorkspace — run-sentinel on clean workspace produces overallStatus PASS
+    init_test_workspace
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "run-sentinel should exit 0 on clean workspace, got exit $src: $sout"; return 1; }
+    local overall
+    overall=$(echo "$sout" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('overallStatus',''))" 2>/dev/null)
+    [[ "$overall" == "PASS" ]] || { echo "overallStatus should be PASS on clean workspace, got '$overall'"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_118() {
+    # Sentinel_Fail_ScopeBypass — sentinel detects scope bypass as CRITICAL finding
+    init_test_workspace
+    # Remove baseline forbiddenWrites AND alwaysForbiddenWrites from scope-policy to weaken it
+    local policy_file="$WORKSPACE_ABS/policies/scope-policy.json"
+    local content
+    content=$(cat "$policy_file")
+    content=$(echo "$content" | "$PY" -c "
+import json, sys
+d = json.load(sys.stdin)
+d['forbiddenWrites'] = []
+d['alwaysForbiddenWrites'] = []
+print(json.dumps(d))
+")
+    echo "$content" > "$policy_file"
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    # Should still exit 0 (sentinel is read-only, always prints report)
+    echo "$sout" | grep -q "scope-policy-weakening" || { echo "Should detect scope-policy-weakening, got: $sout"; return 1; }
+    echo "$sout" | grep -q "CRITICAL" || { echo "Scope bypass should be CRITICAL, got: $sout"; return 1; }
+    local overall
+    overall=$(echo "$sout" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('overallStatus',''))" 2>/dev/null)
+    [[ "$overall" == "FAIL" ]] || { echo "overallStatus should be FAIL with CRITICAL finding, got '$overall'"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_119() {
+    # Sentinel_Warning_InfoOnly — sentinel with only WARNING/INFO findings produces overallStatus WARNING
+    init_test_workspace
+    # Remove gate-policy.json to trigger a WARNING (gate-policy-weakening is WARNING when missing)
+    rm -f "$WORKSPACE_ABS/policies/gate-policy.json"
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "run-sentinel should exit 0, got exit $src: $sout"; return 1; }
+    local overall
+    overall=$(echo "$sout" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('overallStatus',''))" 2>/dev/null)
+    [[ "$overall" == "WARNING" ]] || { echo "overallStatus should be WARNING when only WARNING/INFO findings, got '$overall'"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_120() {
+    # Sentinel_CriticalBlocksDone — validate-state fails when sentinel has CRITICAL findings
+    init_test_workspace
+    # Weaken scope-policy to trigger CRITICAL (clear both forbidden write arrays)
+    local policy_file="$WORKSPACE_ABS/policies/scope-policy.json"
+    local content
+    content=$(cat "$policy_file")
+    content=$(echo "$content" | "$PY" -c "
+import json, sys
+d = json.load(sys.stdin)
+d['forbiddenWrites'] = []
+d['alwaysForbiddenWrites'] = []
+print(json.dumps(d))
+")
+    echo "$content" > "$policy_file"
+    # Run sentinel to produce the report
+    run_core run-sentinel >/dev/null 2>&1
+    # Now validate-state should fail because sentinel report has CRITICAL
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail when sentinel has CRITICAL findings, got: $vout"; return 1; }
+    echo "$vout" | grep -qi "sentinel\|critical" || { echo "validate-state error should mention sentinel or critical, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_121() {
+    # Sentinel_MissingFile_BackwardCompatible — validate-state skips when no sentinel-inspection.json exists
+    init_test_workspace
+    # Fresh workspace, no sentinel run has been done, so no sentinel-inspection.json
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass without sentinel-inspection.json, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_122() {
+    # Sentinel_MalformedJson_FailsValidation — malformed sentinel-inspection.json caught by validate-state
+    init_test_workspace
+    # Run sentinel first to create the run directory
+    run_core run-sentinel >/dev/null 2>&1
+    # Get the run directory
+    local runs_dir="$WORKSPACE_ABS/runs"
+    local run_dir
+    run_dir=$(ls -d "$runs_dir"/run-* 2>/dev/null | head -1)
+    local sentinel_file="$run_dir/sentinel-inspection.json"
+    [[ -f "$sentinel_file" ]] || { echo "sentinel-inspection.json should exist after run-sentinel"; return 1; }
+    # Corrupt the sentinel file with malformed JSON
+    echo '{malformed json' > "$sentinel_file"
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should fail on malformed sentinel-inspection.json, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_123() {
+    # Sentinel_NoSideEffects — sentinel does not modify any files other than its own report
+    init_test_workspace
+    # Record checksums of all state files before
+    local state_dir="$WORKSPACE_ABS/state"
+    local before_checksums=""
+    for f in "$state_dir"/*.json "$state_dir"/*.jsonl; do
+        [[ -f "$f" ]] || continue
+        local c
+        c=$("$PY" -c "import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$f" 2>/dev/null)
+        before_checksums="$before_checksums $c:$f"
+    done
+    # Also record policies
+    local pol_dir="$WORKSPACE_ABS/policies"
+    for f in "$pol_dir"/*.json; do
+        [[ -f "$f" ]] || continue
+        local c
+        c=$("$PY" -c "import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$f" 2>/dev/null)
+        before_checksums="$before_checksums $c:$f"
+    done
+    # Run sentinel
+    run_core run-sentinel >/dev/null 2>&1
+    # Verify all state/policy files unchanged
+    for f in "$state_dir"/*.json "$state_dir"/*.jsonl; do
+        [[ -f "$f" ]] || continue
+        local c
+        c=$("$PY" -c "import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$f" 2>/dev/null)
+        echo "$before_checksums" | grep -q "$c:$f" || { echo "File modified by sentinel: $f"; return 1; }
+    done
+    for f in "$pol_dir"/*.json; do
+        [[ -f "$f" ]] || continue
+        local c
+        c=$("$PY" -c "import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$f" 2>/dev/null)
+        echo "$before_checksums" | grep -q "$c:$f" || { echo "File modified by sentinel: $f"; return 1; }
+    done
+    cleanup_workspace
+    return 0
+}
+
+test_124() {
+    # Sentinel_StateConsistency_Check — STATE_CONSISTENCY category: corrupt team-state.json phase, sentinel detects it
+    init_test_workspace
+    # Corrupt team-state.json with invalid phase
+    local state_file="$WORKSPACE_ABS/state/team-state.json"
+    local content
+    content=$(cat "$state_file")
+    content=$(echo "$content" | "$PY" -c "import json,sys; d=json.load(sys.stdin); d['currentPhase']='INVALID_PHASE_VALUE'; print(json.dumps(d))")
+    echo "$content" > "$state_file"
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "run-sentinel should exit 0 (read-only), got exit $src: $sout"; return 1; }
+    # Should detect state-mutation or manual-state-mutation issue
+    echo "$sout" | grep -q "state-mutation\|manual-state-mutation" || { echo "Should detect state mutation, got: $sout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_125() {
+    # Sentinel_GateWeakening_Check — GATE_WEAKENING category: empty gate-policy triggers finding
+    init_test_workspace
+    # Replace gate-policy with empty gates array
+    cat > "$WORKSPACE_ABS/policies/gate-policy.json" << 'GEOF'
+{"gates":[]}
+GEOF
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "run-sentinel should exit 0, got exit $src: $sout"; return 1; }
+    echo "$sout" | grep -q "gate-policy-weakening" || { echo "Should detect gate-policy-weakening, got: $sout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_126() {
+    # Sentinel_TestSuppression_Check — TEST_SUPPRESSION category: temporarily rename tests/, sentinel detects it
+    init_test_workspace
+    # Rename tests directory temporarily
+    local tests_dir="$PROJECT_ROOT/tests"
+    local tests_bak="$PROJECT_ROOT/tests_bak_$$"
+    mv "$tests_dir" "$tests_bak"
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "run-sentinel should exit 0, got exit $src: $sout"; return 1; }
+    echo "$sout" | grep -q "test-suppression" || { echo "Should detect test-suppression, got: $sout"; return 1; }
+    # Restore tests directory
+    mv "$tests_bak" "$tests_dir"
+    cleanup_workspace
+    return 0
+}
+
+test_127() {
+    # Sentinel_ProtectedFile_Check — PROTECTED_FILE_CHANGE category reuses guard integrity detection
+    init_test_workspace
+    # Create and commit a script file, then modify it
+    mkdir -p "$TEST_REPO_DIR/scripts"
+    printf '#!/usr/bin/env python3\nprint("original")\n' > "$TEST_REPO_DIR/scripts/sample.py"
+    git -C "$TEST_REPO_DIR" add scripts/sample.py >/dev/null 2>&1
+    git -C "$TEST_REPO_DIR" commit -m "add script" --no-verify >/dev/null 2>&1
+    # Modify the script file (staged change)
+    printf '#!/usr/bin/env python3\nprint("modified")\n' > "$TEST_REPO_DIR/scripts/sample.py"
+    git -C "$TEST_REPO_DIR" add scripts/sample.py >/dev/null 2>&1
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "run-sentinel should exit 0, got exit $src: $sout"; return 1; }
+    echo "$sout" | grep -q "protected-file-changes" || { echo "Should detect protected-file-changes, got: $sout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_128() {
+    # Sentinel_HiddenWork_Check — HIDDEN_UNRESOLVED_WORK detects orphaned READY tasks
+    init_test_workspace
+    # Add a READY task to backlog (orphaned — not picked up by current-task)
+    echo '{"schemaVersion":1,"taskId":"task-orphan","title":"Orphan task","status":"READY","scope":["src/**"],"successCriteria":["Works"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "run-sentinel should exit 0, got exit $src: $sout"; return 1; }
+    echo "$sout" | grep -q "hidden-unresolved-work" || { echo "Should detect hidden-unresolved-work, got: $sout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_129() {
+    # Sentinel_ManualMutation_Check — MANUAL_STATE_MUTATION detects state edits without events
+    init_test_workspace
+    # Manually change the phase without going through apply-transition
+    local state_file="$WORKSPACE_ABS/state/team-state.json"
+    local content
+    content=$(cat "$state_file")
+    content=$(echo "$content" | "$PY" -c "import json,sys; d=json.load(sys.stdin); d['currentPhase']='EXECUTING_TASK'; d['currentTaskId']='task-no-event'; print(json.dumps(d))")
+    echo "$content" > "$state_file"
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "run-sentinel should exit 0, got exit $src: $sout"; return 1; }
+    echo "$sout" | grep -q "manual-state-mutation\|state-mutation" || { echo "Should detect manual state mutation, got: $sout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_130() {
+    # Sentinel_EvidenceManipulation_Check — EVIDENCE_MANIPULATION detects event gaps
+    init_test_workspace
+    # Run a transition to create events, then delete events to create a gap
+    echo '{"schemaVersion":1,"taskId":"task-001","title":"Test task","status":"READY","scope":["src/**"],"successCriteria":["Works"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    run_core apply-transition --action RUN_EXECUTOR --task-id task-001 >/dev/null 2>&1
+    run_core apply-transition --action RUN_CHANGE_REVIEWER >/dev/null 2>&1
+    # Now events.jsonl has entries but we truncate it to remove the transition events
+    local events_file="$WORKSPACE_ABS/state/events.jsonl"
+    local line_count
+    line_count=$(wc -l < "$events_file")
+    if [[ "$line_count" -ge 3 ]]; then
+        # Keep only the first line (init event) and delete the rest
+        head -1 "$events_file" > "${events_file}.tmp"
+        mv "${events_file}.tmp" "$events_file"
+    fi
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "run-sentinel should exit 0, got exit $src: $sout"; return 1; }
+    echo "$sout" | grep -q "evidence-manipulation" || { echo "Should detect evidence-manipulation, got: $sout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_131() {
+    # Sentinel_DocsDrift_Check — DOCS_CONTRACT_DRIFT detects invalid schema JSON
+    init_test_workspace
+    # Temporarily corrupt a schema file
+    local schema_file="$PROJECT_ROOT/schemas/task.schema.json"
+    local schema_bak="$PROJECT_ROOT/schemas/task.schema.json.bak_$$"
+    cp "$schema_file" "$schema_bak"
+    echo '{invalid json' > "$schema_file"
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "run-sentinel should exit 0, got exit $src: $sout"; return 1; }
+    echo "$sout" | grep -q "schema-integrity" || { echo "Should detect schema-integrity issue, got: $sout"; return 1; }
+    # Restore schema file
+    mv "$schema_bak" "$schema_file"
+    cleanup_workspace
+    return 0
+}
+
+test_132() {
+    # Sentinel_PowerShellWrapper — run-sentinel.ps1 exists and is valid
+    local wrapper="$PROJECT_ROOT/scripts/run-sentinel.ps1"
+    [[ -f "$wrapper" ]] || { echo "run-sentinel.ps1 wrapper missing"; return 1; }
+    local content
+    content=$(cat "$wrapper")
+    echo "$content" | grep -q "run-sentinel" || { echo "run-sentinel.ps1 should invoke run-sentinel command"; return 1; }
+    echo "$content" | grep -q "PSScriptRoot" || { echo "run-sentinel.ps1 should use PSScriptRoot"; return 1; }
+    # Test actual execution using python directly (pwsh not available in WSL context)
+    init_test_workspace
+    set +e
+    local sout src
+    sout=$(run_core run-sentinel 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "run-sentinel should exit 0, got exit $src: $sout"; return 1; }
+    echo "$sout" | grep -q "overallStatus" || { echo "run-sentinel output should contain overallStatus, got: $sout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# ============================================================
 # RUN ALL
 # ============================================================
 
@@ -2165,6 +2524,22 @@ test_run "GuardIntegrity: ValidateStateIntegration" test_113
 test_run "GuardIntegrity: PolicySchemaExists" test_114
 test_run "GuardIntegrity: DefaultPolicyMatchesSchema" test_115
 test_run "GuardIntegrity: WrapperShExists" test_116
+test_run "Sentinel: Pass_CleanWorkspace" test_117
+test_run "Sentinel: Fail_ScopeBypass" test_118
+test_run "Sentinel: Warning_InfoOnly" test_119
+test_run "Sentinel: CriticalBlocksDone" test_120
+test_run "Sentinel: MissingFile_BackwardCompatible" test_121
+test_run "Sentinel: MalformedJson_FailsValidation" test_122
+test_run "Sentinel: NoSideEffects" test_123
+test_run "Sentinel: StateConsistency_Check" test_124
+test_run "Sentinel: GateWeakening_Check" test_125
+test_run "Sentinel: TestSuppression_Check" test_126
+test_run "Sentinel: ProtectedFile_Check" test_127
+test_run "Sentinel: HiddenWork_Check" test_128
+test_run "Sentinel: ManualMutation_Check" test_129
+test_run "Sentinel: EvidenceManipulation_Check" test_130
+test_run "Sentinel: DocsDrift_Check" test_131
+test_run "Sentinel: PowerShellWrapper" test_132
 
 # ============================================================
 # SUMMARY

@@ -719,6 +719,142 @@ Test-Run "GuardIntegrity: WrapperPSExists" {
 }
 
 # ============================================================
+# SENTINEL REGRESSION TESTS (PowerShell)
+# ============================================================
+Test-Run "Sentinel: CommandExists" {
+    $helpOut = & python "$scriptDir/teamloop-core.py" --help 2>$null
+    if ($helpOut -join "`n" -notmatch "run-sentinel") {
+        Write-Host "  FAIL: run-sentinel should appear in --help" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Sentinel: CleanWorkspacePasses" {
+    Init-TestWorkspace
+    $result = Invoke-PythonScriptWithExit "run-sentinel"
+    if (-not (Assert-Equal $result.exitCode 0 ("run-sentinel should exit 0 on clean workspace, got: " + $result.exitCode))) { return $false }
+    $output = $result.output -join "`n"
+    $sentinelJson = $output | ConvertFrom-Json
+    if (-not (Assert-Equal $sentinelJson.overallStatus "PASS" ("overallStatus should be PASS, got " + $sentinelJson.overallStatus))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Sentinel: OutputIsValidJson" {
+    Init-TestWorkspace
+    $result = Invoke-PythonScriptWithExit "run-sentinel"
+    $output = $result.output -join "`n"
+    try {
+        $data = $output | ConvertFrom-Json
+        if (-not $data.schemaVersion) {
+            Write-Host "  FAIL: Output JSON missing schemaVersion" -ForegroundColor Red
+            return $false
+        }
+    } catch {
+        Write-Host "  FAIL: Sentinel output is not valid JSON: $_" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Sentinel: OutputMatchesSchema" {
+    Init-TestWorkspace
+    $result = Invoke-PythonScriptWithExit "run-sentinel"
+    $output = $result.output -join "`n"
+    $data = $output | ConvertFrom-Json
+    # Verify required top-level fields
+    $requiredFields = @("schemaVersion", "runId", "inspectedAtUtc", "findings", "overallStatus", "summary")
+    foreach ($field in $requiredFields) {
+        if (-not $data.PSObject.Properties.Name.Contains($field)) {
+            Write-Host "  FAIL: Output missing required field '$field'" -ForegroundColor Red
+            return $false
+        }
+    }
+    # Verify summary fields
+    $summaryFields = @("totalFindings", "criticalCount", "warningCount", "infoCount")
+    foreach ($field in $summaryFields) {
+        if (-not $data.summary.PSObject.Properties.Name.Contains($field)) {
+            Write-Host "  FAIL: Summary missing required field '$field'" -ForegroundColor Red
+            return $false
+        }
+    }
+    # Verify findings have correct structure
+    $findings = $data.findings
+    if ($findings.Count -ne 9) {
+        Write-Host "  FAIL: Expected 9 findings, got $($findings.Count)" -ForegroundColor Red
+        return $false
+    }
+    foreach ($finding in $findings) {
+        $findingRequired = @("category", "severity", "title", "description", "evidence")
+        foreach ($field in $findingRequired) {
+            if (-not $finding.PSObject.Properties.Name.Contains($field)) {
+                Write-Host "  FAIL: Finding missing required field '$field'" -ForegroundColor Red
+                return $false
+            }
+        }
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Sentinel: WrapperPSExists" {
+    $wrapper = Join-Path $scriptDir "run-sentinel.ps1"
+    if (-not (Test-Path $wrapper)) {
+        Write-Host "  FAIL: run-sentinel.ps1 wrapper missing" -ForegroundColor Red
+        return $false
+    }
+    $content = Get-Content $wrapper -Raw
+    if ($content -notmatch 'run-sentinel') {
+        Write-Host "  FAIL: Wrapper should invoke run-sentinel command" -ForegroundColor Red
+        return $false
+    }
+    if ($content -notmatch 'PSScriptRoot') {
+        Write-Host "  FAIL: Wrapper should use PSScriptRoot to locate core script" -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+
+Test-Run "Sentinel: NineFindings" {
+    Init-TestWorkspace
+    $result = Invoke-PythonScriptWithExit "run-sentinel"
+    $output = $result.output -join "`n"
+    $data = $output | ConvertFrom-Json
+    if (-not (Assert-Equal $data.findings.Count 9 ("Should have exactly 9 findings, got $($data.findings.Count)"))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Sentinel: SchemaFileExists" {
+    $schemaPath = Join-Path $projectRoot "schemas\sentinel-inspection.schema.json"
+    if (-not (Test-Path $schemaPath)) {
+        Write-Host "  FAIL: sentinel-inspection.schema.json missing" -ForegroundColor Red
+        return $false
+    }
+    try {
+        $schemaContent = Get-Content $schemaPath -Raw
+        $null = $schemaContent | ConvertFrom-Json
+    } catch {
+        Write-Host "  FAIL: sentinel-inspection.schema.json is not valid JSON" -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+
+Test-Run "Sentinel: ValidateStatePasses" {
+    Init-TestWorkspace
+    # Run sentinel (creates report with PASS status)
+    Invoke-PythonScript "run-sentinel" | Out-Null
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 0 ("validate-state should pass after clean sentinel run, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+# ============================================================
 # SUMMARY
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor White
