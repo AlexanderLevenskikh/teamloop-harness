@@ -659,6 +659,66 @@ Test-Run "AutoDecision: SetDoneWritesDoneDecision" {
 }
 
 # ============================================================
+# GUARD INTEGRITY REGRESSION TESTS (PowerShell)
+# ============================================================
+Test-Run "GuardIntegrity: CommandExists" {
+    $helpOut = & python "$scriptDir/teamloop-core.py" --help 2>$null
+    if ($helpOut -join "`n" -notmatch "check-guard-integrity") {
+        Write-Host "  FAIL: check-guard-integrity should appear in --help" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "GuardIntegrity: MissingPolicyPasses" {
+    Init-TestWorkspace
+    $result = Invoke-PythonScriptWithExit "check-guard-integrity"
+    if (-not (Assert-Equal $result.exitCode 0 ("check-guard-integrity without policy should exit 0, got: " + $result.exitCode))) { return $false }
+    $output = $result.output -join "`n"
+    if ($output -notmatch '"status".*PASS|"status": "PASS"') {
+        Write-Host "  FAIL: check-guard-integrity should return PASS status without policy, got: $output" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "GuardIntegrity: CleanWorkspacePasses" {
+    Init-TestWorkspace
+    # Install policy but no modifications
+    $policy = '{"schemaVersion":1,"protectedPaths":["src/**"],"enforcementLevel":"error","evidenceRequired":{"fullTestSuite":true,"independentReview":true}}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "policies\protected-paths.json") -Content $policy
+    $result = Invoke-PythonScriptWithExit "check-guard-integrity"
+    if (-not (Assert-Equal $result.exitCode 0 ("check-guard-integrity should pass on clean workspace, got: " + $result.exitCode))) { return $false }
+    $output = $result.output -join "`n"
+    if ($output -notmatch '"status".*PASS|"status": "PASS"') {
+        Write-Host "  FAIL: check-guard-integrity should return PASS on clean workspace, got: $output" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "GuardIntegrity: WrapperPSExists" {
+    $wrapper = Join-Path $scriptDir "check-guard-integrity.ps1"
+    if (-not (Test-Path $wrapper)) {
+        Write-Host "  FAIL: check-guard-integrity.ps1 wrapper missing" -ForegroundColor Red
+        return $false
+    }
+    $content = Get-Content $wrapper -Raw
+    if ($content -notmatch 'check-guard-integrity') {
+        Write-Host "  FAIL: Wrapper should invoke check-guard-integrity command" -ForegroundColor Red
+        return $false
+    }
+    if ($content -notmatch 'PSScriptRoot') {
+        Write-Host "  FAIL: Wrapper should use PSScriptRoot to locate core script" -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+
+# ============================================================
 # SUMMARY
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor White

@@ -1544,6 +1544,236 @@ test_104() {
 }
 
 # ============================================================
+# GUARD INTEGRITY REGRESSION TESTS 105-116
+# ============================================================
+
+test_105() {
+    # GuardIntegrity: CommandExists — check-guard-integrity appears in --help output
+    local help_out
+    help_out=$("$PY" "$CORE" --help 2>&1)
+    echo "$help_out" | grep -q "check-guard-integrity" || { echo "check-guard-integrity should appear in --help, got: $help_out"; return 1; }
+    return 0
+}
+
+test_106() {
+    # GuardIntegrity: MissingPolicyPasses — without protected-paths.json, command returns PASS
+    init_test_workspace
+    set +e
+    local gout grc
+    gout=$(run_core check-guard-integrity 2>&1)
+    grc=$?
+    set -e
+    [[ $grc -eq 0 ]] || { echo "check-guard-integrity without policy should exit 0, got exit $grc: $gout"; return 1; }
+    echo "$gout" | grep -q '"status": "PASS"' || { echo "check-guard-integrity should return PASS status without policy, got: $gout"; return 1; }
+    echo "$gout" | grep -q "protected-paths.json not found" || { echo "Should note missing policy, got: $gout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_107() {
+    # GuardIntegrity: WithPolicyDetectsChanges — with a policy protecting src/**, a modified src file is detected
+    init_test_workspace
+    # Create and commit a src file
+    mkdir -p "$TEST_REPO_DIR/src"
+    printf 'original\n' > "$TEST_REPO_DIR/src/app.txt"
+    git -C "$TEST_REPO_DIR" add src/app.txt >/dev/null 2>&1
+    git -C "$TEST_REPO_DIR" commit -m "add src/app" --no-verify >/dev/null 2>&1
+    # Install a policy protecting src/**
+    cat > "$WORKSPACE_ABS/policies/protected-paths.json" << 'PEOF'
+{"schemaVersion":1,"protectedPaths":["src/**"],"enforcementLevel":"error","evidenceRequired":{"fullTestSuite":true,"independentReview":true}}
+PEOF
+    # Modify the protected file and stage the change
+    printf 'modified\n' > "$TEST_REPO_DIR/src/app.txt"
+    git -C "$TEST_REPO_DIR" add src/app.txt >/dev/null 2>&1
+    set +e
+    local gout grc
+    gout=$(run_core check-guard-integrity 2>&1)
+    grc=$?
+    set -e
+    [[ $grc -eq 1 ]] || { echo "check-guard-integrity should exit 1 on protected change, got exit $grc: $gout"; return 1; }
+    echo "$gout" | grep -q '"status": "FAIL"' || { echo "check-guard-integrity should return FAIL, got: $gout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_108() {
+    # GuardIntegrity: CleanWorkspacePasses — clean workspace with policy returns PASS
+    init_test_workspace
+    # Install policy but make no modifications
+    cat > "$WORKSPACE_ABS/policies/protected-paths.json" << 'PEOF'
+{"schemaVersion":1,"protectedPaths":["scripts/**"],"enforcementLevel":"error","evidenceRequired":{"fullTestSuite":true,"independentReview":true}}
+PEOF
+    set +e
+    local gout grc
+    gout=$(run_core check-guard-integrity 2>&1)
+    grc=$?
+    set -e
+    [[ $grc -eq 0 ]] || { echo "check-guard-integrity should pass on clean workspace, got exit $grc: $gout"; return 1; }
+    echo "$gout" | grep -q '"status": "PASS"' || { echo "check-guard-integrity should return PASS on clean workspace, got: $gout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_109() {
+    # GuardIntegrity: SchemaIntegrity — all schema files pass integrity check
+    init_test_workspace
+    # Run check-guard-integrity (which checks schemas/ directory in project root)
+    set +e
+    local gout grc
+    gout=$(run_core check-guard-integrity 2>&1)
+    grc=$?
+    set -e
+    echo "$gout" | grep -q '"name": "schema-integrity"' || { echo "Should have schema-integrity check, got: $gout"; return 1; }
+    local si_status
+    si_status=$(echo "$gout" | "$PY" -c "
+import json, sys
+data = json.load(sys.stdin)
+for c in data.get('checks', []):
+    if c['name'] == 'schema-integrity':
+        print(c['status'])
+        break
+" 2>/dev/null)
+    [[ "$si_status" == "PASS" ]] || { echo "schema-integrity check should PASS, got: $si_status"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_110() {
+    # GuardIntegrity: DangerousTestDeletion — deleting a test file is detected
+    init_test_workspace
+    # Create and commit a test file
+    mkdir -p "$TEST_REPO_DIR/tests"
+    printf 'print("ok")\n' > "$TEST_REPO_DIR/tests/sample_test.py"
+    git -C "$TEST_REPO_DIR" add tests/sample_test.py >/dev/null 2>&1
+    git -C "$TEST_REPO_DIR" commit -m "add test" --no-verify >/dev/null 2>&1
+    # Stage deletion (git status will show D)
+    rm "$TEST_REPO_DIR/tests/sample_test.py"
+    git -C "$TEST_REPO_DIR" add tests/sample_test.py >/dev/null 2>&1
+    set +e
+    local gout grc
+    gout=$(run_core check-guard-integrity 2>&1)
+    grc=$?
+    set -e
+    echo "$gout" | grep -q "test-file-deleted" || { echo "Should detect test file deletion, got: $gout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_111() {
+    # GuardIntegrity: EnforcementWarnDoesNotFail — with enforcementLevel "warn", violations produce WARNING status (exit 0)
+    init_test_workspace
+    # Create and commit a src file
+    mkdir -p "$TEST_REPO_DIR/src"
+    printf 'original\n' > "$TEST_REPO_DIR/src/app.txt"
+    git -C "$TEST_REPO_DIR" add src/app.txt >/dev/null 2>&1
+    git -C "$TEST_REPO_DIR" commit -m "add src" --no-verify >/dev/null 2>&1
+    # Install policy with enforcementLevel warn
+    cat > "$WORKSPACE_ABS/policies/protected-paths.json" << 'PEOF'
+{"schemaVersion":1,"protectedPaths":["src/**"],"enforcementLevel":"warn","evidenceRequired":{"fullTestSuite":true,"independentReview":true}}
+PEOF
+    # Modify the protected file and stage the change
+    printf 'modified\n' > "$TEST_REPO_DIR/src/app.txt"
+    git -C "$TEST_REPO_DIR" add src/app.txt >/dev/null 2>&1
+    set +e
+    local gout grc
+    gout=$(run_core check-guard-integrity 2>&1)
+    grc=$?
+    set -e
+    [[ $grc -eq 0 ]] || { echo "enforcementLevel warn should exit 0 even with violations, got exit $grc: $gout"; return 1; }
+    # Status will be FAIL from the check, but overall exit is 0 due to warn
+    echo "$gout" | grep -q '"status": "FAIL"' || { echo "Should still report FAIL status internally, got: $gout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_112() {
+    # GuardIntegrity: EnforcementErrorFails — with enforcementLevel "error", violations produce FAIL status (exit 1)
+    init_test_workspace
+    # Create and commit a src file
+    mkdir -p "$TEST_REPO_DIR/src"
+    printf 'original\n' > "$TEST_REPO_DIR/src/app.txt"
+    git -C "$TEST_REPO_DIR" add src/app.txt >/dev/null 2>&1
+    git -C "$TEST_REPO_DIR" commit -m "add src" --no-verify >/dev/null 2>&1
+    # Install policy with enforcementLevel error
+    cat > "$WORKSPACE_ABS/policies/protected-paths.json" << 'PEOF'
+{"schemaVersion":1,"protectedPaths":["src/**"],"enforcementLevel":"error","evidenceRequired":{"fullTestSuite":true,"independentReview":true}}
+PEOF
+    # Modify the protected file and stage the change
+    printf 'modified\n' > "$TEST_REPO_DIR/src/app.txt"
+    git -C "$TEST_REPO_DIR" add src/app.txt >/dev/null 2>&1
+    set +e
+    local gout grc
+    gout=$(run_core check-guard-integrity 2>&1)
+    grc=$?
+    set -e
+    [[ $grc -eq 1 ]] || { echo "enforcementLevel error should exit 1 on violation, got exit $grc: $gout"; return 1; }
+    echo "$gout" | grep -q '"status": "FAIL"' || { echo "Should report FAIL status, got: $gout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_113() {
+    # GuardIntegrity: ValidateStateIntegration — validate-state passes when guard check is clean
+    init_test_workspace
+    # Install policy (but no protected files exist in temp repo, so guard check is clean)
+    cat > "$WORKSPACE_ABS/policies/protected-paths.json" << 'PEOF'
+{"schemaVersion":1,"protectedPaths":["src/**"],"enforcementLevel":"error","evidenceRequired":{"fullTestSuite":true,"independentReview":true}}
+PEOF
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should pass when guard integrity is clean, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_114() {
+    # GuardIntegrity: PolicySchemaExists — protected-path-policy.schema.json exists and is valid JSON
+    local schema_file="$PROJECT_ROOT/schemas/protected-path-policy.schema.json"
+    [[ -f "$schema_file" ]] || { echo "protected-path-policy.schema.json missing"; return 1; }
+    "$PY" -c "import json,sys; json.load(open(sys.argv[1]))" "$schema_file" 2>/dev/null || { echo "protected-path-policy.schema.json is not valid JSON"; return 1; }
+    return 0
+}
+
+test_115() {
+    # GuardIntegrity: DefaultPolicyMatchesSchema — default policy validates against schema
+    local policy_file="$PROJECT_ROOT/templates/workspace/policies/protected-paths.json"
+    local schema_file="$PROJECT_ROOT/schemas/protected-path-policy.schema.json"
+    [[ -f "$policy_file" ]] || { echo "Default protected-paths.json missing"; return 1; }
+    "$PY" -c "
+import json, sys
+from jsonschema import validate, ValidationError
+policy = json.load(open(sys.argv[1]))
+schema = json.load(open(sys.argv[2]))
+try:
+    validate(instance=policy, schema=schema)
+except ValidationError as e:
+    print(f'Schema validation failed: {e.message}', file=sys.stderr)
+    sys.exit(1)
+" "$policy_file" "$schema_file" 2>/dev/null || { echo "Default policy does not match schema"; return 1; }
+    return 0
+}
+
+test_116() {
+    # GuardIntegrity: WrapperShExists — scripts/check-guard-integrity.sh exists and runs
+    local wrapper="$PROJECT_ROOT/scripts/check-guard-integrity.sh"
+    [[ -f "$wrapper" ]] || { echo "check-guard-integrity.sh wrapper missing"; return 1; }
+    # Run wrapper against a clean workspace
+    init_test_workspace
+    set +e
+    local wout wrc
+    wout=$(bash "$wrapper" --workspace "$WORKSPACE_ABS" 2>&1)
+    wrc=$?
+    set -e
+    [[ $wrc -eq 0 ]] || { echo "check-guard-integrity.sh should exit 0 on clean workspace, got exit $wrc: $wout"; return 1; }
+    echo "$wout" | grep -q '"status"' || { echo "Wrapper should output JSON with status, got: $wout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# ============================================================
 # RUN ALL
 # ============================================================
 
@@ -1923,6 +2153,18 @@ test_run "AutoDecision: DecisionFileValidJson" test_101
 test_run "AutoDecision: DecisionFileMatchesSchema" test_102
 test_run "ValidateContinuation: DecisionPhaseMismatch" test_103
 test_run "ValidateContinuation: AutoDecisionConsistent" test_104
+test_run "GuardIntegrity: CommandExists" test_105
+test_run "GuardIntegrity: MissingPolicyPasses" test_106
+test_run "GuardIntegrity: WithPolicyDetectsChanges" test_107
+test_run "GuardIntegrity: CleanWorkspacePasses" test_108
+test_run "GuardIntegrity: SchemaIntegrity" test_109
+test_run "GuardIntegrity: DangerousTestDeletion" test_110
+test_run "GuardIntegrity: EnforcementWarnDoesNotFail" test_111
+test_run "GuardIntegrity: EnforcementErrorFails" test_112
+test_run "GuardIntegrity: ValidateStateIntegration" test_113
+test_run "GuardIntegrity: PolicySchemaExists" test_114
+test_run "GuardIntegrity: DefaultPolicyMatchesSchema" test_115
+test_run "GuardIntegrity: WrapperShExists" test_116
 
 # ============================================================
 # SUMMARY
