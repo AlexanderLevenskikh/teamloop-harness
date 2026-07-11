@@ -485,6 +485,17 @@ def cmd_validate_state(args):
         if is_invalid_json_file(jpath):
             errors.append(f"{rel}: file exists but contains invalid JSON")
 
+    # --- Guard integrity check (last, optional, backward-compatible) ---
+    # If protected-paths.json exists, run guard integrity checks.
+    # enforcementLevel "error" adds errors (fails validation),
+    # "warn" adds warnings (does not fail validation),
+    # "off" or missing policy → skip entirely.
+    guard_errors, guard_warnings = _check_guard_integrity_for_validate(workspace, project_root)
+    errors.extend(guard_errors)
+    if guard_warnings:
+        for w in guard_warnings:
+            print(f"  WARNING: {w}", file=sys.stderr)
+
     if errors:
         print("VALIDATION FAILED:")
         for err in errors:
@@ -727,6 +738,72 @@ def _validate_continuation_consistency(workspace, state, schema_map):
             )
 
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Guard integrity check for validate-state
+# ---------------------------------------------------------------------------
+
+def _check_guard_integrity_for_validate(workspace, project_root):
+    """Lightweight guard integrity check integrated into validate-state.
+
+    Only runs if .teamloop/policies/protected-paths.json exists (backward-compatible).
+    Reuses the same check functions as cmd_check_guard_integrity.
+
+    Returns:
+        (errors, warnings) — two lists of strings.
+        errors: enforcementLevel is "error" and a check failed.
+        warnings: enforcementLevel is "warn" and a check produced findings.
+    """
+    errors = []
+    warnings = []
+
+    # Skip if policy does not exist (backward-compatible)
+    policy_path = os.path.join(workspace, "policies", "protected-paths.json")
+    if not os.path.exists(policy_path):
+        return errors, warnings
+
+    policy = read_json_file_safe(policy_path)
+    if policy is None:
+        # Policy file exists but is not valid JSON — still check what we can
+        return errors, warnings
+
+    enforcement_level = policy.get("enforcementLevel", "error")
+    if enforcement_level == "off":
+        return errors, warnings
+
+    # Get git status entries
+    git_status_entries = _get_git_status_entries()
+
+    # Check 1: protected paths
+    pp_check, pp_violations = _check_protected_paths(policy, git_status_entries, workspace)
+
+    # Check 2: dangerous operations
+    do_check, do_violations = _check_dangerous_operations(git_status_entries)
+
+    # Check 3: schema integrity
+    si_check, si_violations = _check_schema_integrity(project_root)
+
+    all_checks = [pp_check, do_check, si_check]
+    all_violations = pp_violations + do_violations + si_violations
+
+    has_fail = any(c["status"] == "FAIL" for c in all_checks)
+    has_warn = any(c["status"] == "WARNING" for c in all_checks)
+
+    if has_fail:
+        if enforcement_level == "error":
+            for v in all_violations:
+                errors.append(f"guard-integrity [{v.get('check', 'unknown')}]: {v.get('detail', 'violation detected')}")
+        elif enforcement_level == "warn":
+            for v in all_violations:
+                warnings.append(f"guard-integrity [{v.get('check', 'unknown')}]: {v.get('detail', 'violation detected')}")
+    elif has_warn:
+        if enforcement_level == "warn":
+            for c in all_checks:
+                if c["status"] == "WARNING":
+                    warnings.append(f"guard-integrity [{c['name']}]: {c.get('details', 'warning')}")
+
+    return errors, warnings
 
 
 # ---------------------------------------------------------------------------
@@ -1836,6 +1913,43 @@ def cmd_run_gates(args):
                     check["status"] = "ERROR"
                     check["summary"] = f"Execution error: {e}"
                     check["exitCode"] = -1
+        elif gate_type == "built-in-guard":
+            # Run guard integrity check as a built-in gate.
+            # Delegates to the same logic as cmd_check_guard_integrity via
+            # the subprocess interface so the result is captured in gate-result.json.
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            core_script = os.path.join(script_dir, "teamloop-core.py")
+            try:
+                proc = subprocess.run(
+                    [sys.executable, core_script, "check-guard-integrity", "--workspace", workspace],
+                    capture_output=True, text=True, timeout=30,
+                    cwd=os.path.dirname(os.path.abspath(workspace))
+                )
+                try:
+                    ghi_result = json.loads(proc.stdout)
+                    ghi_status = ghi_result.get("status", "ERROR")
+                    # Map guard-integrity status to gate check status
+                    if ghi_status == "FAIL":
+                        check["status"] = "FAIL"
+                    elif ghi_status == "WARNING":
+                        check["status"] = "PASS"
+                        check["warning"] = True
+                    else:
+                        check["status"] = "PASS"
+                    check["summary"] = f"Guard integrity: {ghi_status}"
+                    check["details"] = ghi_result.get("checks", [])
+                except json.JSONDecodeError:
+                    check["status"] = "ERROR"
+                    check["summary"] = "Guard integrity output not valid JSON"
+            except subprocess.TimeoutExpired:
+                check["status"] = "FAIL"
+                check["summary"] = "Guard integrity check timed out after 30s"
+            except FileNotFoundError as e:
+                check["status"] = "ERROR"
+                check["summary"] = f"Guard integrity error: {e}"
+            except subprocess.SubprocessError as e:
+                check["status"] = "ERROR"
+                check["summary"] = f"Guard integrity error: {e}"
         else:
             check["status"] = "SKIPPED"
             check["summary"] = f"Unknown gate type: {gate_type}"
