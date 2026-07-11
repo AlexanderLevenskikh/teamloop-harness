@@ -90,6 +90,9 @@ class WorkspaceContext:
     workspace_arg : str
         Workspace path (relative or absolute).  Resolved eagerly in
         ``__init__`` so every property works without re-resolving.
+    cache : ValidationCache, optional
+        Optional content-addressed validation cache instance.  When
+        provided, accessible via the ``validation_cache`` property.
 
     Examples
     --------
@@ -100,7 +103,7 @@ class WorkspaceContext:
     27
     """
 
-    def __init__(self, workspace_arg: str) -> None:
+    def __init__(self, workspace_arg: str, cache=None) -> None:
         # Eager: resolve workspace and project_root immediately.
         self.workspace: str = _resolve_workspace(workspace_arg)
         self.project_root: str = os.path.dirname(
@@ -109,6 +112,9 @@ class WorkspaceContext:
 
         # Private cache for lazy-loaded properties.
         self.__cache: Dict[str, Any] = {}
+
+        # Optional validation cache for deterministic command results.
+        self._validation_cache = cache
 
     # ------------------------------------------------------------------
     # Helpers
@@ -494,6 +500,11 @@ class WorkspaceContext:
             entries.append({"status": status, "path": path_part})
 
         return entries
+
+    @property
+    def validation_cache(self):
+        """Return the ValidationCache instance, or None if not configured."""
+        return self._validation_cache
 
     def __current_run_id(self) -> str:
         """Determine current run id from state or run-ledger."""

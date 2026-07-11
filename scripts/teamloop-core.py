@@ -16,7 +16,26 @@ import subprocess
 import sys
 import fnmatch
 import teamloop_fast_execution as fast_execution
+import teamloop_cache as _cache_mod
 from teamloop_context import WorkspaceContext
+
+
+def _create_cache(workspace, project_root, read_only=False):
+    """Create a ValidationCache for the workspace, or None if disabled.
+
+    Returns None when:
+      - --no-cache flag was passed (args.no_cache is True)
+      - TEAMLOOP_NO_CACHE env var is set
+    """
+    if os.environ.get("TEAMLOOP_NO_CACHE", "").lower() in ("1", "true", "yes"):
+        return None
+    cache_path = os.path.join(workspace, "cache", "validation-cache.jsonl")
+    return _cache_mod.ValidationCache(
+        cache_path=cache_path,
+        workspace=workspace,
+        project_root=project_root,
+        read_only=read_only,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -268,11 +287,57 @@ def cmd_init_workspace(args):
 
 
 # ---------------------------------------------------------------------------
+# Cache-aware validation helper
+# ---------------------------------------------------------------------------
+
+def _schema_file_path(host_or_project_root, name):
+    """Return the full path to a schema file given its basename."""
+    pr = host_or_project_root.project_root if hasattr(host_or_project_root, 'project_root') else host_or_project_root
+    return os.path.join(pr, "schemas", f"{name}.schema.json")
+
+
+def _cached_schema_validate(cache, check_name, data, schema, data_path, schema_path, errors_label):
+    """Validate data against schema with optional caching.
+
+    Returns list of errors (same format as validate_against_schema).
+    When cache is available, checks for a cached result first.
+    """
+    if cache is None:
+        return validate_against_schema(data, schema, errors_label)
+
+    cache_key = cache.build_key(
+        check="schema-validate:" + check_name,
+        inputs={
+            "data": data_path if data_path else None,
+        },
+        schemas={
+            "schema": schema_path if schema_path else None,
+        } if schema_path else None,
+    )
+
+    cached = cache.get(cache_key)
+    if cached is not None:
+        errors = cached["result"].get("errors", [])
+        return errors
+
+    errors = validate_against_schema(data, schema, errors_label)
+    cache.store(cache_key, {"checkId": check_name, "errors": errors})
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Command: validate-state
 # ---------------------------------------------------------------------------
 
 def cmd_validate_state(args):
-    host = WorkspaceContext(args.workspace)
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # Determine whether to use cache.
+    no_cache = getattr(args, "no_cache", False)
+    cache = None if no_cache else _create_cache(workspace, project_root)
+
+    host = WorkspaceContext(workspace, cache=cache)
     workspace = host.workspace
     project_root = host.project_root
 
@@ -286,7 +351,13 @@ def cmd_validate_state(args):
     if state is None:
         errors.append("team-state.json: file not found or invalid JSON")
     else:
-        schema_errors = validate_against_schema(state, schema_map.get("team-state", {}), "team-state")
+        schema_errors = _cached_schema_validate(
+            cache, "team-state", state,
+            schema_map.get("team-state", {}),
+            os.path.join(workspace, "state", "team-state.json"),
+            _schema_file_path(project_root, "team-state"),
+            "team-state",
+        )
         errors.extend(schema_errors)
 
         status = state.get("status", "")
@@ -349,7 +420,12 @@ def cmd_validate_state(args):
         try:
             entries = read_jsonl(jsonl_path)
             for i, entry in enumerate(entries, 1):
-                entry_errors = validate_against_schema(entry, schema, f"{name}.jsonl line {i}")
+                entry_errors = _cached_schema_validate(
+                    cache, f"{name}-line-{i}", entry, schema,
+                    jsonl_path,
+                    _schema_file_path(project_root, schema_name),
+                    f"{name}.jsonl line {i}",
+                )
                 errors.extend(entry_errors)
         except (json.JSONDecodeError, ValueError) as e:
             errors.append(f"{name}.jsonl: JSON parse error: {e}")
@@ -357,7 +433,13 @@ def cmd_validate_state(args):
     # --- current-task.json ---
     ct = host.current_task
     if ct is not None:
-        schema_errors = validate_against_schema(ct, schema_map.get("task", {}), "current-task.json")
+        schema_errors = _cached_schema_validate(
+            cache, "current-task", ct,
+            schema_map.get("task", {}),
+            os.path.join(workspace, "state", "current-task.json"),
+            _schema_file_path(project_root, "task"),
+            "current-task.json",
+        )
         errors.extend(schema_errors)
 
     # --- active-profile.json ---
@@ -365,7 +447,13 @@ def cmd_validate_state(args):
     if not profile:
         errors.append("active-profile.json: file not found or invalid JSON")
     else:
-        schema_errors = validate_against_schema(profile, schema_map.get("profile", {}), "active-profile.json")
+        schema_errors = _cached_schema_validate(
+            cache, "active-profile", profile,
+            schema_map.get("profile", {}),
+            os.path.join(workspace, "profiles", "active-profile.json"),
+            _schema_file_path(project_root, "profile"),
+            "active-profile.json",
+        )
         errors.extend(schema_errors)
 
     # --- gate-result.json files ---
@@ -375,7 +463,13 @@ def cmd_validate_state(args):
             gr_path = os.path.join(runs_dir, run_name, "gate-result.json")
             gr = read_json_file_safe(gr_path)
             if gr is not None:
-                schema_errors = validate_against_schema(gr, schema_map.get("gate-result", {}), f"runs/{run_name}/gate-result.json")
+                schema_errors = _cached_schema_validate(
+                    cache, f"gate-result-{run_name}", gr,
+                    schema_map.get("gate-result", {}),
+                    gr_path,
+                    _schema_file_path(project_root, "gate-result"),
+                    f"runs/{run_name}/gate-result.json",
+                )
                 errors.extend(schema_errors)
 
     # --- Fast-execution run artifacts ---
@@ -401,7 +495,12 @@ def cmd_validate_state(args):
                     errors.append(f"runs/{run_name}/{filename}: invalid JSON")
                     continue
                 schema = schema_map.get(schema_name, {})
-                errors.extend(validate_against_schema(artifact, schema, f"runs/{run_name}/{filename}"))
+                errors.extend(_cached_schema_validate(
+                    cache, f"fast-{schema_name}-{run_name}", artifact, schema,
+                    artifact_path,
+                    _schema_file_path(project_root, schema_name),
+                    f"runs/{run_name}/{filename}",
+                ))
                 if filename in ("execution-policy.json", "execution-manifest.json"):
                     present_contract_parts.append(filename)
                     if not fast_execution.verify_integrity(artifact):
@@ -410,9 +509,12 @@ def cmd_validate_state(args):
             if os.path.exists(routing_history_path):
                 try:
                     for line_no, decision in enumerate(read_jsonl(routing_history_path), 1):
-                        errors.extend(validate_against_schema(
-                            decision, schema_map.get("role-routing-decision", {}),
-                            f"runs/{run_name}/role-routing-history.jsonl line {line_no}"
+                        errors.extend(_cached_schema_validate(
+                            cache, f"routing-{run_name}-{line_no}", decision,
+                            schema_map.get("role-routing-decision", {}),
+                            routing_history_path,
+                            _schema_file_path(project_root, "role-routing-decision"),
+                            f"runs/{run_name}/role-routing-history.jsonl line {line_no}",
                         ))
                         if not fast_execution.verify_integrity(decision):
                             errors.append(
@@ -425,9 +527,12 @@ def cmd_validate_state(args):
             if os.path.exists(history_path):
                 try:
                     for line_no, snapshot in enumerate(read_jsonl(history_path), 1):
-                        errors.extend(validate_against_schema(
-                            snapshot, schema_map.get("progress-snapshot", {}),
-                            f"runs/{run_name}/progress-history.jsonl line {line_no}"
+                        errors.extend(_cached_schema_validate(
+                            cache, f"progress-{run_name}-{line_no}", snapshot,
+                            schema_map.get("progress-snapshot", {}),
+                            history_path,
+                            _schema_file_path(project_root, "progress-snapshot"),
+                            f"runs/{run_name}/progress-history.jsonl line {line_no}",
                         ))
                 except (json.JSONDecodeError, ValueError) as exc:
                     errors.append(f"runs/{run_name}/progress-history.jsonl: JSON parse error: {exc}")
@@ -489,7 +594,12 @@ def cmd_validate_state(args):
             try:
                 entries = read_jsonl(jsonl_path)
                 for i, entry in enumerate(entries, 1):
-                    entry_errors = validate_against_schema(entry, schema, f"memory/{name} line {i}")
+                    entry_errors = _cached_schema_validate(
+                        cache, f"memory-{name}-line-{i}", entry, schema,
+                        jsonl_path,
+                        _schema_file_path(project_root, schema_name),
+                        f"memory/{name} line {i}",
+                    )
                     errors.extend(entry_errors)
             except (json.JSONDecodeError, ValueError) as e:
                 errors.append(f"memory/{name}: JSON parse error: {e}")
@@ -498,7 +608,13 @@ def cmd_validate_state(args):
         pp_path = os.path.join(memory_dir, "project-profile.json")
         pp = read_json_file_safe(pp_path)
         if pp is not None:
-            pp_errors = validate_against_schema(pp, schema_map.get("memory-profile", {}), "memory/project-profile.json")
+            pp_errors = _cached_schema_validate(
+                cache, "memory-profile", pp,
+                schema_map.get("memory-profile", {}),
+                pp_path,
+                _schema_file_path(project_root, "memory-profile"),
+                "memory/project-profile.json",
+            )
             errors.extend(pp_errors)
 
         # Semantic validation: use the canonical _validate_memory function.
@@ -1300,6 +1416,8 @@ def cmd_memory_doctor(args):
     Produces gate-result-style JSON output with checks array.
     Exits 0 if clean, 1 if issues found.
     """
+    # Accept --no-cache flag for consistency; cache is optional.
+    no_cache = getattr(args, "no_cache", False)
     host = WorkspaceContext(args.workspace)
     memory_dir = os.path.join(host.workspace, "memory")
 
@@ -2678,6 +2796,8 @@ def cmd_check_guard_integrity(args):
     Outputs structured JSON to stdout.  Exit 0 for PASS/WARNING, exit 1 for FAIL
     (unless enforcementLevel is 'warn', in which case always exit 0).
     """
+    # Accept --no-cache flag for consistency; cache is optional.
+    no_cache = getattr(args, "no_cache", False)
     host = WorkspaceContext(args.workspace)
     workspace = host.workspace
     project_root = host.project_root
@@ -3421,6 +3541,64 @@ def _sentinel_check_evidence_manipulation(host):
     }
 
 
+# ---------------------------------------------------------------------------
+# Command: cache-inspect
+# ---------------------------------------------------------------------------
+
+def cmd_cache_inspect(args):
+    """Show validation cache statistics as JSON."""
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cache = _create_cache(workspace, project_root)
+    if cache is None:
+        print(json.dumps({"error": "Cache is disabled (TEAMLOOP_NO_CACHE set)"}, ensure_ascii=False))
+        sys.exit(1)
+    stats = cache.stats()
+    print(json.dumps(stats, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
+# Command: cache-clear
+# ---------------------------------------------------------------------------
+
+def cmd_cache_clear(args):
+    """Clear all entries in the validation cache."""
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cache = _create_cache(workspace, project_root)
+    if cache is None:
+        print(json.dumps({"error": "Cache is disabled (TEAMLOOP_NO_CACHE set)"}, ensure_ascii=False))
+        sys.exit(1)
+    removed = len(cache._entries)
+    cache.clear()
+    print(json.dumps({
+        "action": "cache-cleared",
+        "entriesRemoved": removed,
+        "checkedAtUtc": cache.stats()["checkedAtUtc"],
+    }, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
+# Command: cache-stats
+# ---------------------------------------------------------------------------
+
+def cmd_cache_stats(args):
+    """Show detailed cache statistics including integrity."""
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cache = _create_cache(workspace, project_root)
+    if cache is None:
+        print(json.dumps({"error": "Cache is disabled (TEAMLOOP_NO_CACHE set)"}, ensure_ascii=False))
+        sys.exit(1)
+    stats = cache.stats()
+    integrity = cache.integrity_check()
+    result = {
+        "stats": stats,
+        "integrity": integrity,
+    }
+    print(json.dumps(result, ensure_ascii=False))
+
+
 def cmd_run_sentinel(args):
     """READ-ONLY sentinel inspection command.
 
@@ -3434,11 +3612,16 @@ def cmd_run_sentinel(args):
     workspace = resolve_workspace(args.workspace)
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+    # Determine whether to use cache.
+    no_cache = getattr(args, "no_cache", False)
+    cache = None if no_cache else _create_cache(workspace, project_root)
+
     # Create WorkspaceContext for all data access
     host = WorkspaceContext.__new__(WorkspaceContext)
     host.workspace = workspace
     host.project_root = project_root
     host._WorkspaceContext__cache = {}
+    host._validation_cache = cache
 
     # Determine runId
     run_id = _sentinel_get_run_id(host)
@@ -3447,17 +3630,43 @@ def cmd_run_sentinel(args):
     run_dir = os.path.join(workspace, "runs", run_id)
     os.makedirs(run_dir, exist_ok=True)
 
+    # Helper: run a sentinel check with optional caching.
+    # Deterministic checks (2,3,4,6,7,8,9) are cached. Git-dependent
+    # checks include git status in the cache key.
+    def _run_sentinel_check(check_name, check_fn, git_dependent=False):
+        if cache is None:
+            return check_fn(host)
+        inputs = {}
+        schemas = {}
+        if git_dependent:
+            # Include git status in cache key for git-dependent checks.
+            inputs["git_status"] = json.dumps(
+                [(e["status"], e["path"]) for e in host.git_status_entries],
+                sort_keys=True,
+            )
+        cache_key = cache.build_key(
+            check="sentinel:" + check_name,
+            inputs=inputs,
+            schemas=schemas,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached["result"]
+        result = check_fn(host)
+        cache.store(cache_key, {"checkId": check_name, "result": result})
+        return result
+
     # Run all 9 checks
     findings = [
-        _sentinel_check_scope_policy_weakening(host),
-        _sentinel_check_gate_policy_weakening(host),
-        _sentinel_check_schema_integrity(host),
-        _sentinel_check_test_suppression(host),
-        _sentinel_check_state_mutation(host),
-        _sentinel_check_protected_file_changes(host),
-        _sentinel_check_hidden_unresolved_work(host),
-        _sentinel_check_manual_state_mutation(host),
-        _sentinel_check_evidence_manipulation(host),
+        _run_sentinel_check("scope-policy-weakening", _sentinel_check_scope_policy_weakening),
+        _run_sentinel_check("gate-policy-weakening", _sentinel_check_gate_policy_weakening),
+        _run_sentinel_check("schema-integrity", _sentinel_check_schema_integrity),
+        _run_sentinel_check("test-suppression", _sentinel_check_test_suppression),
+        _run_sentinel_check("state-mutation", _sentinel_check_state_mutation, git_dependent=True),
+        _run_sentinel_check("protected-file-changes", _sentinel_check_protected_file_changes, git_dependent=True),
+        _run_sentinel_check("hidden-unresolved-work", _sentinel_check_hidden_unresolved_work),
+        _run_sentinel_check("manual-state-mutation", _sentinel_check_manual_state_mutation, git_dependent=True),
+        _run_sentinel_check("evidence-manipulation", _sentinel_check_evidence_manipulation, git_dependent=True),
     ]
 
     # Compute counts for summary
@@ -5163,6 +5372,7 @@ def main():
     # validate-state
     p_validate = subparsers.add_parser("validate-state", help="Validate workspace state")
     p_validate.add_argument("--workspace", "-w", default=".teamloop")
+    p_validate.add_argument("--no-cache", action="store_true", help="Disable validation cache")
 
     # next-action
     p_next = subparsers.add_parser("next-action", help="Compute next action")
@@ -5214,10 +5424,12 @@ def main():
     # memory-doctor
     p_mdoctor = subparsers.add_parser("memory-doctor", help="Validate memory JSONL files and report findings")
     p_mdoctor.add_argument("--workspace", "-w", default=".teamloop")
+    p_mdoctor.add_argument("--no-cache", action="store_true", help="Disable validation cache")
 
     # check-guard-integrity
     p_ghi = subparsers.add_parser("check-guard-integrity", help="Check guard integrity for protected paths, dangerous operations, and schema validity")
     p_ghi.add_argument("--workspace", "-w", default=".teamloop")
+    p_ghi.add_argument("--no-cache", action="store_true", help="Disable validation cache")
 
     # write-continuation-decision
     p_wcd = subparsers.add_parser("write-continuation-decision", help="Write a continuation decision record")
@@ -5234,6 +5446,19 @@ def main():
     # run-sentinel
     p_sentinel = subparsers.add_parser("run-sentinel", help="Run read-only sentinel integrity inspection")
     p_sentinel.add_argument("--workspace", "-w", default=".teamloop")
+    p_sentinel.add_argument("--no-cache", action="store_true", help="Disable validation cache")
+
+    # cache-inspect
+    p_cache_inspect = subparsers.add_parser("cache-inspect", help="Show validation cache statistics")
+    p_cache_inspect.add_argument("--workspace", "-w", default=".teamloop")
+
+    # cache-clear
+    p_cache_clear = subparsers.add_parser("cache-clear", help="Clear the validation cache")
+    p_cache_clear.add_argument("--workspace", "-w", default=".teamloop")
+
+    # cache-stats
+    p_cache_stats = subparsers.add_parser("cache-stats", help="Show detailed cache statistics")
+    p_cache_stats.add_argument("--workspace", "-w", default=".teamloop")
 
     # final-gate
     p_fg = subparsers.add_parser("final-gate", help="Run final gate aggregator")
@@ -5311,6 +5536,9 @@ def main():
         "write-continuation-decision": cmd_write_continuation_decision,
         "check-guard-integrity": cmd_check_guard_integrity,
         "run-sentinel": cmd_run_sentinel,
+        "cache-inspect": cmd_cache_inspect,
+        "cache-clear": cmd_cache_clear,
+        "cache-stats": cmd_cache_stats,
         "final-gate": cmd_final_gate,
         "resolve-execution-policy": cmd_resolve_execution_policy,
         "materialize-execution-manifest": cmd_materialize_execution_manifest,
