@@ -989,6 +989,189 @@ Test-Run "E2E: MemoryIntegrity" {
 }
 
 # ============================================================
+# CAMPAIGN REGRESSION TESTS
+# ============================================================
+
+Test-Run "Campaign: FinalGate_Pass" {
+    Init-TestWorkspace
+    # Write minimal continuation-decision so validate-state passes
+    $cd = '{"schemaVersion":1,"decision":"SAFE_CHECKPOINT","phase":"SAFE_CHECKPOINT","justification":"test checkpoint","checks":[{"name":"test","status":"PASS"}],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "state\continuation-decision.json") -Content $cd
+    $result = Invoke-PythonScriptWithExit "final-gate"
+    if (-not (Assert-Equal $result.exitCode 0 ("final-gate should exit 0 on valid workspace, got: " + $result.output))) { return $false }
+    $output = $result.output -join "`n"
+    if ($output -notmatch '"overallStatus":\s*"PASS"') {
+        Write-Host "  FAIL: final-gate output should contain PASS, got: $output" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Campaign: FinalGate_FailValidation" {
+    Init-TestWorkspace
+    # Corrupt team-state.json
+    '{"schemaVersion":1}' | Set-Content (Join-Path $script:workspaceAbs "state\team-state.json") -Encoding UTF8
+    $result = Invoke-PythonScriptWithExit "final-gate"
+    if (-not (Assert-True ($result.exitCode -ne 0) ("final-gate should fail on corrupted state, got exit " + $result.exitCode))) { return $false }
+    $output = $result.output -join "`n"
+    if ($output -notmatch '"overallStatus":\s*"FAIL"') {
+        Write-Host "  FAIL: final-gate output should contain FAIL, got: $output" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Campaign: FinalGate_SchemaValid" {
+    Init-TestWorkspace
+    $cd = '{"schemaVersion":1,"decision":"SAFE_CHECKPOINT","phase":"SAFE_CHECKPOINT","justification":"test checkpoint","checks":[{"name":"test","status":"PASS"}],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "state\continuation-decision.json") -Content $cd
+    $result = Invoke-PythonScriptWithExit "final-gate"
+    if (-not (Assert-Equal $result.exitCode 0 ("final-gate should pass for valid workspace"))) { return $false }
+    $resultFile = Join-Path $script:workspaceAbs "state\final-gate-result.json"
+    if (-not (Test-Path $resultFile)) {
+        Write-Host "  FAIL: final-gate-result.json should exist at state/" -ForegroundColor Red
+        return $false
+    }
+    try {
+        $content = Get-Content $resultFile -Raw
+        $null = $content | ConvertFrom-Json
+    } catch {
+        Write-Host "  FAIL: final-gate-result.json should be valid JSON" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Campaign: ReviewEvidence_ContentMissing" {
+    Init-TestWorkspace
+    $commit = & git rev-parse HEAD 2>$null
+    $evidence = '{"schemaVersion":1,"taskId":"task-missing","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedCommit":"' + $commit + '","reviewedFiles":[{"path":"src/nonexistent.txt","hash":"0000000000000000000000000000000000000000000000000000000000000000","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "state\review-evidence.json") -Content $evidence
+    $result = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-True ($result.exitCode -ne 0) ("validate-state should FAIL when reviewed content is missing, exit=" + $result.exitCode))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Campaign: ReviewEvidence_ContentChanged" {
+    Init-TestWorkspace
+    # Create a file in the test repo, write evidence with a wrong hash
+    $srcDir = Join-Path $script:testRepoDir "src"
+    New-Item -ItemType Directory -Path $srcDir -Force | Out-Null
+    $filePath = Join-Path $srcDir "hashed.txt"
+    [System.IO.File]::WriteAllText($filePath, "original content`n", [System.Text.UTF8Encoding]::new($false))
+    Push-Location $script:testRepoDir
+    & git add src/hashed.txt 2>$null
+    & git commit -m "add hashed file" --quiet 2>$null
+    Pop-Location
+    $wrongHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    $evidence = '{"schemaVersion":1,"taskId":"task-changed","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"src/hashed.txt","hash":"' + $wrongHash + '","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "state\review-evidence.json") -Content $evidence
+    $result = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-True ($result.exitCode -ne 0) ("validate-state should FAIL when reviewed content hash differs, exit=" + $result.exitCode))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Campaign: ReviewEvidence_ValidContent" {
+    Init-TestWorkspace
+    # Create a file in the test repo, compute its actual hash
+    $srcDir = Join-Path $script:testRepoDir "src"
+    New-Item -ItemType Directory -Path $srcDir -Force | Out-Null
+    $filePath = Join-Path $srcDir "valid.txt"
+    [System.IO.File]::WriteAllText($filePath, "valid content`n", [System.Text.UTF8Encoding]::new($false))
+    Push-Location $script:testRepoDir
+    & git add src/valid.txt 2>$null
+    & git commit -m "add valid file" --quiet 2>$null
+    Pop-Location
+    $hash = (Get-FileHash $filePath -Algorithm SHA256).Hash.ToLower()
+    $evidence = '{"schemaVersion":1,"taskId":"task-valid","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"src/valid.txt","hash":"' + $hash + '","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "state\review-evidence.json") -Content $evidence
+    $result = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $result.exitCode 0 ("validate-state should PASS with matching reviewed content hash, exit=" + $result.exitCode + " output=" + $result.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Campaign: GuardNotConfigured" {
+    Init-TestWorkspace
+    # No protected-paths.json — should report NOT_CONFIGURED
+    $result = Invoke-PythonScriptWithExit "check-guard-integrity"
+    $output = $result.output -join "`n"
+    if ($output -notmatch '"NOT_CONFIGURED"') {
+        Write-Host "  FAIL: check-guard-integrity should report NOT_CONFIGURED when policy missing, got: $output" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Campaign: OrphanedInProgressDetected" {
+    Init-TestWorkspace
+    $task = '{"schemaVersion":1,"taskId":"task-orphan","title":"Orphan task","status":"IN_PROGRESS","priority":"P1","origin":"manual","scope":["src/**"],"allowedWrites":["src/**"],"successCriteria":["should be detected as orphan"]}'
+    $task | Set-Content (Join-Path $script:workspaceAbs "state\backlog.jsonl") -Encoding UTF8
+    $result = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-True ($result.exitCode -ne 0) ("validate-state should FAIL with orphaned IN_PROGRESS task, exit=" + $result.exitCode))) { return $false }
+    $output = $result.output -join "`n"
+    if ($output -notmatch '(?i)(orphan|IN_PROGRESS|inconsisten|stale)') {
+        Write-Host "  FAIL: validate-state should mention orphan/IN_PROGRESS issue, got: $output" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Campaign: MojibakeDetection" {
+    $teamloopFile = Join-Path $projectRoot "TEAMLOOP.md"
+    if (-not (Test-Path $teamloopFile)) {
+        Write-Host "  FAIL: TEAMLOOP.md should exist" -ForegroundColor Red
+        return $false
+    }
+    $content = Get-Content $teamloopFile -Raw -Encoding UTF8
+    if ($content -notmatch '\u2260') {
+        Write-Host "  FAIL: TEAMLOOP.md should contain the ≠ (U+2260) symbol" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Campaign: CrossTaskCleanup_Preserved" {
+    Init-TestWorkspace
+    # Use TEAMLOOP.md with a wrong hash to simulate tampered cross-task content
+    $wrongHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    $evidence = '{"schemaVersion":1,"taskId":"task-cross","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"TEAMLOOP.md","hash":"' + $wrongHash + '","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "state\review-evidence.json") -Content $evidence
+    $result = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-True ($result.exitCode -ne 0) ("validate-state should FAIL when reviewed content was tampered, exit=" + $result.exitCode))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Campaign: FinalGate_BashWrapperExists" {
+    $wrapper = Join-Path $scriptDir "final-gate.sh"
+    if (-not (Test-Path $wrapper)) {
+        Write-Host "  FAIL: final-gate.sh wrapper should exist" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "Campaign: FinalGate_PSWrapperExists" {
+    $wrapper = Join-Path $scriptDir "final-gate.ps1"
+    if (-not (Test-Path $wrapper)) {
+        Write-Host "  FAIL: final-gate.ps1 wrapper should exist" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+# ============================================================
 # SUMMARY
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor White

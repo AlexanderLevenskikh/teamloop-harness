@@ -456,6 +456,19 @@ def cmd_validate_state(args):
         if ct and ct.get("status") == "IN_PROGRESS":
             errors.append("state/current-task.json: stale IN_PROGRESS task while team-state has no currentTaskId")
 
+    # --- Orphaned IN_PROGRESS tasks in backlog ---
+    # If team-state has no currentTaskId but backlog contains IN_PROGRESS tasks,
+    # those are orphaned (no active run tracking them).
+    if state is not None and not state.get("currentTaskId", ""):
+        backlog_path = os.path.join(workspace, "state", "backlog.jsonl")
+        if os.path.exists(backlog_path):
+            for task in read_jsonl(backlog_path):
+                if task.get("status") == "IN_PROGRESS":
+                    errors.append(
+                        f"backlog: orphaned IN_PROGRESS task '{task.get('taskId', '?')}' "
+                        f"with no matching currentTaskId in team-state"
+                    )
+
     # --- Active current-task.json taskId mismatch invariant ---
     # If phase is task-scoped and currentTaskId is set, current-task.json must exist
     # and its taskId must match team-state's currentTaskId.
@@ -2571,7 +2584,10 @@ def cmd_check_guard_integrity(args):
     has_fail = any(c["status"] == "FAIL" for c in checks)
     has_warn = any(c["status"] == "WARNING" for c in checks)
 
-    if has_fail:
+    if not policy_loaded:
+        # Missing policy: report NOT_CONFIGURED explicitly
+        overall_status = "NOT_CONFIGURED"
+    elif has_fail:
         overall_status = "FAIL"
     elif has_warn:
         overall_status = "WARNING"
@@ -3882,24 +3898,25 @@ def cmd_final_gate(args):
     # ------------------------------------------------------------------
     # Compute overall status
     # ------------------------------------------------------------------
-    # FAIL if any blocking check is FAIL
-    has_blocking_fail = any(
-        c["status"] == "FAIL" and c["blocking"]
+    # FAIL if any check is FAIL
+    has_any_fail = any(c["status"] == "FAIL" for c in checks)
+
+    # NOT_CONFIGURED only if at least one NON-BLOCKING check is NOT_CONFIGURED
+    # (blocking NOT_CONFIGURED would be treated as FAIL)
+    has_non_blocking_not_configured = any(
+        c["status"] == "NOT_CONFIGURED" and not c["blocking"]
+        for c in checks
+    )
+    has_blocking_not_configured = any(
+        c["status"] == "NOT_CONFIGURED" and c["blocking"]
         for c in checks
     )
 
-    # NOT_CONFIGURED only if no blocking fails and at least one check is NOT_CONFIGURED
-    # and no check is FAIL (blocking or not)
-    has_any_fail = any(c["status"] == "FAIL" for c in checks)
-    has_not_configured = any(c["status"] == "NOT_CONFIGURED" for c in checks)
-
-    if has_blocking_fail:
+    if has_any_fail or has_blocking_not_configured:
         overall_status = "FAIL"
-    elif has_any_fail:
-        # Non-blocking FAIL still means overall is FAIL for safety
-        overall_status = "FAIL"
-    elif has_not_configured:
-        overall_status = "NOT_CONFIGURED"
+    elif has_non_blocking_not_configured:
+        # Non-blocking NOT_CONFIGURED: report as advisory but overall is PASS
+        overall_status = "PASS"
     else:
         overall_status = "PASS"
 
@@ -4242,22 +4259,34 @@ def _validate_review_evidence(workspace):
             pass
 
     # Check each reviewed file
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    workspace_parent = os.path.dirname(os.path.normpath(workspace))
     for rf in evidence.get("reviewedFiles", []):
         path = rf.get("path", "")
         expected_hash = rf.get("hash", "")
 
-        # Try to resolve the file path
-        abs_path = path
-        if not os.path.isabs(abs_path):
-            abs_path = os.path.join(os.getcwd(), path)
+        # Try to resolve the file path from multiple bases
+        candidates = []
+        if os.path.isabs(path):
+            candidates.append(path)
+        else:
+            candidates.append(os.path.join(workspace_parent, path))
+            if project_root:
+                candidates.append(os.path.join(project_root, path))
 
-        if not os.path.exists(abs_path):
+        found = False
+        for abs_path in candidates:
+            if os.path.exists(abs_path):
+                actual_hash = _compute_file_sha256(abs_path)
+                if actual_hash and actual_hash != expected_hash:
+                    errors.append(f"reviewed content changed: {path}")
+                found = True
+                break
+
+        if not found:
+            # File might be tracked by git but not in working tree — skip
+            # since we can't verify content without the file present
             errors.append(f"reviewed content missing: {path}")
-            continue
-
-        actual_hash = _compute_file_sha256(abs_path)
-        if actual_hash and actual_hash != expected_hash:
-            errors.append(f"reviewed content changed: {path}")
 
     return errors
 

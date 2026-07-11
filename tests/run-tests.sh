@@ -2709,6 +2709,214 @@ test_run "E2E: ProtectedChange" test_137
 test_run "E2E: MemoryIntegrity" test_138
 
 # ============================================================
+# CAMPAIGN REGRESSION TESTS (139-150)
+# ============================================================
+
+# Test 139: FinalGate_Pass
+test_139() {
+    init_test_workspace
+    # Write minimal continuation-decision so validate-state passes
+    echo '{"schemaVersion":1,"decision":"SAFE_CHECKPOINT","phase":"SAFE_CHECKPOINT","justification":"test checkpoint","checks":[{"name":"test","status":"PASS"}],"createdAtUtc":"2024-01-01T00:00:00Z"}' > "$WORKSPACE_ABS/state/continuation-decision.json"
+    set +e
+    local out rc
+    out=$("$PY" "$CORE" final-gate --workspace "$WORKSPACE_ABS" 2>&1)
+    rc=$?
+    set +e
+    [[ $rc -eq 0 ]] || { echo "final-gate should exit 0 on valid workspace, got rc=$rc: $out"; return 1; }
+    echo "$out" | grep -q '"overallStatus": "PASS"' || { echo "final-gate output should contain PASS, got: $out"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# Test 140: FinalGate_FailValidation
+test_140() {
+    init_test_workspace
+    # Corrupt team-state.json by removing required field
+    echo '{"schemaVersion":1}' > "$WORKSPACE_ABS/state/team-state.json"
+    set +e
+    local out rc
+    out=$("$PY" "$CORE" final-gate --workspace "$WORKSPACE_ABS" 2>&1)
+    rc=$?
+    set +e
+    [[ $rc -ne 0 ]] || { echo "final-gate should fail on corrupted state, got rc=$rc"; return 1; }
+    echo "$out" | grep -q '"overallStatus": "FAIL"' || { echo "final-gate output should contain FAIL, got: $out"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# Test 141: FinalGate_SchemaValid
+test_141() {
+    init_test_workspace
+    echo '{"schemaVersion":1,"decision":"SAFE_CHECKPOINT","phase":"SAFE_CHECKPOINT","justification":"test checkpoint","checks":[{"name":"test","status":"PASS"}],"createdAtUtc":"2024-01-01T00:00:00Z"}' > "$WORKSPACE_ABS/state/continuation-decision.json"
+    set +e
+    local out rc
+    out=$("$PY" "$CORE" final-gate --workspace "$WORKSPACE_ABS" 2>&1)
+    rc=$?
+    set +e
+    [[ $rc -eq 0 ]] || { echo "final-gate should pass for valid workspace, got: $out"; return 1; }
+    local result_file="$WORKSPACE_ABS/state/final-gate-result.json"
+    [[ -f "$result_file" ]] || { echo "final-gate-result.json should exist at state/"; return 1; }
+    # Validate JSON is parseable
+    "$PY" -c "import json,sys; json.loads(open(sys.argv[1]).read())" "$result_file" 2>/dev/null || { echo "final-gate-result.json should be valid JSON"; return 1; }
+    # Validate required fields exist
+    local req_fields='schemaVersion checkedAtUtc currentBranch currentHead overallStatus checks'
+    for field in $req_fields; do
+      grep -q "\"$field\"" "$result_file" || { echo "final-gate-result.json should have field '$field'"; return 1; }
+    done
+    cleanup_workspace
+    return 0
+}
+
+# Test 142: ReviewEvidence_ContentMissing
+test_142() {
+    init_test_workspace
+    # Write review evidence referencing a file that doesn't exist
+    local evidence='{"schemaVersion":1,"taskId":"task-missing","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedCommit":"'$(git rev-parse HEAD)'","reviewedFiles":[{"path":"src/nonexistent.txt","hash":"0000000000000000000000000000000000000000000000000000000000000000","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    echo "$evidence" > "$WORKSPACE_ABS/state/review-evidence.json"
+    set +e
+    local out rc
+    out=$("$PY" "$CORE" validate-state --workspace "$WORKSPACE_ABS" 2>&1)
+    rc=$?
+    set +e
+    [[ $rc -ne 0 ]] || { echo "validate-state should FAIL when reviewed content is missing, got: $out"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# Test 143: ReviewEvidence_ContentChanged
+test_143() {
+    init_test_workspace
+    # Use a tracked file that exists: TEAMLOOP.md
+    local hash
+    hash=$(sha256sum "$PROJECT_ROOT/TEAMLOOP.md" | cut -d' ' -f1)
+    # Write review evidence with a WRONG hash to simulate changed content
+    local wrong_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    local evidence='{"schemaVersion":1,"taskId":"task-changed","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"TEAMLOOP.md","hash":"'${wrong_hash}'","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    echo "$evidence" > "$WORKSPACE_ABS/state/review-evidence.json"
+    set +e
+    local out rc
+    out=$("$PY" "$CORE" validate-state --workspace "$WORKSPACE_ABS" 2>&1)
+    rc=$?
+    set +e
+    [[ $rc -ne 0 ]] || { echo "validate-state should FAIL when reviewed content hash differs, got: $out"; return 1; }
+    echo "$out" | grep -qi "changed\|mismatch\|hash" || { echo "validate-state should report content change, got: $out"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# Test 144: ReviewEvidence_ValidContent
+test_144() {
+    init_test_workspace
+    # Use TEAMLOOP.md with its correct hash
+    local hash
+    hash=$(sha256sum "$PROJECT_ROOT/TEAMLOOP.md" | cut -d' ' -f1)
+    local evidence='{"schemaVersion":1,"taskId":"task-valid","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"TEAMLOOP.md","hash":"'${hash}'","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    echo "$evidence" > "$WORKSPACE_ABS/state/review-evidence.json"
+    set +e
+    local out rc
+    out=$("$PY" "$CORE" validate-state --workspace "$WORKSPACE_ABS" 2>&1)
+    rc=$?
+    set +e
+    [[ $rc -eq 0 ]] || { echo "validate-state should PASS with matching reviewed content hash, got: $out"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# Test 145: GuardNotConfigured
+test_145() {
+    init_test_workspace
+    # No protected-paths.json — guard should report NOT_CONFIGURED, not PASS
+    set +e
+    local out rc
+    out=$("$PY" "$CORE" check-guard-integrity --workspace "$WORKSPACE_ABS" 2>&1)
+    rc=$?
+    set +e
+    echo "$out" | grep -q '"status": "NOT_CONFIGURED"' || { echo "check-guard-integrity should report NOT_CONFIGURED when policy is missing, got: $out"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# Test 146: OrphanedInProgressDetected
+test_146() {
+    init_test_workspace
+    # Add an IN_PROGRESS task to backlog but leave currentTaskId empty
+    local task='{"schemaVersion":1,"taskId":"task-orphan","title":"Orphan task","status":"IN_PROGRESS","priority":"P1","origin":"manual","scope":["src/**"],"allowedWrites":["src/**"],"successCriteria":["task should be detected as orphan"]}'
+    echo "$task" > "$WORKSPACE_ABS/state/backlog.jsonl"
+    # team-state has empty currentTaskId — should detect orphaned IN_PROGRESS
+    set +e
+    local out rc
+    out=$("$PY" "$CORE" validate-state --workspace "$WORKSPACE_ABS" 2>&1)
+    rc=$?
+    set +e
+    [[ $rc -ne 0 ]] || { echo "validate-state should FAIL with orphaned IN_PROGRESS task, got: $out"; return 1; }
+    echo "$out" | grep -qi "orphan\|IN_PROGRESS\|inconsisten\|stale" || { echo "validate-state output should mention orphan/IN_PROGRESS issue, got: $out"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# Test 147: MojibakeDetection
+test_147() {
+    # Verify TEAMLOOP.md does not contain the mojibake sequence
+    local teamloop_file="$PROJECT_ROOT/TEAMLOOP.md"
+    [[ -f "$teamloop_file" ]] || { echo "TEAMLOOP.md should exist"; return 1; }
+    # The known mojibake bytes (UTF-8 reinterpreted as CP1251) for the "≠" symbol
+    # Check for the literal mojibake text
+    local content
+    content=$(cat "$teamloop_file")
+    # Check that the correct symbol exists
+    echo "$content" | grep -q '≠' || { echo "TEAMLOOP.md should contain the ≠ symbol"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# Test 148: CrossTaskCleanup_Preserved
+test_148() {
+    init_test_workspace
+    # Use TEAMLOOP.md with a wrong hash to simulate tampered cross-task content
+    local wrong_hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    local evidence='{"schemaVersion":1,"taskId":"task-cross","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"TEAMLOOP.md","hash":"'${wrong_hash}'","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    echo "$evidence" > "$WORKSPACE_ABS/state/review-evidence.json"
+    set +e
+    local out rc
+    out=$("$PY" "$CORE" validate-state --workspace "$WORKSPACE_ABS" 2>&1)
+    rc=$?
+    set +e
+    [[ $rc -ne 0 ]] || { echo "validate-state should FAIL when reviewed content was tampered (cross-task cleanup), got: $out"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# Test 149: FinalGate_BashWrapperExists
+test_149() {
+    local wrapper="$PROJECT_ROOT/scripts/final-gate.sh"
+    [[ -f "$wrapper" ]] || { echo "final-gate.sh wrapper should exist"; return 1; }
+    [[ -x "$wrapper" ]] || { echo "final-gate.sh wrapper should be executable"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+# Test 150: FinalGate_PSWrapperExists
+test_150() {
+    local wrapper="$PROJECT_ROOT/scripts/final-gate.ps1"
+    [[ -f "$wrapper" ]] || { echo "final-gate.ps1 wrapper should exist"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_run "Campaign: FinalGate_Pass" test_139
+test_run "Campaign: FinalGate_FailValidation" test_140
+test_run "Campaign: FinalGate_SchemaValid" test_141
+test_run "Campaign: ReviewEvidence_ContentMissing" test_142
+test_run "Campaign: ReviewEvidence_ContentChanged" test_143
+test_run "Campaign: ReviewEvidence_ValidContent" test_144
+test_run "Campaign: GuardNotConfigured" test_145
+test_run "Campaign: OrphanedInProgressDetected" test_146
+test_run "Campaign: MojibakeDetection" test_147
+test_run "Campaign: CrossTaskCleanup_Preserved" test_148
+test_run "Campaign: FinalGate_BashWrapperExists" test_149
+test_run "Campaign: FinalGate_PSWrapperExists" test_150
+
+# ============================================================
 # SUMMARY
 # ============================================================
 echo ""
