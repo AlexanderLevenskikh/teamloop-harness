@@ -13,12 +13,184 @@ DISCOVERED=0
 TEST_FROM="${TEAMLOOP_TEST_FROM:-1}"
 TEST_TO="${TEAMLOOP_TEST_TO:-999999}"
 
+# ============================================================
+# FILTERING FLAGS AND ENV VARS
+# ============================================================
+TEST_LAYER=""
+TEST_AFFECTED=false
+TEST_FULL=false
+TEST_LIST_LAYERS=false
+TEST_AUTO=false
+TEST_INCLUDE=""
+
+# Parse CLI flags (before test functions, after variable init)
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --layer)
+            TEST_LAYER="$2"
+            shift 2
+            ;;
+        --affected)
+            TEST_AFFECTED=true
+            shift
+            ;;
+        --full)
+            TEST_FULL=true
+            shift
+            ;;
+        --list-layers)
+            TEST_LIST_LAYERS=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: run-tests.sh [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --layer LAYER       Run only tests in the given layer (smoke|contract|runtime|integration)"
+            echo "  --affected          Run only tests affected by git changes (via test-select)"
+            echo "  --full              Run all tests (explicit full suite)"
+            echo "  --list-layers       List available layers and test counts"
+            echo "  --help, -h          Show this help"
+            echo ""
+            echo "Environment variables:"
+            echo "  TEAMLOOP_TEST_FROM  First test number to run (default: 1)"
+            echo "  TEAMLOOP_TEST_TO    Last test number to run (default: 999999)"
+            echo "  TEAMLOOP_TEST_INCLUDE  Comma-separated list of test IDs (e.g. 1,5,10)"
+            echo "  TEAMLOOP_TEST_AUTO   If non-empty, auto-select tests via test-select --since-ref HEAD~1"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Handle env var shortcuts
+if [[ -n "${TEAMLOOP_TEST_INCLUDE:-}" ]]; then
+    TEST_INCLUDE="$TEAMLOOP_TEST_INCLUDE"
+fi
+if [[ -n "${TEAMLOOP_TEST_AUTO:-}" ]]; then
+    TEST_AUTO=true
+fi
+
+# ============================================================
+# LAYER SELECTION via test-select
+# ============================================================
+# Array of allowed test function names (e.g. test_01, test_02, ...)
+# When empty, all tests run (default behavior).
+declare -a ALLOWED_TEST_FUNCS=()
+SELECTION_ACTIVE=false
+
+resolve_test_selection() {
+    if $TEST_LIST_LAYERS; then
+        "$PY" "$CORE" test-select --list-layers
+        exit 0
+    fi
+
+    if $TEST_FULL; then
+        # Explicit full — run all tests (ALLOWED_TEST_FUNCS stays empty)
+        return 0
+    fi
+
+    if $TEST_AUTO; then
+        local sel
+        sel=$("$PY" "$CORE" test-select --affected --explain 2>/dev/null) || sel=$("$PY" "$CORE" test-select --affected 2>/dev/null)
+        ALLOWED_TEST_FUNCS=($(echo "$sel" | "$PY" -c "
+import json, sys
+data = json.load(sys.stdin)
+for t in data.get('selectedTests', []):
+    print(t)
+" 2>/dev/null))
+        if [[ ${#ALLOWED_TEST_FUNCS[@]} -gt 0 ]]; then
+            SELECTION_ACTIVE=true
+            echo "[test-select] Auto-selected ${#ALLOWED_TEST_FUNCS[@]} tests via --affected"
+        fi
+        return 0
+    fi
+
+    if [[ -n "$TEST_INCLUDE" ]]; then
+        # TEAMLOOP_TEST_INCLUDE: comma-separated test IDs like "1,5,10"
+        IFS=',' read -ra include_arr <<< "$TEST_INCLUDE"
+        for id in "${include_arr[@]}"; do
+            id=$(echo "$id" | tr -d ' ')
+            local padded
+            padded=$(printf "test_%02d" "$id")
+            ALLOWED_TEST_FUNCS+=("$padded")
+        done
+        SELECTION_ACTIVE=true
+        echo "[test-select] Included ${#ALLOWED_TEST_FUNCS[@]} tests via TEAMLOOP_TEST_INCLUDE"
+        return 0
+    fi
+
+    if [[ -n "$TEST_LAYER" ]]; then
+        local sel
+        sel=$("$PY" "$CORE" test-select --layer "$TEST_LAYER" 2>/dev/null) || {
+            echo "[test-select] Failed to resolve layer '$TEST_LAYER'" >&2
+            exit 1
+        }
+        ALLOWED_TEST_FUNCS=($(echo "$sel" | "$PY" -c "
+import json, sys
+data = json.load(sys.stdin)
+for t in data.get('selectedTests', []):
+    print(t)
+" 2>/dev/null))
+        if [[ ${#ALLOWED_TEST_FUNCS[@]} -gt 0 ]]; then
+            SELECTION_ACTIVE=true
+            echo "[test-select] Layer '$TEST_LAYER' selected ${#ALLOWED_TEST_FUNCS[@]} tests"
+        fi
+        return 0
+    fi
+
+    if $TEST_AFFECTED; then
+        local sel
+        sel=$("$PY" "$CORE" test-select --affected 2>/dev/null) || {
+            echo "[test-select] Failed to resolve affected tests" >&2
+            exit 1
+        }
+        ALLOWED_TEST_FUNCS=($(echo "$sel" | "$PY" -c "
+import json, sys
+data = json.load(sys.stdin)
+for t in data.get('selectedTests', []):
+    print(t)
+" 2>/dev/null))
+        if [[ ${#ALLOWED_TEST_FUNCS[@]} -gt 0 ]]; then
+            SELECTION_ACTIVE=true
+            echo "[test-select] Affected selection picked ${#ALLOWED_TEST_FUNCS[@]} tests"
+        fi
+        return 0
+    fi
+
+    # Default: no filtering, run all tests
+    return 0
+}
+
+resolve_test_selection
+
+# Helper: check if a test function name is in the allowed set
+is_test_allowed() {
+    local func_name="$1"
+    if ! $SELECTION_ACTIVE; then
+        return 0  # no filter active, all tests allowed
+    fi
+    for allowed in "${ALLOWED_TEST_FUNCS[@]}"; do
+        if [[ "$allowed" == "$func_name" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 test_run() {
     local name="$1"
     shift
     local func_name="$1"
     DISCOVERED=$((DISCOVERED + 1))
     if (( DISCOVERED < TEST_FROM || DISCOVERED > TEST_TO )); then
+        return 0
+    fi
+    # Layer/affected/include selection filter
+    if ! is_test_allowed "$func_name"; then
         return 0
     fi
     TOTAL=$((TOTAL + 1))

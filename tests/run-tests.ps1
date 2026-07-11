@@ -1,5 +1,9 @@
 param(
-    [string]$TestWorkspace = ".teamloop-test"
+    [string]$TestWorkspace = ".teamloop-test",
+    [string]$Layer,
+    [switch]$Affected,
+    [switch]$Full,
+    [switch]$ListLayers
 )
 
 $ErrorActionPreference = "Continue"
@@ -15,9 +19,138 @@ $script:failed = 0
 $script:workspaceAbs = ""
 $script:testRepoDir = ""
 
+# ============================================================
+# FILTERING STATE
+# ============================================================
+$script:selectedLayers = @()      # layers to include (empty = all)
+$script:autoMode = $false
+$script:includeTests = @()        # test numbers from TEAMLOOP_TEST_INCLUDE
+$script:selectionActive = $false
+
+# Resolve test selection from flags + env vars
+function Resolve-TestSelection {
+    if ($ListLayers) {
+        & python "$scriptDir/teamloop-core.py" test-select --list-layers
+        exit 0
+    }
+
+    if ($Full) {
+        return # explicit full — no filtering
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:TEAMLOOP_TEST_AUTO)) {
+        $script:autoMode = $true
+        try {
+            $selOutput = & python "$scriptDir/teamloop-core.py" test-select --affected 2>$null | Out-String
+            $selData = $selOutput | ConvertFrom-Json
+            # Extract unique layers from selectedTests
+            $layerSet = @{}
+            foreach ($t in $selData.selectedTests) {
+                foreach ($layer in $t.layers) {
+                    $layerSet[$layer] = $true
+                }
+            }
+            $script:selectedLayers = @($layerSet.Keys)
+            $script:selectionActive = $true
+            Write-Host "[test-select] Auto-selected layers: $($script:selectedLayers -join ', ')" -ForegroundColor Yellow
+        } catch {
+            Write-Host "[test-select] Failed to resolve affected tests, running all" -ForegroundColor Yellow
+        }
+        return
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:TEAMLOOP_TEST_INCLUDE)) {
+        $ids = $env:TEAMLOOP_TEST_INCLUDE -split ',' | ForEach-Object { $_.Trim() }
+        foreach ($id in $ids) {
+            if ($id -match '^\d+$') {
+                $script:includeTests += [int]$id
+            }
+        }
+        if ($script:includeTests.Count -gt 0) {
+            $script:selectionActive = $true
+            Write-Host "[test-select] Included test(s) via TEAMLOOP_TEST_INCLUDE: $($script:includeTests -join ', ')" -ForegroundColor Yellow
+        }
+        return
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Layer)) {
+        try {
+            $selOutput = & python "$scriptDir/teamloop-core.py" test-select --layer $Layer 2>$null | Out-String
+            $selData = $selOutput | ConvertFrom-Json
+            # Extract unique layers from selected tests
+            $layerSet = @{}
+            foreach ($t in $selData.selectedTests) {
+                foreach ($l in $t.layers) {
+                    $layerSet[$l] = $true
+                }
+            }
+            $script:selectedLayers = @($layerSet.Keys)
+            $script:selectionActive = $true
+            Write-Host "[test-select] Layer '$Layer' selected layers: $($script:selectedLayers -join ', ')" -ForegroundColor Yellow
+        } catch {
+            Write-Host "[test-select] Failed to resolve layer '$Layer'" -ForegroundColor Red
+            exit 1
+        }
+        return
+    }
+
+    if ($Affected) {
+        try {
+            $selOutput = & python "$scriptDir/teamloop-core.py" test-select --affected 2>$null | Out-String
+            $selData = $selOutput | ConvertFrom-Json
+            # Extract unique layers from selectedTests
+            $layerSet = @{}
+            foreach ($t in $selData.selectedTests) {
+                foreach ($layer in $t.layers) {
+                    $layerSet[$layer] = $true
+                }
+            }
+            $script:selectedLayers = @($layerSet.Keys)
+            $script:selectionActive = $true
+            Write-Host "[test-select] Affected selection picked layers: $($script:selectedLayers -join ', ')" -ForegroundColor Yellow
+        } catch {
+            Write-Host "[test-select] Failed to resolve affected tests" -ForegroundColor Red
+            exit 1
+        }
+        return
+    }
+
+    # Default: no filtering, run all tests
+}
+
+Resolve-TestSelection
+
+# Check if a test with given layers should run
+function Is-TestAllowed {
+    param([string[]]$TestLayers)
+    if (-not $script:selectionActive) {
+        return $true  # no filter active
+    }
+    if ($script:includeTests.Count -gt 0) {
+        # For include mode, check against test number (passed via total counter)
+        $testNum = $script:testNumForInclude
+        foreach ($id in $script:includeTests) {
+            if ($testNum -eq $id) { return $true }
+        }
+        return $false
+    }
+    # Layer-based selection: test runs if any of its layers are in selectedLayers
+    foreach ($tl in $TestLayers) {
+        foreach ($sl in $script:selectedLayers) {
+            if ($tl -eq $sl) { return $true }
+        }
+    }
+    return $false
+}
+
 function Test-Run {
-    param([string]$Name, [scriptblock]$ScriptBlock)
+    param([string]$Name, [string[]]$Layers = @("runtime"), [scriptblock]$ScriptBlock)
     $script:total++
+    $script:testNumForInclude = $script:total
+    # Layer/affected/include selection filter
+    if (-not (Is-TestAllowed -TestLayers $Layers)) {
+        return
+    }
     Write-Host "`n[$script:total] $Name" -ForegroundColor Cyan
     try {
         $result = & $ScriptBlock
@@ -121,7 +254,7 @@ function Append-JsonLine {
 # ============================================================
 # P0 TEST 1: REVIEW_FAILED next-action preserves taskId
 # ============================================================
-Test-Run "P0: REVIEW_FAILED next-action preserves taskId" {
+Test-Run "P0: REVIEW_FAILED next-action preserves taskId" -Layers @("smoke") {
     Init-TestWorkspace
 
     $taskJson = '{"schemaVersion":1,"taskId":"task-001","title":"Review test","status":"READY","scope":["src/**"],"successCriteria":["Works"]}'
@@ -144,7 +277,7 @@ Test-Run "P0: REVIEW_FAILED next-action preserves taskId" {
 # ============================================================
 # P0 TEST 2: stale current-task.json does NOT grant scope after gate PASS
 # ============================================================
-Test-Run "P0: stale current-task.json does NOT grant scope after gate PASS" {
+Test-Run "P0: stale current-task.json does NOT grant scope after gate PASS" -Layers @("smoke") {
     Init-TestWorkspace
 
     $taskJson = '{"schemaVersion":1,"taskId":"task-001","title":"Scope test","status":"READY","scope":["src/**"],"successCriteria":["Works"],"allowedWrites":["src/**", ".teamloop/**"]}'
@@ -185,7 +318,7 @@ Test-Run "P0: stale current-task.json does NOT grant scope after gate PASS" {
 # ============================================================
 # P0 TEST 3: validate-state catches stale current-task.json
 # ============================================================
-Test-Run "P0: validate-state catches stale current-task.json" {
+Test-Run "P0: validate-state catches stale current-task.json" -Layers @("smoke") {
     Init-TestWorkspace
 
     $stale = '{"schemaVersion":1,"taskId":"task-999","title":"Stale","status":"IN_PROGRESS","scope":["src/**"],"successCriteria":["X"]}'
@@ -201,7 +334,7 @@ Test-Run "P0: validate-state catches stale current-task.json" {
 # ============================================================
 # P0 TEST 4: CONTINUE_LOOP clears current-task.json
 # ============================================================
-Test-Run "P0: CONTINUE_LOOP clears current-task.json" {
+Test-Run "P0: CONTINUE_LOOP clears current-task.json" -Layers @("smoke") {
     Init-TestWorkspace
 
     $taskJson = '{"schemaVersion":1,"taskId":"task-001","title":"Continue test","status":"READY","scope":["src/**"],"successCriteria":["Works"],"allowedWrites":["src/**"]}'
@@ -231,7 +364,7 @@ Test-Run "P0: CONTINUE_LOOP clears current-task.json" {
 # ============================================================
 # P0 TEST 5: failed gate → validate-state PASS → next-action RUN_EXECUTOR
 # ============================================================
-Test-Run "P0: failed gate → validate-state PASS → next-action RUN_EXECUTOR" {
+Test-Run "P0: failed gate → validate-state PASS → next-action RUN_EXECUTOR" -Layers @("smoke") {
     Init-TestWorkspace
 
     $taskJson = '{"schemaVersion":1,"taskId":"task-001","title":"Gate test","status":"READY","scope":["src/**"],"successCriteria":["Pass"]}'
@@ -260,7 +393,7 @@ Test-Run "P0: failed gate → validate-state PASS → next-action RUN_EXECUTOR" 
 # ============================================================
 # P0 TEST 6: validate-state catches invalid JSON in artifacts
 # ============================================================
-Test-Run "P0: validate-state catches invalid JSON in artifacts" {
+Test-Run "P0: validate-state catches invalid JSON in artifacts" -Layers @("smoke", "contract") {
     Init-TestWorkspace
 
     $researchDir = Join-Path $script:workspaceAbs "research"
@@ -281,7 +414,7 @@ Test-Run "P0: validate-state catches invalid JSON in artifacts" {
 # ============================================================
 # P1 TEST 7: NEEDS_TASK_SLICING + READY task -> RUN_EXECUTOR
 # ============================================================
-Test-Run "P1: NEEDS_TASK_SLICING + READY task -> RUN_EXECUTOR" {
+Test-Run "P1: NEEDS_TASK_SLICING + READY task -> RUN_EXECUTOR" -Layers @("contract") {
     Init-TestWorkspace
 
     Invoke-PythonScript "apply-transition" "--action", "RUN_TASK_SLICER" | Out-Null
@@ -302,7 +435,7 @@ Test-Run "P1: NEEDS_TASK_SLICING + READY task -> RUN_EXECUTOR" {
 # ============================================================
 # P1 TEST 8: NEEDS_TASK_SLICING no READY tasks -> RUN_TASK_SLICER
 # ============================================================
-Test-Run "P1: NEEDS_TASK_SLICING no READY tasks -> RUN_TASK_SLICER" {
+Test-Run "P1: NEEDS_TASK_SLICING no READY tasks -> RUN_TASK_SLICER" -Layers @("contract") {
     Init-TestWorkspace
 
     Invoke-PythonScript "apply-transition" "--action", "RUN_TASK_SLICER" | Out-Null
@@ -319,7 +452,7 @@ Test-Run "P1: NEEDS_TASK_SLICING no READY tasks -> RUN_TASK_SLICER" {
 # ============================================================
 # MEMORY REGRESSION TESTS
 # ============================================================
-Test-Run "Memory: EmptyPasses" {
+Test-Run "Memory: EmptyPasses" -Layers @("runtime") {
     Init-TestWorkspace
     $memDir = Join-Path $script:workspaceAbs "memory"
     if (-not (Test-Path $memDir)) {
@@ -332,7 +465,7 @@ Test-Run "Memory: EmptyPasses" {
     return $true
 }
 
-Test-Run "Memory: MalformedJsonlFails" {
+Test-Run "Memory: MalformedJsonlFails" -Layers @("runtime") {
     Init-TestWorkspace
     [System.IO.File]::WriteAllText((Join-Path $script:workspaceAbs "memory\lessons.jsonl"), '{bad json content here', [System.Text.UTF8Encoding]::new($false))
     $valResult = Invoke-PythonScriptWithExit "validate-state"
@@ -341,7 +474,7 @@ Test-Run "Memory: MalformedJsonlFails" {
     return $true
 }
 
-Test-Run "Memory: ActiveWithoutEvidenceFails" {
+Test-Run "Memory: ActiveWithoutEvidenceFails" -Layers @("runtime") {
     Init-TestWorkspace
     $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","createdAtUtc":"2024-01-01T00:00:00Z"}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
@@ -351,7 +484,7 @@ Test-Run "Memory: ActiveWithoutEvidenceFails" {
     return $true
 }
 
-Test-Run "Memory: ActiveWithValidEvidencePasses" {
+Test-Run "Memory: ActiveWithValidEvidencePasses" -Layers @("runtime") {
     Init-TestWorkspace
     $evidence = '{"schemaVersion":1,"evidenceId":"evidence-001","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z"}'
     $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-001"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
@@ -363,7 +496,7 @@ Test-Run "Memory: ActiveWithValidEvidencePasses" {
     return $true
 }
 
-Test-Run "Memory: ActiveWithMissingEvidenceIdFails" {
+Test-Run "Memory: ActiveWithMissingEvidenceIdFails" -Layers @("runtime") {
     Init-TestWorkspace
     $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-missing"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
@@ -373,7 +506,7 @@ Test-Run "Memory: ActiveWithMissingEvidenceIdFails" {
     return $true
 }
 
-Test-Run "Memory: DeprecatedRetainedButInactive" {
+Test-Run "Memory: DeprecatedRetainedButInactive" -Layers @("runtime") {
     Init-TestWorkspace
     $lesson = '{"schemaVersion":1,"lessonId":"lesson-depr","title":"Old lesson","description":"Deprecated","status":"DEPRECATED","createdAtUtc":"2024-01-01T00:00:00Z","deprecatedAtUtc":"2024-06-01T00:00:00Z"}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
@@ -383,7 +516,7 @@ Test-Run "Memory: DeprecatedRetainedButInactive" {
     return $true
 }
 
-Test-Run "Memory: SupersededWithoutEvidencePasses" {
+Test-Run "Memory: SupersededWithoutEvidencePasses" -Layers @("runtime") {
     Init-TestWorkspace
     $lesson = '{"schemaVersion":1,"lessonId":"lesson-sup","title":"Superseded","description":"Old way","status":"SUPERSEDED","createdAtUtc":"2024-01-01T00:00:00Z"}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
@@ -393,7 +526,7 @@ Test-Run "Memory: SupersededWithoutEvidencePasses" {
     return $true
 }
 
-Test-Run "Memory: RejectedAntipatternWithoutEvidencePasses" {
+Test-Run "Memory: RejectedAntipatternWithoutEvidencePasses" -Layers @("runtime") {
     Init-TestWorkspace
     $anti = '{"schemaVersion":1,"antipatternId":"antipattern-001","title":"Old anti","description":"Rejected","status":"REJECTED","createdAtUtc":"2024-01-01T00:00:00Z"}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\antipatterns.jsonl") -Content $anti
@@ -403,7 +536,7 @@ Test-Run "Memory: RejectedAntipatternWithoutEvidencePasses" {
     return $true
 }
 
-Test-Run "Memory: MissingMemoryDirPasses" {
+Test-Run "Memory: MissingMemoryDirPasses" -Layers @("runtime") {
     Init-TestWorkspace
     Remove-Item (Join-Path $script:workspaceAbs "memory") -Recurse -Force
     $valResult = Invoke-PythonScriptWithExit "validate-state"
@@ -412,7 +545,7 @@ Test-Run "Memory: MissingMemoryDirPasses" {
     return $true
 }
 
-Test-Run "Memory: ProfileValidation" {
+Test-Run "Memory: ProfileValidation" -Layers @("contract", "runtime") {
     Init-TestWorkspace
     $pp = '{"schemaVersion":1,"workspace":".teamloop","memoryVersion":"1","invalidField":"bad"}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\project-profile.json") -Content $pp
@@ -422,7 +555,7 @@ Test-Run "Memory: ProfileValidation" {
     return $true
 }
 
-Test-Run "Memory: DoctorEmptyPasses" {
+Test-Run "Memory: DoctorEmptyPasses" -Layers @("runtime") {
     Init-TestWorkspace
     $doctorResult = Invoke-PythonScriptWithExit "memory-doctor"
     if (-not (Assert-Equal $doctorResult.exitCode 0 ("memory-doctor should exit 0 on empty memory, got: " + $doctorResult.output))) { return $false }
@@ -433,7 +566,7 @@ Test-Run "Memory: DoctorEmptyPasses" {
     return $true
 }
 
-Test-Run "Memory: DoctorDetectsIssues" {
+Test-Run "Memory: DoctorDetectsIssues" -Layers @("runtime") {
     Init-TestWorkspace
     $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","createdAtUtc":"2024-01-01T00:00:00Z"}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
@@ -446,7 +579,7 @@ Test-Run "Memory: DoctorDetectsIssues" {
     return $true
 }
 
-Test-Run "Memory: ActiveWithUnverifiedEvidenceFails" {
+Test-Run "Memory: ActiveWithUnverifiedEvidenceFails" -Layers @("runtime") {
     Init-TestWorkspace
     $evidence = '{"schemaVersion":1,"evidenceId":"evidence-001","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z","status":"UNVERIFIED"}'
     $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-001"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
@@ -461,7 +594,7 @@ Test-Run "Memory: ActiveWithUnverifiedEvidenceFails" {
 # ============================================================
 # NEW REGRESSION TESTS (PowerShell)
 # ============================================================
-Test-Run "WriteEvent: InvalidTypeRejected" {
+Test-Run "WriteEvent: InvalidTypeRejected" -Layers @("contract") {
     Init-TestWorkspace
     $eventsFile = Join-Path $script:workspaceAbs "state\events.jsonl"
     $linesBefore = (Get-Content $eventsFile).Count
@@ -475,7 +608,7 @@ Test-Run "WriteEvent: InvalidTypeRejected" {
     return $true
 }
 
-Test-Run "Memory: ActiveWithUnverifiedEvidenceFailsSchemaValid" {
+Test-Run "Memory: ActiveWithUnverifiedEvidenceFailsSchemaValid" -Layers @("contract", "runtime") {
     Init-TestWorkspace
     $evidence = '{"schemaVersion":1,"evidenceId":"evidence-001","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z","status":"UNVERIFIED"}'
     $lesson = '{"schemaVersion":1,"lessonId":"lesson-001","title":"A lesson","description":"Desc","status":"ACTIVE","evidenceIds":["evidence-001"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
@@ -487,7 +620,7 @@ Test-Run "Memory: ActiveWithUnverifiedEvidenceFailsSchemaValid" {
     return $true
 }
 
-Test-Run "Memory: SupersededByFailsBothValidateStateAndMemoryDoctor" {
+Test-Run "Memory: SupersededByFailsBothValidateStateAndMemoryDoctor" -Layers @("runtime") {
     Init-TestWorkspace
     $lesson = '{"schemaVersion":1,"lessonId":"lesson-sup","title":"Superseded","description":"Old way","status":"SUPERSEDED","createdAtUtc":"2024-01-01T00:00:00Z","supersededBy":"lesson-nonexistent"}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
@@ -499,7 +632,7 @@ Test-Run "Memory: SupersededByFailsBothValidateStateAndMemoryDoctor" {
     return $true
 }
 
-Test-Run "MemoryDoctor: MissingDirectoryFails" {
+Test-Run "MemoryDoctor: MissingDirectoryFails" -Layers @("runtime") {
     Init-TestWorkspace
     Remove-Item (Join-Path $script:workspaceAbs "memory") -Recurse -Force
     $doctorResult = Invoke-PythonScriptWithExit "memory-doctor"
@@ -508,7 +641,7 @@ Test-Run "MemoryDoctor: MissingDirectoryFails" {
     return $true
 }
 
-Test-Run "MemoryDoctor: EmptySubsystemWarns" {
+Test-Run "MemoryDoctor: EmptySubsystemWarns" -Layers @("runtime") {
     Init-TestWorkspace
     $doctorResult = Invoke-PythonScriptWithExit "memory-doctor"
     $doctorOutput = $doctorResult.output -join "`n"
@@ -518,7 +651,7 @@ Test-Run "MemoryDoctor: EmptySubsystemWarns" {
     return $true
 }
 
-Test-Run "Memory: ProfileDeprecatedFieldsRejected" {
+Test-Run "Memory: ProfileDeprecatedFieldsRejected" -Layers @("contract") {
     Init-TestWorkspace
     $pp = '{"schemaVersion":1,"workspace":".teamloop","memoryVersion":"1","activeGuidanceRequiresEvidence":true,"maxActiveLessons":5}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\project-profile.json") -Content $pp
@@ -531,7 +664,7 @@ Test-Run "Memory: ProfileDeprecatedFieldsRejected" {
 # ============================================================
 # CONTINUATION-DECISION TESTS (PowerShell)
 # ============================================================
-Test-Run "ContinuationDecision: ValidDecisionWrite" {
+Test-Run "ContinuationDecision: ValidDecisionWrite" -Layers @("contract") {
     Init-TestWorkspace
     $result = Invoke-PythonScriptWithExit "write-continuation-decision" "--decision", "SAFE_CHECKPOINT", "--phase", "EXECUTING_TASK"
     if (-not (Assert-Equal $result.exitCode 0 ("write-continuation-decision SAFE_CHECKPOINT should exit 0, got: " + $result.exitCode))) { return $false }
@@ -541,7 +674,7 @@ Test-Run "ContinuationDecision: ValidDecisionWrite" {
     return $true
 }
 
-Test-Run "ContinuationDecision: InvalidDecisionRejected" {
+Test-Run "ContinuationDecision: InvalidDecisionRejected" -Layers @("contract") {
     Init-TestWorkspace
     $result = Invoke-PythonScriptWithExit "write-continuation-decision" "--decision", "INVALID", "--phase", "EXECUTING_TASK"
     if (-not (Assert-Equal $result.exitCode 1 ("write-continuation-decision with INVALID should exit 1, got: " + $result.exitCode))) { return $false }
@@ -551,7 +684,7 @@ Test-Run "ContinuationDecision: InvalidDecisionRejected" {
     return $true
 }
 
-Test-Run "ContinuationDecision: MissingDecisionFilePassesValidation" {
+Test-Run "ContinuationDecision: MissingDecisionFilePassesValidation" -Layers @("contract") {
     Init-TestWorkspace
     $cdPath = Join-Path $script:workspaceAbs "state\continuation-decision.json"
     if (Test-Path $cdPath) {
@@ -564,7 +697,7 @@ Test-Run "ContinuationDecision: MissingDecisionFilePassesValidation" {
     return $true
 }
 
-Test-Run "ContinuationDecision: DoneRequiresDonePhase" {
+Test-Run "ContinuationDecision: DoneRequiresDonePhase" -Layers @("contract") {
     Init-TestWorkspace
     Invoke-PythonScript "write-continuation-decision" "--decision", "DONE", "--phase", "EXECUTING_TASK" | Out-Null
     $valResult = Invoke-PythonScriptWithExit "validate-state"
@@ -573,7 +706,7 @@ Test-Run "ContinuationDecision: DoneRequiresDonePhase" {
     return $true
 }
 
-Test-Run "ContinuationDecision: WriteThenValidate" {
+Test-Run "ContinuationDecision: WriteThenValidate" -Layers @("contract") {
     Init-TestWorkspace
     Invoke-PythonScript "write-continuation-decision" "--decision", "SAFE_CHECKPOINT", "--phase", "INITIALIZED" | Out-Null
     $valResult = Invoke-PythonScriptWithExit "validate-state"
@@ -582,7 +715,7 @@ Test-Run "ContinuationDecision: WriteThenValidate" {
     return $true
 }
 
-Test-Run "ContinuationDecision: SchemaExists" {
+Test-Run "ContinuationDecision: SchemaExists" -Layers @("contract") {
     $schemaPath = Join-Path $projectRoot "schemas\continuation-decision.schema.json"
     if (-not (Test-Path $schemaPath)) {
         Write-Host "  FAIL: continuation-decision.schema.json missing" -ForegroundColor Red
@@ -602,7 +735,7 @@ Test-Run "ContinuationDecision: SchemaExists" {
 # ============================================================
 # AUTO-DECISION REGRESSION TESTS (PowerShell)
 # ============================================================
-Test-Run "AutoDecision: SetCheckpointWritesDecision" {
+Test-Run "AutoDecision: SetCheckpointWritesDecision" -Layers @("runtime") {
     Init-TestWorkspace
     Invoke-PythonScript "apply-transition" "--action", "SET_SAFE_CHECKPOINT" | Out-Null
     $cdPath = Join-Path $script:workspaceAbs "state\continuation-decision.json"
@@ -613,7 +746,7 @@ Test-Run "AutoDecision: SetCheckpointWritesDecision" {
     return $true
 }
 
-Test-Run "AutoDecision: TransientSkipsWrite" {
+Test-Run "AutoDecision: TransientSkipsWrite" -Layers @("runtime") {
     Init-TestWorkspace
     $taskJson = '{"schemaVersion":1,"taskId":"task-001","title":"Ready","status":"READY","scope":["src/**"],"successCriteria":["Works"]}'
     Append-JsonLine -Path (Join-Path $script:workspaceAbs "state\backlog.jsonl") -Line $taskJson
@@ -632,7 +765,7 @@ Test-Run "AutoDecision: TransientSkipsWrite" {
     return $true
 }
 
-Test-Run "AutoDecision: DecisionFileValidJson" {
+Test-Run "AutoDecision: DecisionFileValidJson" -Layers @("runtime", "contract") {
     Init-TestWorkspace
     Invoke-PythonScript "apply-transition" "--action", "SET_SAFE_CHECKPOINT" | Out-Null
     $cdPath = Join-Path $script:workspaceAbs "state\continuation-decision.json"
@@ -654,7 +787,7 @@ Test-Run "AutoDecision: DecisionFileValidJson" {
     return $true
 }
 
-Test-Run "AutoDecision: SetDoneWritesDoneDecision" {
+Test-Run "AutoDecision: SetDoneWritesDoneDecision" -Layers @("runtime") {
     Init-TestWorkspace
     Invoke-PythonScript "apply-transition" "--action", "SET_DONE" | Out-Null
     $cdPath = Join-Path $script:workspaceAbs "state\continuation-decision.json"
@@ -668,7 +801,7 @@ Test-Run "AutoDecision: SetDoneWritesDoneDecision" {
 # ============================================================
 # GUARD INTEGRITY REGRESSION TESTS (PowerShell)
 # ============================================================
-Test-Run "GuardIntegrity: CommandExists" {
+Test-Run "GuardIntegrity: CommandExists" -Layers @("runtime") {
     $helpOut = & python "$scriptDir/teamloop-core.py" --help 2>$null
     if ($helpOut -join "`n" -notmatch "check-guard-integrity") {
         Write-Host "  FAIL: check-guard-integrity should appear in --help" -ForegroundColor Red
@@ -678,7 +811,7 @@ Test-Run "GuardIntegrity: CommandExists" {
     return $true
 }
 
-Test-Run "GuardIntegrity: MissingPolicyPasses" {
+Test-Run "GuardIntegrity: MissingPolicyPasses" -Layers @("runtime") {
     Init-TestWorkspace
     Remove-Item (Join-Path $script:workspaceAbs "policies\protected-paths.json") -Force -ErrorAction SilentlyContinue
     $result = Invoke-PythonScriptWithExit "check-guard-integrity"
@@ -692,7 +825,7 @@ Test-Run "GuardIntegrity: MissingPolicyPasses" {
     return $true
 }
 
-Test-Run "GuardIntegrity: CleanWorkspacePasses" {
+Test-Run "GuardIntegrity: CleanWorkspacePasses" -Layers @("runtime") {
     Init-TestWorkspace
     # Install policy but no modifications
     $policy = '{"schemaVersion":1,"protectedPaths":["src/**"],"enforcementLevel":"error","evidenceRequired":{"fullTestSuite":true,"independentReview":true}}'
@@ -708,7 +841,7 @@ Test-Run "GuardIntegrity: CleanWorkspacePasses" {
     return $true
 }
 
-Test-Run "GuardIntegrity: WrapperPSExists" {
+Test-Run "GuardIntegrity: WrapperPSExists" -Layers @("contract") {
     $wrapper = Join-Path $scriptDir "check-guard-integrity.ps1"
     if (-not (Test-Path $wrapper)) {
         Write-Host "  FAIL: check-guard-integrity.ps1 wrapper missing" -ForegroundColor Red
@@ -729,7 +862,7 @@ Test-Run "GuardIntegrity: WrapperPSExists" {
 # ============================================================
 # SENTINEL REGRESSION TESTS (PowerShell)
 # ============================================================
-Test-Run "Sentinel: CommandExists" {
+Test-Run "Sentinel: CommandExists" -Layers @("runtime") {
     $helpOut = & python "$scriptDir/teamloop-core.py" --help 2>$null
     if ($helpOut -join "`n" -notmatch "run-sentinel") {
         Write-Host "  FAIL: run-sentinel should appear in --help" -ForegroundColor Red
@@ -739,7 +872,7 @@ Test-Run "Sentinel: CommandExists" {
     return $true
 }
 
-Test-Run "Sentinel: CleanWorkspacePasses" {
+Test-Run "Sentinel: CleanWorkspacePasses" -Layers @("runtime") {
     Init-TestWorkspace
     $result = Invoke-PythonScriptWithExit "run-sentinel"
     if (-not (Assert-Equal $result.exitCode 0 ("run-sentinel should exit 0 on clean workspace, got: " + $result.exitCode))) { return $false }
@@ -750,7 +883,7 @@ Test-Run "Sentinel: CleanWorkspacePasses" {
     return $true
 }
 
-Test-Run "Sentinel: OutputIsValidJson" {
+Test-Run "Sentinel: OutputIsValidJson" -Layers @("runtime", "contract") {
     Init-TestWorkspace
     $result = Invoke-PythonScriptWithExit "run-sentinel"
     $output = $result.output -join "`n"
@@ -768,7 +901,7 @@ Test-Run "Sentinel: OutputIsValidJson" {
     return $true
 }
 
-Test-Run "Sentinel: OutputMatchesSchema" {
+Test-Run "Sentinel: OutputMatchesSchema" -Layers @("runtime", "contract") {
     Init-TestWorkspace
     $result = Invoke-PythonScriptWithExit "run-sentinel"
     $output = $result.output -join "`n"
@@ -808,7 +941,7 @@ Test-Run "Sentinel: OutputMatchesSchema" {
     return $true
 }
 
-Test-Run "Sentinel: WrapperPSExists" {
+Test-Run "Sentinel: WrapperPSExists" -Layers @("contract") {
     $wrapper = Join-Path $scriptDir "run-sentinel.ps1"
     if (-not (Test-Path $wrapper)) {
         Write-Host "  FAIL: run-sentinel.ps1 wrapper missing" -ForegroundColor Red
@@ -826,7 +959,7 @@ Test-Run "Sentinel: WrapperPSExists" {
     return $true
 }
 
-Test-Run "Sentinel: NineFindings" {
+Test-Run "Sentinel: NineFindings" -Layers @("runtime") {
     Init-TestWorkspace
     $result = Invoke-PythonScriptWithExit "run-sentinel"
     $output = $result.output -join "`n"
@@ -836,7 +969,7 @@ Test-Run "Sentinel: NineFindings" {
     return $true
 }
 
-Test-Run "Sentinel: SchemaFileExists" {
+Test-Run "Sentinel: SchemaFileExists" -Layers @("contract") {
     $schemaPath = Join-Path $projectRoot "schemas\sentinel-inspection.schema.json"
     if (-not (Test-Path $schemaPath)) {
         Write-Host "  FAIL: sentinel-inspection.schema.json missing" -ForegroundColor Red
@@ -852,7 +985,7 @@ Test-Run "Sentinel: SchemaFileExists" {
     return $true
 }
 
-Test-Run "Sentinel: ValidateStatePasses" {
+Test-Run "Sentinel: ValidateStatePasses" -Layers @("runtime") {
     Init-TestWorkspace
     # Run sentinel (creates report with PASS status)
     Invoke-PythonScript "run-sentinel" | Out-Null
@@ -865,7 +998,7 @@ Test-Run "Sentinel: ValidateStatePasses" {
 # ============================================================
 # E2E SMOKE SCENARIO TESTS
 # ============================================================
-Test-Run "E2E: SuccessfulBoundedTask" {
+Test-Run "E2E: SuccessfulBoundedTask" -Layers @("integration") {
     Init-TestWorkspace
     # 1. Create READY task in backlog
     $taskJson = '{"schemaVersion":1,"taskId":"task-e2e-1","title":"E2E task","status":"READY","scope":["src/**"],"allowedWrites":["src/**", ".teamloop/**"],"successCriteria":["src/hello.txt exists"]}'
@@ -893,7 +1026,7 @@ Test-Run "E2E: SuccessfulBoundedTask" {
     return $true
 }
 
-Test-Run "E2E: ScopeViolation" {
+Test-Run "E2E: ScopeViolation" -Layers @("integration") {
     Init-TestWorkspace
     # 1. Create READY task with allowedWrites: ["src/**"]
     $taskJson = '{"schemaVersion":1,"taskId":"task-e2e-2","title":"Scope violation test","status":"READY","scope":["src/**"],"allowedWrites":["src/**", ".teamloop/**"],"successCriteria":["scope"]}'
@@ -913,7 +1046,7 @@ Test-Run "E2E: ScopeViolation" {
     return $true
 }
 
-Test-Run "E2E: GateFailure" {
+Test-Run "E2E: GateFailure" -Layers @("integration") {
     Init-TestWorkspace
     # Set up a task and start a run (run-gates needs currentRunId)
     $taskJson = '{"schemaVersion":1,"taskId":"task-e2e-g","title":"Gate test","status":"READY","scope":["src/**"],"successCriteria":["Pass"]}'
@@ -933,7 +1066,7 @@ Test-Run "E2E: GateFailure" {
     return $true
 }
 
-Test-Run "E2E: HumanBlocker" {
+Test-Run "E2E: HumanBlocker" -Layers @("integration") {
     Init-TestWorkspace
     # 1. Create a valid blocker in blockers.jsonl
     $blocker = '{"schemaVersion":1,"blockerId":"blocker-e2e","type":"HUMAN_DECISION_REQUIRED","category":"PRODUCT_BEHAVIOR_AMBIGUITY","summary":"Need approval for E2E","evidence":["evidence"],"questionsForHuman":["Should we proceed?"]}'
@@ -947,7 +1080,7 @@ Test-Run "E2E: HumanBlocker" {
     return $true
 }
 
-Test-Run "E2E: ProtectedChange" {
+Test-Run "E2E: ProtectedChange" -Layers @("integration") {
     Init-TestWorkspace
     # 1. Copy protected-paths.json to workspace (protect scripts/**)
     $policy = '{"schemaVersion":1,"protectedPaths":["scripts/**"],"enforcementLevel":"error","evidenceRequired":{"fullTestSuite":true,"independentReview":true}}'
@@ -970,7 +1103,7 @@ Test-Run "E2E: ProtectedChange" {
     return $true
 }
 
-Test-Run "E2E: MemoryIntegrity" {
+Test-Run "E2E: MemoryIntegrity" -Layers @("integration") {
     Init-TestWorkspace
     # 1. Create valid memory (lesson + evidence in evidence-map.jsonl)
     $evidence = '{"schemaVersion":1,"evidenceId":"evidence-e2e","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z"}'
@@ -1000,7 +1133,7 @@ Test-Run "E2E: MemoryIntegrity" {
 # CAMPAIGN REGRESSION TESTS
 # ============================================================
 
-Test-Run "Campaign: FinalGate_Pass" {
+Test-Run "Campaign: FinalGate_Pass" -Layers @("integration") {
     Init-TestWorkspace
     # Write minimal continuation-decision so validate-state passes
     $cd = '{"schemaVersion":1,"decision":"SAFE_CHECKPOINT","phase":"SAFE_CHECKPOINT","justification":"test checkpoint","checks":[{"name":"test","status":"PASS"}],"createdAtUtc":"2024-01-01T00:00:00Z"}'
@@ -1016,7 +1149,7 @@ Test-Run "Campaign: FinalGate_Pass" {
     return $true
 }
 
-Test-Run "Campaign: FinalGate_FailValidation" {
+Test-Run "Campaign: FinalGate_FailValidation" -Layers @("integration") {
     Init-TestWorkspace
     # Corrupt team-state.json
     '{"schemaVersion":1}' | Set-Content (Join-Path $script:workspaceAbs "state\team-state.json") -Encoding UTF8
@@ -1031,7 +1164,7 @@ Test-Run "Campaign: FinalGate_FailValidation" {
     return $true
 }
 
-Test-Run "Campaign: FinalGate_SchemaValid" {
+Test-Run "Campaign: FinalGate_SchemaValid" -Layers @("integration") {
     Init-TestWorkspace
     $cd = '{"schemaVersion":1,"decision":"SAFE_CHECKPOINT","phase":"SAFE_CHECKPOINT","justification":"test checkpoint","checks":[{"name":"test","status":"PASS"}],"createdAtUtc":"2024-01-01T00:00:00Z"}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "state\continuation-decision.json") -Content $cd
@@ -1053,7 +1186,7 @@ Test-Run "Campaign: FinalGate_SchemaValid" {
     return $true
 }
 
-Test-Run "Campaign: ReviewEvidence_ContentMissing" {
+Test-Run "Campaign: ReviewEvidence_ContentMissing" -Layers @("integration") {
     Init-TestWorkspace
     $commit = & git rev-parse HEAD 2>$null
     $evidence = '{"schemaVersion":1,"taskId":"task-missing","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedCommit":"' + $commit + '","reviewedFiles":[{"path":"src/nonexistent.txt","hash":"0000000000000000000000000000000000000000000000000000000000000000","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
@@ -1064,7 +1197,7 @@ Test-Run "Campaign: ReviewEvidence_ContentMissing" {
     return $true
 }
 
-Test-Run "Campaign: ReviewEvidence_ContentChanged" {
+Test-Run "Campaign: ReviewEvidence_ContentChanged" -Layers @("integration") {
     Init-TestWorkspace
     # Create a file in the test repo, write evidence with a wrong hash
     $srcDir = Join-Path $script:testRepoDir "src"
@@ -1084,7 +1217,7 @@ Test-Run "Campaign: ReviewEvidence_ContentChanged" {
     return $true
 }
 
-Test-Run "Campaign: ReviewEvidence_ValidContent" {
+Test-Run "Campaign: ReviewEvidence_ValidContent" -Layers @("integration") {
     Init-TestWorkspace
     # Create a file in the test repo, compute its actual hash
     $srcDir = Join-Path $script:testRepoDir "src"
@@ -1104,7 +1237,7 @@ Test-Run "Campaign: ReviewEvidence_ValidContent" {
     return $true
 }
 
-Test-Run "Campaign: GuardNotConfigured" {
+Test-Run "Campaign: GuardNotConfigured" -Layers @("integration") {
     Init-TestWorkspace
     Remove-Item (Join-Path $script:workspaceAbs "policies\protected-paths.json") -Force -ErrorAction SilentlyContinue
     # No protected-paths.json — should report NOT_CONFIGURED
@@ -1118,7 +1251,7 @@ Test-Run "Campaign: GuardNotConfigured" {
     return $true
 }
 
-Test-Run "Campaign: OrphanedInProgressDetected" {
+Test-Run "Campaign: OrphanedInProgressDetected" -Layers @("integration") {
     Init-TestWorkspace
     $task = '{"schemaVersion":1,"taskId":"task-orphan","title":"Orphan task","status":"IN_PROGRESS","priority":"P1","origin":"manual","scope":["src/**"],"allowedWrites":["src/**"],"successCriteria":["should be detected as orphan"]}'
     $task | Set-Content (Join-Path $script:workspaceAbs "state\backlog.jsonl") -Encoding UTF8
@@ -1133,7 +1266,7 @@ Test-Run "Campaign: OrphanedInProgressDetected" {
     return $true
 }
 
-Test-Run "Campaign: MojibakeDetection" {
+Test-Run "Campaign: MojibakeDetection" -Layers @("contract") {
     $teamloopFile = Join-Path $projectRoot "TEAMLOOP.md"
     if (-not (Test-Path $teamloopFile)) {
         Write-Host "  FAIL: TEAMLOOP.md should exist" -ForegroundColor Red
@@ -1152,7 +1285,7 @@ Test-Run "Campaign: MojibakeDetection" {
     return $true
 }
 
-Test-Run "Campaign: CrossTaskCleanup_Preserved" {
+Test-Run "Campaign: CrossTaskCleanup_Preserved" -Layers @("integration") {
     Init-TestWorkspace
     # Use TEAMLOOP.md with a wrong hash to simulate tampered cross-task content
     $wrongHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -1164,7 +1297,7 @@ Test-Run "Campaign: CrossTaskCleanup_Preserved" {
     return $true
 }
 
-Test-Run "Campaign: FinalGate_BashWrapperExists" {
+Test-Run "Campaign: FinalGate_BashWrapperExists" -Layers @("contract") {
     $wrapper = Join-Path $scriptDir "final-gate.sh"
     if (-not (Test-Path $wrapper)) {
         Write-Host "  FAIL: final-gate.sh wrapper should exist" -ForegroundColor Red
@@ -1174,7 +1307,7 @@ Test-Run "Campaign: FinalGate_BashWrapperExists" {
     return $true
 }
 
-Test-Run "Campaign: FinalGate_PSWrapperExists" {
+Test-Run "Campaign: FinalGate_PSWrapperExists" -Layers @("contract") {
     $wrapper = Join-Path $scriptDir "final-gate.ps1"
     if (-not (Test-Path $wrapper)) {
         Write-Host "  FAIL: final-gate.ps1 wrapper should exist" -ForegroundColor Red
@@ -1219,7 +1352,7 @@ function Start-FastExecutionTask {
     return -not [string]::IsNullOrWhiteSpace($script:fastRunId)
 }
 
-Test-Run "FastExecution PS: LowRiskResolvesFast" {
+Test-Run "FastExecution PS: LowRiskResolvesFast" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-fast" -Priority "P2")) { return $false }
     $output = Invoke-PythonScript -Command "prepare-execution"
@@ -1231,7 +1364,7 @@ Test-Run "FastExecution PS: LowRiskResolvesFast" {
     return $true
 }
 
-Test-Run "FastExecution PS: StandardRequiresReviewer" {
+Test-Run "FastExecution PS: StandardRequiresReviewer" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-standard" -Priority "P1")) { return $false }
     Invoke-PythonScript -Command "prepare-execution" | Out-Null
@@ -1242,7 +1375,7 @@ Test-Run "FastExecution PS: StandardRequiresReviewer" {
     return $true
 }
 
-Test-Run "FastExecution PS: AuditRequiresAllRoles" {
+Test-Run "FastExecution PS: AuditRequiresAllRoles" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-audit" -Priority "P0")) { return $false }
     Invoke-PythonScript -Command "prepare-execution" | Out-Null
@@ -1258,7 +1391,7 @@ Test-Run "FastExecution PS: AuditRequiresAllRoles" {
     return $true
 }
 
-Test-Run "FastExecution PS: ProtectedScopeEscalatesAudit" {
+Test-Run "FastExecution PS: ProtectedScopeEscalatesAudit" -Layers @("runtime") {
     Init-TestWorkspace
     Copy-Item (Join-Path $projectRoot "templates\workspace\policies\protected-paths.json") (Join-Path $script:workspaceAbs "policies\protected-paths.json") -Force
     if (-not (Start-FastExecutionTask -TaskId "task-ps-protected" -Priority "P2" -Scope "scripts/**" -Allowed "scripts/**")) { return $false }
@@ -1269,7 +1402,7 @@ Test-Run "FastExecution PS: ProtectedScopeEscalatesAudit" {
     return $true
 }
 
-Test-Run "FastExecution PS: ManifestIdempotent" {
+Test-Run "FastExecution PS: ManifestIdempotent" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-idempotent")) { return $false }
     $first = ((Invoke-PythonScript -Command "prepare-execution") -join "`n") | ConvertFrom-Json
@@ -1280,7 +1413,7 @@ Test-Run "FastExecution PS: ManifestIdempotent" {
     return $true
 }
 
-Test-Run "FastExecution PS: ManualManifestMutationFails" {
+Test-Run "FastExecution PS: ManualManifestMutationFails" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-mutation")) { return $false }
     Invoke-PythonScript -Command "prepare-execution" | Out-Null
@@ -1294,7 +1427,7 @@ Test-Run "FastExecution PS: ManualManifestMutationFails" {
     return $true
 }
 
-Test-Run "FastExecution PS: IdenticalSnapshotsDetectNoProgress" {
+Test-Run "FastExecution PS: IdenticalSnapshotsDetectNoProgress" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-no-progress")) { return $false }
     Invoke-PythonScript -Command "prepare-execution" | Out-Null
@@ -1306,7 +1439,7 @@ Test-Run "FastExecution PS: IdenticalSnapshotsDetectNoProgress" {
     return $true
 }
 
-Test-Run "FastExecution PS: MaterialChangeResetsStreak" {
+Test-Run "FastExecution PS: MaterialChangeResetsStreak" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-material")) { return $false }
     Invoke-PythonScript -Command "prepare-execution" | Out-Null
@@ -1320,7 +1453,7 @@ Test-Run "FastExecution PS: MaterialChangeResetsStreak" {
     return $true
 }
 
-Test-Run "FastExecution PS: SuppressionOnlyIsNotProgress" {
+Test-Run "FastExecution PS: SuppressionOnlyIsNotProgress" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-suppression")) { return $false }
     Invoke-PythonScript -Command "prepare-execution" | Out-Null
@@ -1336,7 +1469,7 @@ Test-Run "FastExecution PS: SuppressionOnlyIsNotProgress" {
     return $true
 }
 
-Test-Run "FastExecution PS: WatchdogRecoveryDoesNotLoop" {
+Test-Run "FastExecution PS: WatchdogRecoveryDoesNotLoop" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-watchdog")) { return $false }
     $originalRun = $script:fastRunId
@@ -1353,7 +1486,7 @@ Test-Run "FastExecution PS: WatchdogRecoveryDoesNotLoop" {
     return $true
 }
 
-Test-Run "FastExecution PS: FakeClockTrace" {
+Test-Run "FastExecution PS: FakeClockTrace" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-clock")) { return $false }
     $oldClock = $env:TEAMLOOP_FAKE_CLOCK_MS
@@ -1370,7 +1503,7 @@ Test-Run "FastExecution PS: FakeClockTrace" {
     return $true
 }
 
-Test-Run "FastExecution PS: SchemasWrappersAndPrompt" {
+Test-Run "FastExecution PS: SchemasWrappersAndPrompt" -Layers @("contract") {
     foreach ($name in @("execution-policy", "execution-manifest", "execution-manifest-validation", "performance-trace", "progress-snapshot", "no-progress-result", "role-routing-decision")) {
         if (-not (Test-Path (Join-Path $projectRoot "schemas\$name.schema.json"))) {
             Write-Host "  FAIL: missing schema $name" -ForegroundColor Red
@@ -1391,7 +1524,7 @@ Test-Run "FastExecution PS: SchemasWrappersAndPrompt" {
     return $true
 }
 
-Test-Run "FastExecution PS: OptimizedFinalGateRequiresSentinel" {
+Test-Run "FastExecution PS: OptimizedFinalGateRequiresSentinel" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-final")) { return $false }
     Invoke-PythonScript -Command "prepare-execution" | Out-Null
@@ -1407,7 +1540,7 @@ Test-Run "FastExecution PS: OptimizedFinalGateRequiresSentinel" {
 }
 
 
-Test-Run "FastExecution PS: OptimizedFinalGatePass" {
+Test-Run "FastExecution PS: OptimizedFinalGatePass" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-optimized-pass")) { return $false }
     Invoke-PythonScript -Command "prepare-execution" | Out-Null
@@ -1426,7 +1559,7 @@ Test-Run "FastExecution PS: OptimizedFinalGatePass" {
     return $true
 }
 
-Test-Run "FastExecution PS: StaleSentinelCannotSatisfyCurrentRun" {
+Test-Run "FastExecution PS: StaleSentinelCannotSatisfyCurrentRun" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-old-sentinel")) { return $false }
     Invoke-PythonScript -Command "prepare-execution" | Out-Null
@@ -1453,7 +1586,7 @@ Test-Run "FastExecution PS: StaleSentinelCannotSatisfyCurrentRun" {
     return $true
 }
 
-Test-Run "FastExecution PS: MaterialImplementationAfterTodoCountsProgress" {
+Test-Run "FastExecution PS: MaterialImplementationAfterTodoCountsProgress" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-material-after-todo")) { return $false }
     Invoke-PythonScript -Command "prepare-execution" | Out-Null
@@ -1469,7 +1602,7 @@ Test-Run "FastExecution PS: MaterialImplementationAfterTodoCountsProgress" {
     return $true
 }
 
-Test-Run "FastExecution PS: AuditWatchdogRoutesProjectGates" {
+Test-Run "FastExecution PS: AuditWatchdogRoutesProjectGates" -Layers @("runtime") {
     Init-TestWorkspace
     if (-not (Start-FastExecutionTask -TaskId "task-ps-audit-route" -Priority "P0")) { return $false }
     Invoke-PythonScript -Command "prepare-execution" | Out-Null
@@ -1481,7 +1614,7 @@ Test-Run "FastExecution PS: AuditWatchdogRoutesProjectGates" {
     return $true
 }
 
-Test-Run "Guard PS: UnstagedProtectedPathParsing" {
+Test-Run "Guard PS: UnstagedProtectedPathParsing" -Layers @("runtime") {
     Init-TestWorkspace
     $scriptsDir = Join-Path $script:testRepoDir "scripts"
     New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null
@@ -1505,7 +1638,7 @@ Test-Run "Guard PS: UnstagedProtectedPathParsing" {
     return $true
 }
 
-Test-Run "OpenCode PS: ReviewerRoutingIsRuntimeBound" {
+Test-Run "OpenCode PS: ReviewerRoutingIsRuntimeBound" -Layers @("integration") {
     $reviewer = Join-Path $projectRoot ".opencode\agents\change-reviewer.md"
     $content = Get-Content $reviewer -Raw -Encoding UTF8
     if ($content -notmatch 'route-role\.sh.*review-complete') {
@@ -1520,7 +1653,7 @@ Test-Run "OpenCode PS: ReviewerRoutingIsRuntimeBound" {
 }
 
 
-Test-Run "OpenCode PS: FastExecutionAgentCopiesSynchronized" {
+Test-Run "OpenCode PS: FastExecutionAgentCopiesSynchronized" -Layers @("integration") {
     foreach ($name in @("executor", "change-reviewer", "gatekeeper", "watchdog", "sentinel")) {
         $runtime = Join-Path $projectRoot ".opencode\agents\$name.md"
         $adapter = Join-Path $projectRoot "adapters\opencode\agents\$name.md"
