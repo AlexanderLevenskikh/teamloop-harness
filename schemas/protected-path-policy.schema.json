@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ProtectedPathPolicy",
+  "description": "Policy that protects critical harness paths from unauthorized modification by agent tasks",
+  "type": "object",
+  "required": ["schemaVersion", "protectedPaths", "enforcementLevel", "evidenceRequired"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "protectedPaths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Glob patterns for paths that tasks must not modify"
+    },
+    "enforcementLevel": {
+      "type": "string",
+      "enum": ["error", "warn", "off"],
+      "default": "warn",
+      "description": "How violations are handled: error blocks, warn flags, off ignores"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of what this policy protects"
+    },
+    "evidenceRequired": {
+      "type": "object",
+      "description": "Evidence that must be provided before modifying a protected path",
+      "properties": {
+        "fullTestSuite": {
+          "type": "boolean",
+          "default": true,
+          "description": "Full test suite must pass before modifying protected paths"
+        },
+        "independentReview": {
+          "type": "boolean",
+          "default": true,
+          "description": "An independent agent review is required before modifying protected paths"
+        },
+        "sentinelInspection": {
+          "type": "boolean",
+          "default": false,
+          "description": "Sentinel files must be inspected and accounted for"
+        }
+      },
+      "additionalProperties": false
+    },
+    "exemptPaths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "default": [],
+      "description": "Paths exempt from protection even if they match a protected pattern"
+    },
+    "exceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["taskId", "path", "reason"],
+        "properties": {
+          "taskId": { "type": "string", "pattern": "^task-" },
+          "path": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      },
+      "default": [],
+      "description": "Per-task exceptions that override protection for specific paths"
+    }
+  },
+  "additionalProperties": false
+}

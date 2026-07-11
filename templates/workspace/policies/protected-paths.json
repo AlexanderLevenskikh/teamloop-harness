@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "protectedPaths": [
+    "scripts/teamloop-core.py",
+    "scripts/*.sh",
+    "scripts/*.ps1",
+    "schemas/*.schema.json",
+    "templates/workspace/**",
+    "profiles/**",
+    ".opencode/**",
+    "tests/**"
+  ],
+  "enforcementLevel": "warn",
+  "description": "Critical harness paths that tasks must not modify without passing evidence requirements",
+  "evidenceRequired": {
+    "fullTestSuite": true,
+    "independentReview": true,
+    "sentinelInspection": false
+  },
+  "exemptPaths": [],
+  "exceptions": []
+}
