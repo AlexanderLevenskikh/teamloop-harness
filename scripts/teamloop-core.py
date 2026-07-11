@@ -1892,16 +1892,16 @@ def cmd_write_event(args):
 
 def cmd_check_scope(args):
     started = fast_execution.clock_ms()
-    workspace = resolve_workspace(args.workspace)
+    host = WorkspaceContext(args.workspace)
+    workspace = host.workspace
 
-    scope_policy_path = os.path.join(workspace, "policies", "scope-policy.json")
-    if not os.path.exists(scope_policy_path):
+    scope_policy = host.scope_policy
+    if not scope_policy:
         print("Error: scope-policy.json not found", file=sys.stderr)
         sys.exit(1)
 
-    scope_policy = read_json(scope_policy_path)
-    state = read_json(os.path.join(workspace, "state", "team-state.json"))
-    task_file = os.path.join(workspace, "state", "current-task.json")
+    state = host.state
+    task = host.current_task
 
     # Build allowed/forbidden lists
     always_allowed = scope_policy.get("alwaysAllowedWrites", [])
@@ -1911,39 +1911,25 @@ def cmd_check_scope(args):
     allowed = list(always_allowed) + list(default_allowed)
     forbidden = list(always_forbidden)
 
-    if os.path.exists(task_file):
-        task = read_json_file_safe(task_file)
-        # Only apply task-scoped allowedWrites if the task is still active in team-state.
-        # Stale current-task.json must not grant write privileges after task completion.
-        if task and scope_policy.get("taskAllowedWritesOverride", True):
-            state_task_id = state.get("currentTaskId", "")
-            task_scoped_phases = frozenset([
-                "EXECUTING_TASK", "NEEDS_CHANGE_REVIEW", "NEEDS_GATE",
-                "REVIEW_FAILED", "GATE_FAILED"
-            ])
-            task_is_active = (
-                state_task_id
-                and task.get("taskId") == state_task_id
-                and state.get("currentPhase", "") in task_scoped_phases
-            )
-            if task_is_active:
-                if task.get("allowedWrites"):
-                    allowed = list(always_allowed) + task["allowedWrites"]
-                if task.get("forbiddenWrites"):
-                    forbidden = forbidden + task["forbiddenWrites"]
-
-    # Get git root
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=10
+    if task and scope_policy.get("taskAllowedWritesOverride", True):
+        state_task_id = state.get("currentTaskId", "")
+        task_scoped_phases = frozenset([
+            "EXECUTING_TASK", "NEEDS_CHANGE_REVIEW", "NEEDS_GATE",
+            "REVIEW_FAILED", "GATE_FAILED"
+        ])
+        task_is_active = (
+            state_task_id
+            and task.get("taskId") == state_task_id
+            and state.get("currentPhase", "") in task_scoped_phases
         )
-        git_root = result.stdout.strip()
-    except (subprocess.SubprocessError, FileNotFoundError):
-        git_root = os.getcwd()
+        if task_is_active:
+            if task.get("allowedWrites"):
+                allowed = list(always_allowed) + task["allowedWrites"]
+            if task.get("forbiddenWrites"):
+                forbidden = forbidden + task["forbiddenWrites"]
 
-    # Get changed files
-    changed_files = _get_git_changed_files(git_root)
+    # Get changed files via WorkspaceContext
+    changed_files = host.git_changed_paths()
 
     violations = []
     matched_allowed = []
@@ -2698,8 +2684,9 @@ def cmd_check_guard_integrity(args):
     Outputs structured JSON to stdout.  Exit 0 for PASS/WARNING, exit 1 for FAIL
     (unless enforcementLevel is 'warn', in which case always exit 0).
     """
-    workspace = resolve_workspace(args.workspace)
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    host = WorkspaceContext(args.workspace)
+    workspace = host.workspace
+    project_root = host.project_root
 
     checks = []
     violations = []
@@ -2710,18 +2697,15 @@ def cmd_check_guard_integrity(args):
     enforcement_level = "error"  # default
     policy_loaded = False
 
-    policy_path = os.path.join(workspace, "policies", "protected-paths.json")
-    policy = None
-    if os.path.exists(policy_path):
-        policy = read_json_file_safe(policy_path)
-        if policy is not None:
-            policy_loaded = True
-            enforcement_level = policy.get("enforcementLevel", "error")
+    policy = host.protected_paths
+    if policy:
+        policy_loaded = True
+        enforcement_level = policy.get("enforcementLevel", "error")
 
     # ------------------------------------------------------------------
-    # Get git changed files
+    # Get git changed files via WorkspaceContext
     # ------------------------------------------------------------------
-    git_status_entries = _get_git_status_entries(os.path.dirname(os.path.abspath(workspace)))
+    git_status_entries = host.git_status_entries
 
     # ------------------------------------------------------------------
     # Check 1: protected-paths
@@ -2740,9 +2724,9 @@ def cmd_check_guard_integrity(args):
     violations.extend(do_violations)
 
     # ------------------------------------------------------------------
-    # Check 3: schema-integrity
+    # Check 3: schema-integrity (delegated to WorkspaceContext)
     # ------------------------------------------------------------------
-    si_check, si_violations = _check_schema_integrity(project_root)
+    si_check, si_violations = host.check_schema_integrity()
     checks.append(si_check)
     violations.extend(si_violations)
 
@@ -2957,43 +2941,17 @@ def _check_schema_integrity(project_root):
     Verifies all .json files in schemas/ are valid parseable JSON.
 
     Returns (check_dict, violations_list).
+    Delegates to WorkspaceContext for the shared implementation.
     """
-    violations = []
-    schemas_dir = os.path.join(project_root, "schemas")
-
-    if not os.path.isdir(schemas_dir):
-        return {
-            "name": "schema-integrity",
-            "status": "PASS",
-            "details": "schemas directory not found (nothing to check)",
-        }, []
-
-    schema_files_checked = 0
-    for name in sorted(os.listdir(schemas_dir)):
-        if not name.endswith(".json"):
-            continue
-        schema_files_checked += 1
-        fpath = os.path.join(schemas_dir, name)
-        if is_invalid_json_file(fpath):
-            violations.append({
-                "check": "schema-integrity",
-                "type": "invalid-json",
-                "path": f"schemas/{name}",
-                "detail": f"Schema file contains invalid JSON: {name}",
-            })
-
-    if violations:
-        return {
-            "name": "schema-integrity",
-            "status": "FAIL",
-            "details": f"{len(violations)} schema file(s) with invalid JSON",
-        }, violations
-
-    return {
-        "name": "schema-integrity",
-        "status": "PASS",
-        "details": f"all {schema_files_checked} schema(s) valid",
-    }, []
+    # Create a minimal host with the right project_root.
+    # WorkspaceContext.project_root is normally derived from __file__,
+    # but callers of this function (e.g. _check_guard_integrity_for_validate)
+    # pass it explicitly.
+    host = WorkspaceContext.__new__(WorkspaceContext)
+    host.workspace = ""
+    host.project_root = project_root
+    host._WorkspaceContext__cache = {}
+    return host.check_schema_integrity()
 
 
 # ---------------------------------------------------------------------------
@@ -3141,44 +3099,16 @@ def _sentinel_check_gate_policy_weakening(workspace):
 
 
 def _sentinel_check_schema_integrity(workspace):
-    """Check 3: schema-integrity — every schemas/*.schema.json must be valid JSON."""
+    """Check 3: schema-integrity — every schemas/*.schema.json must be valid JSON.
+
+    Delegates to WorkspaceContext for the shared implementation.
+    """
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    schemas_dir = os.path.join(project_root, "schemas")
-    invalid_files = []
-
-    if not os.path.isdir(schemas_dir):
-        return {
-            "category": "schema-integrity",
-            "severity": "INFO",
-            "title": "Schemas directory not found",
-            "description": "schemas/ directory does not exist — nothing to check",
-            "evidence": [{"type": "MISSING_ARTIFACT", "detail": schemas_dir}],
-        }
-
-    for name in sorted(os.listdir(schemas_dir)):
-        if not name.endswith(".schema.json"):
-            continue
-        fpath = os.path.join(schemas_dir, name)
-        if is_invalid_json_file(fpath):
-            invalid_files.append("schemas/{}".format(name))
-
-    if invalid_files:
-        return {
-            "category": "schema-integrity",
-            "severity": "CRITICAL",
-            "title": "Schema files contain invalid JSON",
-            "description": "{} schema file(s) with invalid JSON".format(len(invalid_files)),
-            "evidence": [{"type": "FILE_PATH", "detail": p} for p in invalid_files],
-            "resolutionHint": "Fix JSON syntax in affected schema files",
-        }
-
-    return {
-        "category": "schema-integrity",
-        "severity": "INFO",
-        "title": "All schema files are valid JSON",
-        "description": "All .schema.json files in schemas/ parsed without errors",
-        "evidence": [{"type": "FILE_PATH", "detail": schemas_dir}],
-    }
+    host = WorkspaceContext.__new__(WorkspaceContext)
+    host.workspace = workspace
+    host.project_root = project_root
+    host._WorkspaceContext__cache = {}
+    return host.check_schema_integrity_for_sentinel()
 
 
 def _sentinel_check_test_suppression(workspace):

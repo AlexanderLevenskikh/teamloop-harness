@@ -311,6 +311,117 @@ class WorkspaceContext:
         return None
 
     # ------------------------------------------------------------------
+    # Schema integrity checks — shared between guard-integrity and sentinel
+    # ------------------------------------------------------------------
+
+    def check_schema_integrity(self) -> tuple:
+        """Check 3 for guard-integrity: all .json files in schemas/ are valid.
+
+        Returns (check_dict, violations_list) matching the
+        _check_schema_integrity() interface in teamloop-core.py.
+        """
+        violations = []
+        schemas_dir = os.path.join(self.project_root, "schemas")
+
+        if not os.path.isdir(schemas_dir):
+            return {
+                "name": "schema-integrity",
+                "status": "PASS",
+                "details": "schemas directory not found (nothing to check)",
+            }, []
+
+        schema_files_checked = 0
+        for name in sorted(os.listdir(schemas_dir)):
+            if not name.endswith(".json"):
+                continue
+            schema_files_checked += 1
+            fpath = os.path.join(schemas_dir, name)
+            if not os.path.exists(fpath) or os.path.getsize(fpath) == 0:
+                continue
+            valid = False
+            for enc in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be"):
+                try:
+                    with open(fpath, "r", encoding=enc) as f:
+                        json.load(f)
+                    valid = True
+                    break
+                except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+                    continue
+            if not valid:
+                violations.append({
+                    "check": "schema-integrity",
+                    "type": "invalid-json",
+                    "path": f"schemas/{name}",
+                    "detail": f"Schema file contains invalid JSON: {name}",
+                })
+
+        if violations:
+            return {
+                "name": "schema-integrity",
+                "status": "FAIL",
+                "details": f"{len(violations)} schema file(s) with invalid JSON",
+            }, violations
+
+        return {
+            "name": "schema-integrity",
+            "status": "PASS",
+            "details": f"all {schema_files_checked} schema(s) valid",
+        }, []
+
+    def check_schema_integrity_for_sentinel(self) -> dict:
+        """Check 3 for sentinel: all .schema.json files are valid JSON.
+
+        Returns a finding dict matching the sentinel-inspection schema.
+        """
+        schemas_dir = os.path.join(self.project_root, "schemas")
+        invalid_files = []
+
+        if not os.path.isdir(schemas_dir):
+            return {
+                "category": "schema-integrity",
+                "severity": "INFO",
+                "title": "Schemas directory not found",
+                "description": "schemas/ directory does not exist — nothing to check",
+                "evidence": [{"type": "MISSING_ARTIFACT", "detail": schemas_dir}],
+            }
+
+        for name in sorted(os.listdir(schemas_dir)):
+            if not name.endswith(".schema.json"):
+                continue
+            fpath = os.path.join(schemas_dir, name)
+            if not os.path.exists(fpath) or os.path.getsize(fpath) == 0:
+                continue
+            valid = False
+            for enc in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be"):
+                try:
+                    with open(fpath, "r", encoding=enc) as f:
+                        json.load(f)
+                    valid = True
+                    break
+                except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+                    continue
+            if not valid:
+                invalid_files.append("schemas/{}".format(name))
+
+        if invalid_files:
+            return {
+                "category": "schema-integrity",
+                "severity": "CRITICAL",
+                "title": "Schema files contain invalid JSON",
+                "description": "{} schema file(s) with invalid JSON".format(len(invalid_files)),
+                "evidence": [{"type": "FILE_PATH", "detail": p} for p in invalid_files],
+                "resolutionHint": "Fix JSON syntax in affected schema files",
+            }
+
+        return {
+            "category": "schema-integrity",
+            "severity": "INFO",
+            "title": "All schema files are valid JSON",
+            "description": "All .schema.json files in schemas/ parsed without errors",
+            "evidence": [{"type": "FILE_PATH", "detail": schemas_dir}],
+        }
+
+    # ------------------------------------------------------------------
     # Private loaders
     # ------------------------------------------------------------------
 
