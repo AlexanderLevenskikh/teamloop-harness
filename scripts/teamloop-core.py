@@ -5352,6 +5352,79 @@ def cmd_test_select(args):
         # Machine-readable output
         print(json.dumps(artifact, ensure_ascii=False, indent=2))
 
+
+# ---------------------------------------------------------------------------
+# release-info
+# ---------------------------------------------------------------------------
+
+def cmd_release_info(args):
+    """Print current version and release metadata."""
+    import version as _version_mod
+    TEAMLOOP_VERSION = _version_mod.TEAMLOOP_VERSION
+    TEAMLOOP_SCHEMA_VERSION = _version_mod.TEAMLOOP_SCHEMA_VERSION
+
+    metadata = {
+        "schemaVersion": TEAMLOOP_SCHEMA_VERSION,
+        "version": TEAMLOOP_VERSION,
+        "releaseDate": "2026-07-11",
+        "summary": "Runtime consolidation and productization",
+        "changes": [
+            {
+                "type": "feature",
+                "title": "Single Validation Host",
+                "description": "All schema validation funneled through teamloop-core.py with caching layer"
+            },
+            {
+                "type": "feature",
+                "title": "Fast Execution Contract",
+                "description": "Immutable execution manifest with deterministic policy resolution"
+            },
+            {
+                "type": "feature",
+                "title": "Sentinel and Guard Integrity",
+                "description": "Nine safety inspections and protected-path integrity checks"
+            },
+            {
+                "type": "feature",
+                "title": "Memory Subsystem",
+                "description": "Persistent lessons, antipatterns, decisions, and evidence tracking"
+            },
+            {
+                "type": "feature",
+                "title": "Semantic Versioning",
+                "description": "Centralized version module with CLI --version flag and release metadata schema"
+            }
+        ],
+        "breakingChanges": [],
+        "compatibilityNotes": [
+            "Schema version 1 artifacts remain fully compatible",
+            "CLI wrapper scripts (.sh, .ps1) are backward-compatible with --workspace flag"
+        ]
+    }
+
+    if args.json:
+        print(json.dumps(metadata, ensure_ascii=False, indent=2))
+    else:
+        print(f"TeamLoop Harness {TEAMLOOP_VERSION}")
+        print(f"Schema version: {TEAMLOOP_SCHEMA_VERSION}")
+        print(f"Release date: {metadata['releaseDate']}")
+        print(f"Summary: {metadata['summary']}")
+        print()
+        print(f"Changes ({len(metadata['changes'])}):")
+        for change in metadata["changes"]:
+            print(f"  [{change['type']}] {change['title']}")
+            print(f"    {change['description']}")
+        if metadata["breakingChanges"]:
+            print()
+            print("Breaking changes:")
+            for bc in metadata["breakingChanges"]:
+                print(f"  - {bc['title']}")
+        if metadata["compatibilityNotes"]:
+            print()
+            print("Compatibility notes:")
+            for note in metadata["compatibilityNotes"]:
+                print(f"  - {note}")
+
     # Write to the specified output path as machine-readable artifact
     # (already done above with write_json)
 
@@ -5362,6 +5435,9 @@ def cmd_test_select(args):
 
 def main():
     parser = argparse.ArgumentParser(description="TeamLoop Harness Core")
+    parser.add_argument(
+        "--version", action="version", version="%(prog)s 0.3.0"
+    )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # init-workspace
@@ -5515,6 +5591,11 @@ def main():
     p_test_select.add_argument("--explain", action="store_true", help="Output human-readable explanation")
     p_test_select.add_argument("--output", "-o", default="", help="Output path for selection artifact (default: .teamloop/state/test-selection.json)")
 
+    # release-info
+    p_release = subparsers.add_parser("release-info", help="Print current version and release metadata")
+    p_release.add_argument("--json", action="store_true", help="Output as JSON")
+    p_release.add_argument("--workspace", "-w", default="", help="Ignored, for wrapper compatibility")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5549,6 +5630,7 @@ def main():
         "record-performance": cmd_record_performance,
         "performance-report": cmd_performance_report,
         "test-select": cmd_test_select,
+        "release-info": cmd_release_info,
     }
 
     commands[args.command](args)
