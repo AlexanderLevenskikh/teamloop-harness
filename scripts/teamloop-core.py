@@ -3347,6 +3347,580 @@ def cmd_run_sentinel(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: final-gate
+# ---------------------------------------------------------------------------
+
+def cmd_final_gate(args):
+    """Aggregate final gate checks for pre-handoff validation.
+
+    Runs 11 independent checks and produces a structured JSON result
+    matching schemas/final-gate.schema.json.  Writes the result to
+    .teamloop/state/final-gate-result.json and prints JSON to stdout.
+
+    Exit 0 if overallStatus is PASS or NOT_CONFIGURED, exit 1 if FAIL.
+    """
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    core_script = os.path.join(script_dir, "teamloop-core.py")
+
+    checks = []
+    advisory_findings = []
+
+    # ------------------------------------------------------------------
+    # Helper: run a subprocess and return exit code
+    # ------------------------------------------------------------------
+    def _run_sub(cmd, timeout=30):
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout,
+                cwd=os.path.dirname(os.path.abspath(workspace))
+            )
+            return proc.returncode, proc.stdout, proc.stderr
+        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError) as e:
+            return -1, "", str(e)
+
+    # ------------------------------------------------------------------
+    # Helper: get latest gate-result.json path and content
+    # ------------------------------------------------------------------
+    def _latest_gate_result():
+        runs_dir = os.path.join(workspace, "runs")
+        if not os.path.isdir(runs_dir):
+            return None
+        try:
+            run_dirs = sorted([
+                d for d in os.listdir(runs_dir)
+                if os.path.isdir(os.path.join(runs_dir, d))
+            ])
+        except OSError:
+            return None
+        for run_name in reversed(run_dirs):
+            gr_path = os.path.join(runs_dir, run_name, "gate-result.json")
+            if os.path.exists(gr_path):
+                return read_json_file_safe(gr_path)
+        return None
+
+    # ------------------------------------------------------------------
+    # Helper: get latest sentinel-inspection.json content
+    # ------------------------------------------------------------------
+    def _latest_sentinel():
+        sentinel_path = _sentinel_find_inspection_file(workspace)
+        if sentinel_path is None:
+            return None
+        return read_json_file_safe(sentinel_path)
+
+    # ------------------------------------------------------------------
+    # Check 1: state-validation
+    # ------------------------------------------------------------------
+    rc, stdout, stderr = _run_sub(
+        [sys.executable, core_script, "validate-state", "--workspace", workspace]
+    )
+    if rc == 0:
+        checks.append({
+            "name": "state-validation",
+            "status": "PASS",
+            "description": "validate-state passed with no errors",
+            "blocking": True,
+        })
+    else:
+        detail = stdout.strip() or stderr.strip() or "validate-state failed"
+        checks.append({
+            "name": "state-validation",
+            "status": "FAIL",
+            "description": "validate-state reported errors",
+            "blocking": True,
+            "reason": detail[:500],
+        })
+
+    # ------------------------------------------------------------------
+    # Check 2: memory-validation
+    # ------------------------------------------------------------------
+    memory_dir = os.path.join(workspace, "memory")
+    if not os.path.isdir(memory_dir):
+        checks.append({
+            "name": "memory-validation",
+            "status": "NOT_CONFIGURED",
+            "description": "memory directory does not exist; memory subsystem not configured",
+            "blocking": False,
+        })
+        advisory_findings.append("memory directory not found — memory subsystem is not configured")
+    else:
+        rc, stdout, stderr = _run_sub(
+            [sys.executable, core_script, "memory-doctor", "--workspace", workspace],
+            timeout=30
+        )
+        if rc == 0:
+            checks.append({
+                "name": "memory-validation",
+                "status": "PASS",
+                "description": "memory-doctor passed with no issues",
+                "blocking": True,
+            })
+        else:
+            detail = stdout.strip() or stderr.strip() or "memory-doctor failed"
+            checks.append({
+                "name": "memory-validation",
+                "status": "FAIL",
+                "description": "memory-doctor reported issues",
+                "blocking": True,
+                "reason": detail[:500],
+            })
+
+    # ------------------------------------------------------------------
+    # Check 3: continuation-decision
+    # ------------------------------------------------------------------
+    state = read_json_file_safe(os.path.join(workspace, "state", "team-state.json"))
+    decision_file = os.path.join(workspace, "state", "continuation-decision.json")
+    if os.path.exists(decision_file):
+        decision = read_json_file_safe(decision_file)
+        if decision is None:
+            checks.append({
+                "name": "continuation-decision",
+                "status": "FAIL",
+                "description": "continuation-decision.json exists but is not valid JSON",
+                "blocking": True,
+            })
+        else:
+            # Reuse the same consistency check that validate-state uses
+            schema_map = {}
+            schemas_dir = os.path.join(project_root, "schemas")
+            for name in os.listdir(schemas_dir):
+                if name.endswith(".schema.json"):
+                    base = name.replace(".schema.json", "")
+                    try:
+                        schema_map[base] = read_json(os.path.join(schemas_dir, name))
+                    except (ValueError, json.JSONDecodeError):
+                        pass
+            cd_errors = _validate_continuation_consistency(workspace, state or {}, schema_map)
+            if cd_errors:
+                checks.append({
+                    "name": "continuation-decision",
+                    "status": "FAIL",
+                    "description": "continuation-decision.json has consistency errors",
+                    "blocking": True,
+                    "reason": "; ".join(cd_errors[:5]),
+                })
+            else:
+                checks.append({
+                    "name": "continuation-decision",
+                    "status": "PASS",
+                    "description": "continuation-decision.json is consistent with team-state",
+                    "blocking": True,
+                })
+    else:
+        checks.append({
+            "name": "continuation-decision",
+            "status": "SKIP",
+            "description": "continuation-decision.json not present; skipping consistency check",
+            "blocking": False,
+        })
+
+    # ------------------------------------------------------------------
+    # Check 4: scope-validation
+    # ------------------------------------------------------------------
+    rc, stdout, stderr = _run_sub(
+        [sys.executable, core_script, "check-scope", "--workspace", workspace]
+    )
+    if rc == 0:
+        checks.append({
+            "name": "scope-validation",
+            "status": "PASS",
+            "description": "check-scope passed; all changes within scope",
+            "blocking": True,
+        })
+    else:
+        detail = stdout.strip() or stderr.strip() or "check-scope failed"
+        checks.append({
+            "name": "scope-validation",
+            "status": "FAIL",
+            "description": "check-scope reported scope violations",
+            "blocking": True,
+            "reason": detail[:500],
+        })
+
+    # ------------------------------------------------------------------
+    # Check 5: latest-gate-result
+    # ------------------------------------------------------------------
+    gr = _latest_gate_result()
+    if gr is None:
+        checks.append({
+            "name": "latest-gate-result",
+            "status": "SKIP",
+            "description": "no gate-result.json found in any run directory",
+            "blocking": False,
+        })
+    elif gr.get("status") == "FAIL":
+        failed_checks = [c.get("name", "?") for c in gr.get("checks", []) if c.get("status") == "FAIL"]
+        checks.append({
+            "name": "latest-gate-result",
+            "status": "FAIL",
+            "description": "latest gate-result.json has status FAIL",
+            "blocking": True,
+            "reason": "failed gate check(s): " + ", ".join(failed_checks),
+            "evidenceArtifact": os.path.relpath(
+                os.path.join(workspace, "runs", gr.get("runId", ""), "gate-result.json"),
+                os.path.dirname(workspace)
+            ),
+        })
+    else:
+        checks.append({
+            "name": "latest-gate-result",
+            "status": "PASS",
+            "description": f"latest gate-result.json has status {gr.get('status', 'unknown')}",
+            "blocking": True,
+        })
+
+    # ------------------------------------------------------------------
+    # Check 6: active-task-consistency
+    # ------------------------------------------------------------------
+    task_issues = []
+    if state:
+        state_task_id = state.get("currentTaskId", "")
+        state_run_id = state.get("currentRunId", "")
+        ct = read_json_file_safe(os.path.join(workspace, "state", "current-task.json"))
+
+        if state_task_id:
+            if ct is None:
+                task_issues.append(f"team-state currentTaskId='{state_task_id}' but current-task.json is missing")
+            elif ct.get("taskId") != state_task_id:
+                task_issues.append(
+                    f"current-task.json.taskId='{ct.get('taskId')}' != team-state.currentTaskId='{state_task_id}'"
+                )
+
+        if state_run_id:
+            run_dir = os.path.join(workspace, "runs", state_run_id)
+            if not os.path.isdir(run_dir):
+                # Check run-ledger as fallback
+                run_found = False
+                for entry in read_jsonl(os.path.join(workspace, "state", "run-ledger.jsonl")):
+                    if entry.get("runId") == state_run_id:
+                        run_found = True
+                        break
+                if not run_found:
+                    task_issues.append(f"team-state currentRunId='{state_run_id}' not found in runs/ or run-ledger")
+
+    if task_issues:
+        checks.append({
+            "name": "active-task-consistency",
+            "status": "FAIL",
+            "description": "active-task-consistency check failed",
+            "blocking": True,
+            "reason": "; ".join(task_issues),
+        })
+    else:
+        checks.append({
+            "name": "active-task-consistency",
+            "status": "PASS",
+            "description": "currentTaskId/currentRunId consistent across state files",
+            "blocking": True,
+        })
+
+    # ------------------------------------------------------------------
+    # Check 7: unresolved-blockers
+    # ------------------------------------------------------------------
+    blockers_path = os.path.join(workspace, "state", "blockers.jsonl")
+    if os.path.exists(blockers_path):
+        blockers = read_jsonl(blockers_path)
+        open_blockers = [b for b in blockers if not b.get("resolvedAtUtc")]
+        if open_blockers:
+            summaries = [b.get("summary", b.get("blockerId", "unnamed")) for b in open_blockers[:5]]
+            checks.append({
+                "name": "unresolved-blockers",
+                "status": "FAIL",
+                "description": f"{len(open_blockers)} unresolved blocker(s) found",
+                "blocking": True,
+                "reason": "; ".join(summaries),
+            })
+        else:
+            checks.append({
+                "name": "unresolved-blockers",
+                "status": "PASS",
+                "description": "no unresolved blockers",
+                "blocking": True,
+            })
+    else:
+        checks.append({
+            "name": "unresolved-blockers",
+            "status": "PASS",
+            "description": "blockers.jsonl not found; no blockers to check",
+            "blocking": True,
+        })
+
+    # ------------------------------------------------------------------
+    # Check 8: stale-artifacts
+    # ------------------------------------------------------------------
+    stale_issues = []
+
+    # Stale current-task.json: exists with IN_PROGRESS but team-state has no currentTaskId
+    if state and not state.get("currentTaskId", ""):
+        ct = read_json_file_safe(os.path.join(workspace, "state", "current-task.json"))
+        if ct and ct.get("status") == "IN_PROGRESS":
+            stale_issues.append("stale current-task.json with IN_PROGRESS while team-state has no currentTaskId")
+
+    # Orphaned IN_PROGRESS tasks in backlog
+    backlog_path = os.path.join(workspace, "state", "backlog.jsonl")
+    if os.path.exists(backlog_path):
+        for task in read_jsonl(backlog_path):
+            if task.get("status") == "IN_PROGRESS":
+                stale_issues.append(f"backlog task '{task.get('taskId', '?')}' still IN_PROGRESS")
+
+    if stale_issues:
+        checks.append({
+            "name": "stale-artifacts",
+            "status": "FAIL",
+            "description": "stale artifacts detected",
+            "blocking": True,
+            "reason": "; ".join(stale_issues),
+        })
+    else:
+        checks.append({
+            "name": "stale-artifacts",
+            "status": "PASS",
+            "description": "no stale artifacts detected",
+            "blocking": True,
+        })
+
+    # ------------------------------------------------------------------
+    # Check 9: sentinel-result
+    # ------------------------------------------------------------------
+    sentinel = _latest_sentinel()
+    if sentinel is None:
+        checks.append({
+            "name": "sentinel-result",
+            "status": "SKIP",
+            "description": "no sentinel-inspection.json found; sentinel not yet run",
+            "blocking": False,
+        })
+    else:
+        findings = sentinel.get("findings", [])
+        if not isinstance(findings, list):
+            findings = []
+        critical_findings = [f for f in findings if f.get("severity") == "CRITICAL"]
+        if critical_findings:
+            titles = [f.get("title", "unnamed") for f in critical_findings[:5]]
+            checks.append({
+                "name": "sentinel-result",
+                "status": "FAIL",
+                "description": f"sentinel-inspection.json has {len(critical_findings)} CRITICAL finding(s)",
+                "blocking": True,
+                "reason": "; ".join(titles),
+                "evidenceArtifact": os.path.relpath(
+                    _sentinel_find_inspection_file(workspace) or "",
+                    os.path.dirname(workspace)
+                ),
+            })
+        else:
+            checks.append({
+                "name": "sentinel-result",
+                "status": "PASS",
+                "description": "sentinel-inspection.json has no CRITICAL findings",
+                "blocking": True,
+            })
+
+    # ------------------------------------------------------------------
+    # Check 10: guard-integrity-result
+    # ------------------------------------------------------------------
+    policy_path = os.path.join(workspace, "policies", "protected-paths.json")
+    if not os.path.exists(policy_path):
+        checks.append({
+            "name": "guard-integrity-result",
+            "status": "NOT_CONFIGURED",
+            "description": "protected-paths.json not found; guard integrity is not configured",
+            "blocking": False,
+        })
+        advisory_findings.append("guard integrity not configured — protected-paths.json missing")
+    else:
+        rc, stdout, stderr = _run_sub(
+            [sys.executable, core_script, "check-guard-integrity", "--workspace", workspace]
+        )
+        if rc == 0:
+            # Parse the JSON result to determine actual status
+            try:
+                ghi_result = json.loads(stdout)
+                ghi_status = ghi_result.get("status", "PASS")
+                if ghi_status == "FAIL":
+                    checks.append({
+                        "name": "guard-integrity-result",
+                        "status": "FAIL",
+                        "description": "guard integrity check reported FAIL",
+                        "blocking": True,
+                        "reason": json.dumps(ghi_result.get("violations", []))[:500],
+                    })
+                elif ghi_status == "WARNING":
+                    checks.append({
+                        "name": "guard-integrity-result",
+                        "status": "PASS",
+                        "description": "guard integrity check reported WARNING (non-blocking)",
+                        "blocking": False,
+                    })
+                else:
+                    checks.append({
+                        "name": "guard-integrity-result",
+                        "status": "PASS",
+                        "description": f"guard integrity check passed (status: {ghi_status})",
+                        "blocking": True,
+                    })
+            except json.JSONDecodeError:
+                checks.append({
+                    "name": "guard-integrity-result",
+                    "status": "PASS",
+                    "description": "guard integrity check exited 0; output not valid JSON but command succeeded",
+                    "blocking": True,
+                })
+        else:
+            detail = stdout.strip() or stderr.strip() or "check-guard-integrity failed"
+            checks.append({
+                "name": "guard-integrity-result",
+                "status": "FAIL",
+                "description": "guard integrity check failed",
+                "blocking": True,
+                "reason": detail[:500],
+            })
+
+    # ------------------------------------------------------------------
+    # Check 11: reviewed-content-integrity
+    # ------------------------------------------------------------------
+    review_evidence_found = False
+    if state:
+        run_id = state.get("currentRunId", "")
+        if run_id:
+            review_path = os.path.join(workspace, "runs", run_id, "review-evidence.json")
+            if os.path.exists(review_path):
+                review_evidence_found = True
+        # Also check latest run directory
+        if not review_evidence_found:
+            runs_dir = os.path.join(workspace, "runs")
+            if os.path.isdir(runs_dir):
+                try:
+                    for run_name in reversed(sorted(os.listdir(runs_dir))):
+                        review_path = os.path.join(runs_dir, run_name, "review-evidence.json")
+                        if os.path.exists(review_path):
+                            review_evidence_found = True
+                            break
+                except OSError:
+                    pass
+
+    if not review_evidence_found:
+        checks.append({
+            "name": "reviewed-content-integrity",
+            "status": "SKIP",
+            "description": "no review-evidence.json found in any run directory; review evidence not yet available",
+            "blocking": False,
+        })
+    else:
+        # review-evidence.json exists — basic check that it is valid JSON
+        review_data = None
+        if state and state.get("currentRunId", ""):
+            review_path = os.path.join(workspace, "runs", state["currentRunId"], "review-evidence.json")
+            if os.path.exists(review_path):
+                review_data = read_json_file_safe(review_path)
+        if review_data is not None:
+            checks.append({
+                "name": "reviewed-content-integrity",
+                "status": "PASS",
+                "description": "review-evidence.json found and is valid JSON",
+                "blocking": True,
+            })
+        else:
+            checks.append({
+                "name": "reviewed-content-integrity",
+                "status": "SKIP",
+                "description": "review-evidence.json exists in a run directory but could not be parsed; skipping detailed check",
+                "blocking": False,
+            })
+
+    # ------------------------------------------------------------------
+    # Compute overall status
+    # ------------------------------------------------------------------
+    # FAIL if any blocking check is FAIL
+    has_blocking_fail = any(
+        c["status"] == "FAIL" and c["blocking"]
+        for c in checks
+    )
+
+    # NOT_CONFIGURED only if no blocking fails and at least one check is NOT_CONFIGURED
+    # and no check is FAIL (blocking or not)
+    has_any_fail = any(c["status"] == "FAIL" for c in checks)
+    has_not_configured = any(c["status"] == "NOT_CONFIGURED" for c in checks)
+
+    if has_blocking_fail:
+        overall_status = "FAIL"
+    elif has_any_fail:
+        # Non-blocking FAIL still means overall is FAIL for safety
+        overall_status = "FAIL"
+    elif has_not_configured:
+        overall_status = "NOT_CONFIGURED"
+    else:
+        overall_status = "PASS"
+
+    # ------------------------------------------------------------------
+    # Get git info
+    # ------------------------------------------------------------------
+    current_branch = ""
+    current_head = ""
+    try:
+        branch_proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if branch_proc.returncode == 0:
+            current_branch = branch_proc.stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        current_branch = "unknown"
+
+    try:
+        head_proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if head_proc.returncode == 0:
+            current_head = head_proc.stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        current_head = "0" * 40
+
+    # ------------------------------------------------------------------
+    # Build result
+    # ------------------------------------------------------------------
+    run_id = "run-{}-{}".format(
+        datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S"),
+        os.getpid()
+    )
+
+    result = {
+        "schemaVersion": 1,
+        "checkedAtUtc": utc_now_iso(),
+        "currentBranch": current_branch,
+        "currentHead": current_head,
+        "overallStatus": overall_status,
+        "checks": checks,
+    }
+    if advisory_findings:
+        result["advisoryFindings"] = advisory_findings
+
+    # ------------------------------------------------------------------
+    # Write result to .teamloop/state/final-gate-result.json
+    # ------------------------------------------------------------------
+    result_path = os.path.join(workspace, "state", "final-gate-result.json")
+    write_json(result_path, result)
+
+    # Also write to a run directory for traceability
+    run_dir = os.path.join(workspace, "runs", run_id)
+    os.makedirs(run_dir, exist_ok=True)
+    write_json(os.path.join(run_dir, "final-gate-result.json"), result)
+
+    # ------------------------------------------------------------------
+    # Print JSON to stdout
+    # ------------------------------------------------------------------
+    print(json.dumps(result, ensure_ascii=False))
+
+    # ------------------------------------------------------------------
+    # Exit code
+    # ------------------------------------------------------------------
+    if overall_status == "FAIL":
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Workspace path resolution
 # ---------------------------------------------------------------------------
 
@@ -3437,6 +4011,10 @@ def main():
     p_sentinel = subparsers.add_parser("run-sentinel", help="Run read-only sentinel integrity inspection")
     p_sentinel.add_argument("--workspace", "-w", default=".teamloop")
 
+    # final-gate
+    p_fg = subparsers.add_parser("final-gate", help="Run final gate aggregator")
+    p_fg.add_argument("--workspace", "-w", default=".teamloop")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -3457,6 +4035,7 @@ def main():
         "write-continuation-decision": cmd_write_continuation_decision,
         "check-guard-integrity": cmd_check_guard_integrity,
         "run-sentinel": cmd_run_sentinel,
+        "final-gate": cmd_final_gate,
     }
 
     commands[args.command](args)

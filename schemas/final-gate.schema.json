@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FinalGateResult",
+  "description": "Aggregated final gate check result for pre-handoff validation",
+  "type": "object",
+  "required": ["schemaVersion", "checkedAtUtc", "currentBranch", "currentHead", "overallStatus", "checks"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "checkedAtUtc": { "type": "string", "pattern": "^[0-9]{4}-" },
+    "currentBranch": { "type": "string" },
+    "currentHead": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "overallStatus": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "DISABLED", "NOT_CONFIGURED"]
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "status", "description", "blocking"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["PASS", "FAIL", "SKIP", "NOT_CONFIGURED"]
+          },
+          "description": { "type": "string" },
+          "blocking": { "type": "boolean" },
+          "reason": { "type": "string" },
+          "evidenceArtifact": { "type": "string" }
+        }
+      }
+    },
+    "advisoryFindings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
