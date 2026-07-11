@@ -5386,6 +5386,65 @@ def cmd_compat_check(args):
 
 
 # ---------------------------------------------------------------------------
+# schema-lint
+# ---------------------------------------------------------------------------
+
+def cmd_schema_lint(args):
+    """Audit all schemas for additionalProperties:false and JSON validity.
+
+    Checks:
+      1. All schema files parse as valid JSON
+      2. All schemas reference JSON Schema draft-07
+      3. All schemas have 'type' and 'properties' keys
+      4. Required fields are defined in properties
+      5. additionalProperties:false occurrences (top-level and nested)
+      6. Cross-schema consistency (type mismatches, enum drift)
+
+    Exits 0 when all schemas are valid, 1 when errors are found.
+    """
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    schemas_dir = os.path.join(project_root, "schemas")
+
+    sys.path.insert(0, project_root)
+    import teamloop_schema as schema_mod
+
+    report = schema_mod.run_full_audit(schemas_dir)
+
+    if args.json:
+        print(schema_mod.format_json_report(report))
+    elif args.report:
+        print(schema_mod.format_text_report(report))
+    else:
+        # Default compact output
+        ap = report.get("additional_properties", {})
+        lint = report.get("lint", {})
+        lines = []
+        lines.append("Schema Evolution Audit")
+        lines.append("=" * 22)
+        lines.append(f"Total schemas: {lint.get('total', 0)}")
+        lines.append(
+            f"Schemas with additionalProperties:false: "
+            f"{ap.get('schemas_with_strict', 0)}"
+        )
+        if lint.get("invalid", 0) > 0:
+            lines.append(f"Invalid schemas: {lint['invalid']}")
+        else:
+            lines.append(f"All schemas valid JSON Schema draft-07: yes")
+        recommendations = report.get("evolution_recommendations", [])
+        if recommendations:
+            lines.append("")
+            lines.append("Recommendation:")
+            for rec in recommendations:
+                lines.append(f"  [{rec['severity']}] {rec['recommendation']}")
+        lines.append("")
+        lines.append(f"Overall: {report['status']}")
+        print("\n".join(lines))
+
+    sys.exit(1 if report["status"] == "FAIL" else 0)
+
+
+# ---------------------------------------------------------------------------
 # release-info
 # ---------------------------------------------------------------------------
 
@@ -5633,6 +5692,21 @@ def main():
     p_compat.add_argument("--workspace", "-w", default=".teamloop")
     p_compat.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # schema-lint
+    p_schema_lint = subparsers.add_parser(
+        "schema-lint",
+        help="Audit schemas for additionalProperties:false, validity, and consistency",
+    )
+    p_schema_lint.add_argument("--workspace", "-w", default=".teamloop")
+    p_schema_lint.add_argument(
+        "--json", action="store_true",
+        help="Output full report as JSON",
+    )
+    p_schema_lint.add_argument(
+        "--report", action="store_true",
+        help="Output detailed text report with per-schema breakdown",
+    )
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5669,6 +5743,7 @@ def main():
         "test-select": cmd_test_select,
         "release-info": cmd_release_info,
         "compat-check": cmd_compat_check,
+        "schema-lint": cmd_schema_lint,
     }
 
     commands[args.command](args)
