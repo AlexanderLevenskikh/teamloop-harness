@@ -2542,6 +2542,173 @@ test_run "Sentinel: DocsDrift_Check" test_131
 test_run "Sentinel: PowerShellWrapper" test_132
 
 # ============================================================
+# E2E SMOKE SCENARIO TESTS 133-138
+# ============================================================
+
+test_133() {
+    # E2E_SuccessfulBoundedTask — full lifecycle: init, backlog, executor, file, scope, gates, validate
+    init_test_workspace
+    # 1. Create a READY task in backlog
+    echo '{"schemaVersion":1,"taskId":"task-e2e-1","title":"E2E task","status":"READY","scope":["src/**"],"allowedWrites":["src/**", ".teamloop/**"],"successCriteria":["src/hello.txt exists"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    # 2. Apply RUN_EXECUTOR transition
+    run_core apply-transition --action RUN_EXECUTOR --task-id task-e2e-1 >/dev/null
+    # 3. Create a file in scope
+    mkdir -p "$TEST_REPO_DIR/src"
+    printf 'hello\n' > "$TEST_REPO_DIR/src/hello.txt"
+    git -C "$TEST_REPO_DIR" add src/hello.txt >/dev/null 2>&1
+    # 4. Verify check-scope passes
+    set +e
+    local cs csrc
+    cs=$(run_core check-scope 2>&1)
+    csrc=$?
+    set -e
+    local cs_status
+    cs_status=$(echo "$cs" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+    [[ "$cs_status" == "PASS" ]] || { echo "check-scope should PASS for in-scope file, got '$cs_status'"; return 1; }
+    # 5. Verify run-gates passes (no gate policy = no gates = PASS)
+    set +e
+    local gout grc
+    gout=$(run_core run-gates 2>&1)
+    grc=$?
+    set -e
+    [[ $grc -eq 0 ]] || { echo "run-gates should PASS with no failing gates, got exit $grc: $gout"; return 1; }
+    # 6. Verify validate-state passes
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 0 ]] || { echo "validate-state should PASS after successful bounded task, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_134() {
+    # E2E_ScopeViolation — file created outside allowed scope fails check-scope
+    init_test_workspace
+    # 1. Create READY task with allowedWrites: ["src/**"]
+    echo '{"schemaVersion":1,"taskId":"task-e2e-2","title":"Scope violation test","status":"READY","scope":["src/**"],"allowedWrites":["src/**", ".teamloop/**"],"successCriteria":["scope"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    # 2. Run RUN_EXECUTOR
+    run_core apply-transition --action RUN_EXECUTOR --task-id task-e2e-2 >/dev/null
+    # 3. Create a file OUTSIDE scope (foo.txt at root)
+    printf 'out of scope\n' > "$TEST_REPO_DIR/foo.txt"
+    git -C "$TEST_REPO_DIR" add foo.txt >/dev/null 2>&1
+    # 4. Verify check-scope FAILS
+    set +e
+    local cs csrc
+    cs=$(run_core check-scope 2>&1)
+    csrc=$?
+    set -e
+    local cs_status
+    cs_status=$(echo "$cs" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+    [[ "$cs_status" == "FAIL" ]] || { echo "check-scope should FAIL for out-of-scope file, got '$cs_status'"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_135() {
+    # E2E_GateFailure — required gate that fails causes run-gates to exit 1
+    init_test_workspace
+    # Set up a task and start a run (run-gates needs currentRunId)
+    echo '{"schemaVersion":1,"taskId":"task-e2e-g","title":"Gate test","status":"READY","scope":["src/**"],"successCriteria":["Pass"]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    run_core apply-transition --action RUN_EXECUTOR --task-id task-e2e-g >/dev/null
+    run_core apply-transition --action RUN_GATEKEEPER >/dev/null
+    # 1. Create a gate-policy.json with a required gate that fails
+    cat > "$WORKSPACE_ABS/policies/gate-policy.json" << 'GEOF'
+{"gates":[{"name":"always-fail","type":"shell","command":"sh -c 'exit 1'","required":true}]}
+GEOF
+    # 2. Verify run-gates FAILS
+    set +e
+    local gout grc
+    gout=$(run_core run-gates 2>&1)
+    grc=$?
+    set -e
+    [[ $grc -eq 1 ]] || { echo "run-gates with required fail gate should exit 1, got exit $grc: $gout"; return 1; }
+    local gate_status
+    gate_status=$(echo "$gout" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+    [[ "$gate_status" == "FAIL" ]] || { echo "Gate status should be FAIL, got: $gout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_136() {
+    # E2E_HumanBlocker — open blocker prevents SET_DONE from passing validate-state
+    init_test_workspace
+    # 1. Create a valid blocker in blockers.jsonl
+    echo '{"schemaVersion":1,"blockerId":"blocker-e2e","type":"HUMAN_DECISION_REQUIRED","category":"PRODUCT_BEHAVIOR_AMBIGUITY","summary":"Need approval for E2E","evidence":["evidence"],"questionsForHuman":["Should we proceed?"]}' >> "$WORKSPACE_ABS/state/blockers.jsonl"
+    # 2. Attempt SET_DONE via apply-transition
+    run_core apply-transition --action SET_DONE >/dev/null 2>&1
+    # 3. Verify validate-state FAILS (open blocker prevents DONE)
+    set +e
+    local vout vrc
+    vout=$(run_core validate-state 2>&1)
+    vrc=$?
+    set -e
+    [[ $vrc -eq 1 ]] || { echo "validate-state should FAIL with open blocker, got: $vout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_137() {
+    # E2E_ProtectedChange — staged change to protected path detected by check-guard-integrity
+    init_test_workspace
+    # 1. Copy protected-paths.json template to workspace (protect scripts/**)
+    cat > "$WORKSPACE_ABS/policies/protected-paths.json" << 'PEOF'
+{"schemaVersion":1,"protectedPaths":["scripts/**"],"enforcementLevel":"error","evidenceRequired":{"fullTestSuite":true,"independentReview":true}}
+PEOF
+    # 2. Create a file in scripts/ and stage it
+    mkdir -p "$TEST_REPO_DIR/scripts"
+    printf '#!/usr/bin/env python3\nprint("test")\n' > "$TEST_REPO_DIR/scripts/new-script.py"
+    git -C "$TEST_REPO_DIR" add scripts/new-script.py >/dev/null 2>&1
+    # 3. Verify check-guard-integrity detects the protected change
+    set +e
+    local gout grc
+    gout=$(run_core check-guard-integrity 2>&1)
+    grc=$?
+    set -e
+    echo "$gout" | grep -q "protected-paths" || { echo "check-guard-integrity should detect protected path change, got: $gout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_138() {
+    # E2E_MemoryIntegrity — valid memory passes memory-doctor, invalid memory fails
+    init_test_workspace
+    # 1. Create valid memory (lesson + evidence in evidence-map.jsonl)
+    local evidence='{"schemaVersion":1,"evidenceId":"evidence-e2e","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    local lesson='{"schemaVersion":1,"lessonId":"lesson-e2e","title":"E2E lesson","description":"Memory integrity test","status":"ACTIVE","evidenceIds":["evidence-e2e"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    echo "$evidence" > "$WORKSPACE_ABS/memory/evidence-map.jsonl"
+    echo "$lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    # 2. Verify memory-doctor passes
+    set +e
+    local dout drc
+    dout=$("$PY" "$CORE" memory-doctor --workspace "$WORKSPACE_ABS" 2>&1)
+    drc=$?
+    set -e
+    [[ $drc -eq 0 ]] || { echo "memory-doctor should PASS with valid memory, got: $dout"; return 1; }
+    echo "$dout" | grep -q '"status": "PASS"' || { echo "memory-doctor output should contain PASS, got: $dout"; return 1; }
+    # 3. Replace with invalid memory (active lesson without evidence)
+    local bad_lesson='{"schemaVersion":1,"lessonId":"lesson-bad","title":"Bad lesson","description":"No evidence","status":"ACTIVE","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    echo "$bad_lesson" > "$WORKSPACE_ABS/memory/lessons.jsonl"
+    # 4. Verify memory-doctor fails
+    set +e
+    dout=$("$PY" "$CORE" memory-doctor --workspace "$WORKSPACE_ABS" 2>&1)
+    drc=$?
+    set -e
+    [[ $drc -eq 1 ]] || { echo "memory-doctor should FAIL with invalid memory (active lesson without evidence), got: $dout"; return 1; }
+    echo "$dout" | grep -q '"status": "FAIL"' || { echo "memory-doctor output should contain FAIL, got: $dout"; return 1; }
+    cleanup_workspace
+    return 0
+}
+
+test_run "E2E: SuccessfulBoundedTask" test_133
+test_run "E2E: ScopeViolation" test_134
+test_run "E2E: GateFailure" test_135
+test_run "E2E: HumanBlocker" test_136
+test_run "E2E: ProtectedChange" test_137
+test_run "E2E: MemoryIntegrity" test_138
+
+# ============================================================
 # SUMMARY
 # ============================================================
 echo ""

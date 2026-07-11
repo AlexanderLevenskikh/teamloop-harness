@@ -855,6 +855,140 @@ Test-Run "Sentinel: ValidateStatePasses" {
 }
 
 # ============================================================
+# E2E SMOKE SCENARIO TESTS
+# ============================================================
+Test-Run "E2E: SuccessfulBoundedTask" {
+    Init-TestWorkspace
+    # 1. Create READY task in backlog
+    $taskJson = '{"schemaVersion":1,"taskId":"task-e2e-1","title":"E2E task","status":"READY","scope":["src/**"],"allowedWrites":["src/**", ".teamloop/**"],"successCriteria":["src/hello.txt exists"]}'
+    Append-JsonLine -Path (Join-Path $script:workspaceAbs "state\backlog.jsonl") -Line $taskJson
+    # 2. Apply RUN_EXECUTOR
+    Invoke-PythonScript "apply-transition" "--action", "RUN_EXECUTOR", "--task-id", "task-e2e-1" | Out-Null
+    # 3. Create file in scope
+    $srcDir = Join-Path $script:testRepoDir "src"
+    New-Item -ItemType Directory -Path $srcDir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $srcDir "hello.txt"), "hello`n", [System.Text.UTF8Encoding]::new($false))
+    Push-Location $script:testRepoDir
+    & git add src/hello.txt 2>$null
+    Pop-Location
+    # 4. Verify check-scope passes
+    $csResult = Invoke-PythonScript "check-scope"
+    $csData = $csResult | ConvertFrom-Json
+    if (-not (Assert-Equal $csData.status "PASS" ("check-scope should PASS for in-scope file, got " + $csData.status))) { return $false }
+    # 5. Verify run-gates passes (no gate policy = no gates = PASS)
+    $gateResult = Invoke-PythonScriptWithExit "run-gates"
+    if (-not (Assert-Equal $gateResult.exitCode 0 ("run-gates should PASS with no failing gates, got: " + $gateResult.exitCode))) { return $false }
+    # 6. Verify validate-state passes
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 0 ("validate-state should PASS after successful bounded task, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "E2E: ScopeViolation" {
+    Init-TestWorkspace
+    # 1. Create READY task with allowedWrites: ["src/**"]
+    $taskJson = '{"schemaVersion":1,"taskId":"task-e2e-2","title":"Scope violation test","status":"READY","scope":["src/**"],"allowedWrites":["src/**", ".teamloop/**"],"successCriteria":["scope"]}'
+    Append-JsonLine -Path (Join-Path $script:workspaceAbs "state\backlog.jsonl") -Line $taskJson
+    # 2. Run RUN_EXECUTOR
+    Invoke-PythonScript "apply-transition" "--action", "RUN_EXECUTOR", "--task-id", "task-e2e-2" | Out-Null
+    # 3. Create a file OUTSIDE scope (foo.txt at root)
+    [System.IO.File]::WriteAllText((Join-Path $script:testRepoDir "foo.txt"), "out of scope`n", [System.Text.UTF8Encoding]::new($false))
+    Push-Location $script:testRepoDir
+    & git add foo.txt 2>$null
+    Pop-Location
+    # 4. Verify check-scope FAILS
+    $csResult = Invoke-PythonScript "check-scope"
+    $csData = $csResult | ConvertFrom-Json
+    if (-not (Assert-Equal $csData.status "FAIL" ("check-scope should FAIL for out-of-scope file, got " + $csData.status))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "E2E: GateFailure" {
+    Init-TestWorkspace
+    # Set up a task and start a run (run-gates needs currentRunId)
+    $taskJson = '{"schemaVersion":1,"taskId":"task-e2e-g","title":"Gate test","status":"READY","scope":["src/**"],"successCriteria":["Pass"]}'
+    Append-JsonLine -Path (Join-Path $script:workspaceAbs "state\backlog.jsonl") -Line $taskJson
+    Invoke-PythonScript "apply-transition" "--action", "RUN_EXECUTOR", "--task-id", "task-e2e-g" | Out-Null
+    Invoke-PythonScript "apply-transition" "--action", "RUN_GATEKEEPER" | Out-Null
+    # 1. Create gate-policy.json with required gate that fails
+    $gp = '{"gates":[{"name":"always-fail","type":"shell","command":"cmd /c exit 1","required":true}]}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "policies\gate-policy.json") -Content $gp
+    # 2. Verify run-gates FAILS
+    $gateResult = Invoke-PythonScriptWithExit "run-gates"
+    if (-not (Assert-Equal $gateResult.exitCode 1 ("run-gates with required fail gate should exit 1, got: " + $gateResult.exitCode))) { return $false }
+    $output = $gateResult.output -join "`n"
+    $gateData = $output | ConvertFrom-Json
+    if (-not (Assert-Equal $gateData.status "FAIL" ("Gate status should be FAIL, got " + $gateData.status))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "E2E: HumanBlocker" {
+    Init-TestWorkspace
+    # 1. Create a valid blocker in blockers.jsonl
+    $blocker = '{"schemaVersion":1,"blockerId":"blocker-e2e","type":"HUMAN_DECISION_REQUIRED","category":"PRODUCT_BEHAVIOR_AMBIGUITY","summary":"Need approval for E2E","evidence":["evidence"],"questionsForHuman":["Should we proceed?"]}'
+    Append-JsonLine -Path (Join-Path $script:workspaceAbs "state\blockers.jsonl") -Line $blocker
+    # 2. Attempt SET_DONE via apply-transition
+    Invoke-PythonScript "apply-transition" "--action", "SET_DONE" | Out-Null
+    # 3. Verify validate-state FAILS (open blocker prevents DONE)
+    $valResult = Invoke-PythonScriptWithExit "validate-state"
+    if (-not (Assert-Equal $valResult.exitCode 1 ("validate-state should FAIL with open blocker, got: " + $valResult.output))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "E2E: ProtectedChange" {
+    Init-TestWorkspace
+    # 1. Copy protected-paths.json to workspace (protect scripts/**)
+    $policy = '{"schemaVersion":1,"protectedPaths":["scripts/**"],"enforcementLevel":"error","evidenceRequired":{"fullTestSuite":true,"independentReview":true}}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "policies\protected-paths.json") -Content $policy
+    # 2. Create a file in scripts/ and stage it
+    $scriptsDir = Join-Path $script:testRepoDir "scripts"
+    New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $scriptsDir "new-script.py"), "# test`n", [System.Text.UTF8Encoding]::new($false))
+    Push-Location $script:testRepoDir
+    & git add scripts/new-script.py 2>$null
+    Pop-Location
+    # 3. Verify check-guard-integrity detects the protected change
+    $guardResult = Invoke-PythonScriptWithExit "check-guard-integrity"
+    $output = $guardResult.output -join "`n"
+    if ($output -notmatch "protected-paths") {
+        Write-Host "  FAIL: check-guard-integrity should detect protected path change, got: $output" -ForegroundColor Red
+        return $false
+    }
+    Cleanup-Workspace
+    return $true
+}
+
+Test-Run "E2E: MemoryIntegrity" {
+    Init-TestWorkspace
+    # 1. Create valid memory (lesson + evidence in evidence-map.jsonl)
+    $evidence = '{"schemaVersion":1,"evidenceId":"evidence-e2e","type":"TEST_RESULT","reference":"tests/run-tests.sh","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    $lesson = '{"schemaVersion":1,"lessonId":"lesson-e2e","title":"E2E lesson","description":"Memory integrity test","status":"ACTIVE","evidenceIds":["evidence-e2e"],"createdAtUtc":"2024-01-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\evidence-map.jsonl") -Content $evidence
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $lesson
+    # 2. Verify memory-doctor passes
+    $doctorResult = Invoke-PythonScriptWithExit "memory-doctor"
+    if (-not (Assert-Equal $doctorResult.exitCode 0 ("memory-doctor should PASS with valid memory, got: " + $doctorResult.output))) { return $false }
+    $doctorOutput = $doctorResult.output -join "`n"
+    $doctorJson = $doctorOutput | ConvertFrom-Json
+    if (-not (Assert-Equal $doctorJson.status "PASS" ("memory-doctor output should contain PASS, got " + $doctorJson.status))) { return $false }
+    # 3. Replace with invalid memory (active lesson without evidence)
+    $badLesson = '{"schemaVersion":1,"lessonId":"lesson-bad","title":"Bad lesson","description":"No evidence","status":"ACTIVE","createdAtUtc":"2024-01-01T00:00:00Z"}'
+    Write-JsonFile -Path (Join-Path $script:workspaceAbs "memory\lessons.jsonl") -Content $badLesson
+    # 4. Verify memory-doctor fails
+    $doctorResult2 = Invoke-PythonScriptWithExit "memory-doctor"
+    if (-not (Assert-Equal $doctorResult2.exitCode 1 ("memory-doctor should FAIL with invalid memory, got: " + $doctorResult2.output))) { return $false }
+    $doctorOutput2 = $doctorResult2.output -join "`n"
+    $doctorJson2 = $doctorOutput2 | ConvertFrom-Json
+    if (-not (Assert-Equal $doctorJson2.status "FAIL" ("memory-doctor output should contain FAIL, got " + $doctorJson2.status))) { return $false }
+    Cleanup-Workspace
+    return $true
+}
+
+# ============================================================
 # SUMMARY
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor White
