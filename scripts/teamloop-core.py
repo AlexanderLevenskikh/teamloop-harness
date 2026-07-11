@@ -5354,6 +5354,38 @@ def cmd_test_select(args):
 
 
 # ---------------------------------------------------------------------------
+# compat-check
+# ---------------------------------------------------------------------------
+
+def cmd_compat_check(args):
+    """Run backward-compatibility gate checks.
+
+    Validates:
+      a. All expected CLI commands still exist (no removals or renames)
+      b. All existing artifacts in workspace parse against current schemas
+      c. Schema files in schemas/ are valid JSON
+
+    Exits 0 on PASS, 1 on FAIL.
+    """
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, project_root)
+    import teamloop_compat as compat_mod
+
+    result = compat_mod.check_backward_compat(workspace)
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(f"Compatibility gate: {result['status']}")
+        for f in result["findings"]:
+            tag = f["status"]
+            print(f"  [{tag}] {f['check']}: {f['detail']}")
+
+    sys.exit(1 if result["status"] == "FAIL" else 0)
+
+
+# ---------------------------------------------------------------------------
 # release-info
 # ---------------------------------------------------------------------------
 
@@ -5596,6 +5628,11 @@ def main():
     p_release.add_argument("--json", action="store_true", help="Output as JSON")
     p_release.add_argument("--workspace", "-w", default="", help="Ignored, for wrapper compatibility")
 
+    # compat-check
+    p_compat = subparsers.add_parser("compat-check", help="Run backward-compatibility gate checks")
+    p_compat.add_argument("--workspace", "-w", default=".teamloop")
+    p_compat.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5631,6 +5668,7 @@ def main():
         "performance-report": cmd_performance_report,
         "test-select": cmd_test_select,
         "release-info": cmd_release_info,
+        "compat-check": cmd_compat_check,
     }
 
     commands[args.command](args)
