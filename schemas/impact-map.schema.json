@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ImpactMap",
+  "description": "Schema for impact map mapping changed file patterns to required minimum test layers.",
+  "type": "object",
+  "required": ["schemaVersion", "mappings", "default"],
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "description": "Version of the ImpactMap schema."
+    },
+    "mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["patterns", "layers", "reason"],
+        "properties": {
+          "patterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "File glob patterns that trigger this mapping."
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["smoke", "contract", "runtime", "integration", "full"]
+            },
+            "minItems": 1,
+            "description": "Test layers required when matching files change."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Human-readable explanation for this mapping."
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "description": "File-pattern to test-layer mappings."
+    },
+    "default": {
+      "type": "object",
+      "required": ["layers", "reason"],
+      "properties": {
+        "layers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["smoke", "contract", "runtime", "integration", "full"]
+          },
+          "minItems": 1,
+          "description": "Default test layers when no pattern matches."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable explanation for the default mapping."
+        }
+      },
+      "additionalProperties": false,
+      "description": "Fallback mapping for files not matched by any pattern."
+    }
+  },
+  "additionalProperties": false
+}

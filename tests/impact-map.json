@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "mappings": [
+    {
+      "patterns": ["scripts/teamloop-core.py"],
+      "layers": ["runtime", "integration"],
+      "reason": "core runtime behavior"
+    },
+    {
+      "patterns": ["scripts/teamloop_context.py"],
+      "layers": ["runtime"],
+      "reason": "shared context module"
+    },
+    {
+      "patterns": ["scripts/*.sh"],
+      "layers": ["runtime"],
+      "reason": "wrapper scripts"
+    },
+    {
+      "patterns": ["scripts/*.ps1"],
+      "layers": ["runtime"],
+      "reason": "PowerShell wrappers"
+    },
+    {
+      "patterns": ["schemas/*.json"],
+      "layers": ["contract", "runtime"],
+      "reason": "schema changes affect validation"
+    },
+    {
+      "patterns": ["tests/*"],
+      "layers": ["contract"],
+      "reason": "test-only changes"
+    },
+    {
+      "patterns": ["profiles/*"],
+      "layers": ["runtime"],
+      "reason": "execution profiles"
+    },
+    {
+      "patterns": ["templates/*"],
+      "layers": ["smoke"],
+      "reason": "workspace templates"
+    },
+    {
+      "patterns": ["*.md"],
+      "layers": ["smoke"],
+      "reason": "documentation only"
+    },
+    {
+      "patterns": [".opencode/*"],
+      "layers": ["contract"],
+      "reason": "adapter prompts"
+    },
+    {
+      "patterns": ["docs/*"],
+      "layers": ["smoke"],
+      "reason": "documentation"
+    },
+    {
+      "patterns": ["adapters/*"],
+      "layers": ["contract"],
+      "reason": "adapter files"
+    }
+  ],
+  "default": {
+    "layers": ["smoke", "contract"],
+    "reason": "unknown file — minimum safe baseline"
+  }
+}
