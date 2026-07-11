@@ -496,6 +496,17 @@ def cmd_validate_state(args):
         for w in guard_warnings:
             print(f"  WARNING: {w}", file=sys.stderr)
 
+    # --- Sentinel inspection check (last, optional, backward-compatible) ---
+    # If sentinel-inspection.json exists for the current run (or latest run),
+    # validate it. CRITICAL findings add errors (fail validation).
+    # WARNING findings print to stderr but do not fail validation.
+    # Missing sentinel-inspection.json is silently skipped.
+    sentinel_errors, sentinel_warnings = _validate_sentinel_for_validate(workspace, project_root)
+    errors.extend(sentinel_errors)
+    if sentinel_warnings:
+        for w in sentinel_warnings:
+            print(f"  WARNING: {w}", file=sys.stderr)
+
     if errors:
         print("VALIDATION FAILED:")
         for err in errors:
@@ -804,6 +815,121 @@ def _check_guard_integrity_for_validate(workspace, project_root):
                     warnings.append(f"guard-integrity [{c['name']}]: {c.get('details', 'warning')}")
 
     return errors, warnings
+
+
+# ---------------------------------------------------------------------------
+# Sentinel inspection check for validate-state
+# ---------------------------------------------------------------------------
+
+def _validate_sentinel_for_validate(workspace, project_root):
+    """Sentinel inspection check integrated into validate-state.
+
+    Looks for sentinel-inspection.json in the current run directory (if
+    team-state has a currentRunId) or the latest run directory.  If found,
+    validates against sentinel-inspection.schema.json.  CRITICAL findings
+    produce validation errors.  WARNING findings produce warnings on stderr.
+
+    Missing sentinel-inspection.json is silently skipped (backward-compatible).
+    Schema validation failure (malformed file) adds a validation error.
+
+    Returns:
+        (errors, warnings) — two lists of strings.
+    """
+    errors = []
+    warnings = []
+
+    # Locate sentinel-inspection.json
+    sentinel_path = _sentinel_find_inspection_file(workspace)
+    if sentinel_path is None:
+        # No sentinel-inspection.json found — skip silently
+        return errors, warnings
+
+    # Load schema for validation
+    schema_path = os.path.join(project_root, "schemas", "sentinel-inspection.schema.json")
+    schema = {}
+    if os.path.exists(schema_path):
+        try:
+            schema = read_json(schema_path)
+        except (ValueError, json.JSONDecodeError):
+            pass
+
+    # Read the sentinel inspection file
+    inspection = read_json_file_safe(sentinel_path)
+    if inspection is None:
+        # File exists but is not valid JSON — this is a validation error
+        rel_path = os.path.relpath(sentinel_path, workspace)
+        errors.append(
+            f"{rel_path}: sentinel-inspection.json exists but contains invalid JSON"
+        )
+        return errors, warnings
+
+    # Validate against schema
+    schema_errors = validate_against_schema(inspection, schema, "sentinel-inspection.json")
+    if schema_errors:
+        rel_path = os.path.relpath(sentinel_path, workspace)
+        for se in schema_errors:
+            errors.append(f"{rel_path}: schema violation — {se}")
+        return errors, warnings
+
+    # Check findings for CRITICAL and WARNING severities
+    findings = inspection.get("findings", [])
+    if not isinstance(findings, list):
+        findings = []
+
+    for finding in findings:
+        severity = finding.get("severity", "")
+        title = finding.get("title", "unnamed finding")
+        category = finding.get("category", "unknown")
+
+        if severity == "CRITICAL":
+            errors.append(
+                f"sentinel-inspection CRITICAL finding blocks completion: "
+                f"[{category}] {title}"
+            )
+        elif severity == "WARNING":
+            warnings.append(
+                f"sentinel-inspection WARNING: "
+                f"[{category}] {title}"
+            )
+
+    return errors, warnings
+
+
+def _sentinel_find_inspection_file(workspace):
+    """Find sentinel-inspection.json in the workspace.
+
+    Prefers the current run directory (from team-state currentRunId).
+    Falls back to the latest run directory (lexicographic order).
+    Returns None if no sentinel-inspection.json is found.
+    """
+    runs_dir = os.path.join(workspace, "runs")
+    if not os.path.isdir(runs_dir):
+        return None
+
+    # Try currentRunId first
+    state = read_json_file_safe(os.path.join(workspace, "state", "team-state.json"))
+    if state:
+        run_id = state.get("currentRunId", "")
+        if run_id:
+            candidate = os.path.join(runs_dir, run_id, "sentinel-inspection.json")
+            if os.path.exists(candidate):
+                return candidate
+
+    # Fall back to latest run directory (lexicographic sort)
+    try:
+        run_dirs = sorted([
+            d for d in os.listdir(runs_dir)
+            if os.path.isdir(os.path.join(runs_dir, d))
+        ])
+    except OSError:
+        return None
+
+    for run_name in reversed(run_dirs):
+        candidate = os.path.join(runs_dir, run_name, "sentinel-inspection.json")
+        if os.path.exists(candidate):
+            return candidate
+
+    return None
 
 
 # ---------------------------------------------------------------------------
