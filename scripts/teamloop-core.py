@@ -3851,6 +3851,19 @@ def cmd_final_gate(args):
             review_path = os.path.join(workspace, "runs", state["currentRunId"], "review-evidence.json")
             if os.path.exists(review_path):
                 review_data = read_json_file_safe(review_path)
+        # Fallback: try the latest run directory when currentRunId is empty
+        if review_data is None:
+            runs_dir = os.path.join(workspace, "runs")
+            if os.path.isdir(runs_dir):
+                try:
+                    for run_name in reversed(sorted(os.listdir(runs_dir))):
+                        review_path = os.path.join(runs_dir, run_name, "review-evidence.json")
+                        if os.path.exists(review_path):
+                            review_data = read_json_file_safe(review_path)
+                            if review_data is not None:
+                                break
+                except OSError:
+                    pass
         if review_data is not None:
             checks.append({
                 "name": "reviewed-content-integrity",
