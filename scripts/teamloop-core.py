@@ -1300,10 +1300,8 @@ def cmd_memory_doctor(args):
     Produces gate-result-style JSON output with checks array.
     Exits 0 if clean, 1 if issues found.
     """
-    workspace = resolve_workspace(args.workspace)
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    schemas_dir = os.path.join(project_root, "schemas")
-    memory_dir = os.path.join(workspace, "memory")
+    host = WorkspaceContext(args.workspace)
+    memory_dir = os.path.join(host.workspace, "memory")
 
     # --- Check 0: memory-subsystem-present ---
     # If the memory directory does not exist, report structured FAIL immediately.
@@ -1356,12 +1354,8 @@ def cmd_memory_doctor(args):
             })
             subsystem_issues.append("memory-subsystem-present: project-profile.json missing from {}".format(memory_dir))
 
-    # Load schemas for schema conformance checks
-    schema_map = {}
-    for name in os.listdir(schemas_dir):
-        if name.endswith(".schema.json"):
-            base = name.replace(".schema.json", "")
-            schema_map[base] = read_json(os.path.join(schemas_dir, name))
+    # Load schemas for schema conformance checks — via WorkspaceContext
+    schema_map = host.schemas
 
     # Run canonical validation (JSON parse, schema, evidence, supersededBy)
     # Only run deeper checks if the memory directory exists.
