@@ -1,0 +1,92 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ValidationCacheEntry",
+  "description": "A single entry in the content-addressed validation cache (validation-cache.jsonl).",
+  "type": "object",
+  "required": [
+    "cacheKey",
+    "checkId",
+    "result",
+    "inputFingerprints",
+    "scriptFingerprints",
+    "cachedAtUtc",
+    "implementationVersion",
+    "ttlSeconds"
+  ],
+  "properties": {
+    "cacheKey": {
+      "type": "string",
+      "description": "SHA-256 hex digest of the canonicalized check inputs, schemas, and script fingerprints.",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "checkId": {
+      "type": "string",
+      "description": "Canonical name of the validation check (e.g. 'schema-validate:team-state').",
+      "minLength": 1
+    },
+    "result": {
+      "type": "object",
+      "description": "The cached validation result.",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["PASS", "FAIL", "WARNING", "SKIP"]
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "details": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "inputFingerprints": {
+      "type": "object",
+      "description": "SHA-256 hash of each material input used by the check.",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "scriptFingerprints": {
+      "type": "object",
+      "description": "SHA-256 hash of each supporting script at cache-write time.",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "cachedAtUtc": {
+      "type": "string",
+      "description": "ISO-8601 timestamp when the entry was created.",
+      "format": "date-time"
+    },
+    "implementationVersion": {
+      "type": "string",
+      "description": "Cache implementation version for migration tracking.",
+      "pattern": "^[0-9]+(\\.[0-9]+)*$"
+    },
+    "ttl": {
+      "type": "integer",
+      "description": "Time-to-live in seconds (legacy field, alias of ttlSeconds).",
+      "minimum": 60
+    },
+    "ttlSeconds": {
+      "type": "integer",
+      "description": "Time-to-live in seconds for this cache entry.",
+      "minimum": 60
+    }
+  },
+  "additionalProperties": false
+}
