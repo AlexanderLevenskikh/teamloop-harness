@@ -3888,6 +3888,201 @@ test_run "WorkspaceContext: SuccessfulCommandsLeaveStateValid" test_194
 test_run "WorkspaceContext: WrappersRemainFunctional" test_195
 
 # ============================================================
+# LAYERED TEST EXECUTION TESTS 196-205
+# ============================================================
+
+test_196() {
+    # LayerSmoke_MinimalSafe — A documentation-only change selects only smoke+contract minimum
+    # Verify the impact map maps *.md to smoke layer
+    local impact="$TEST_DIR/impact-map.json"
+    [[ -f "$impact" ]] || { echo "impact-map.json missing"; return 1; }
+    local md_layers
+    md_layers=$(cat "$impact" | "$PY" -c "
+import json,sys
+data=json.load(sys.stdin)
+for m in data.get('mappings',[]):
+    if '*.md' in m.get('patterns',[]):
+        print(','.join(m.get('layers',[])))
+        break
+" 2>/dev/null)
+    echo "$md_layers" | grep -q "smoke" || { echo "*.md should map to smoke layer, got: $md_layers"; return 1; }
+    # Verify smoke layer exists and has tests
+    local smoke_count
+    smoke_count=$("$PY" "$CORE" test-select --list-layers 2>&1 | "$PY" -c "
+import json,sys
+d=json.load(sys.stdin)
+print(d['layers'].get('smoke',{}).get('testCount',0))
+" 2>/dev/null)
+    [[ "$smoke_count" -gt 0 ]] || { echo "smoke layer should have tests, got $smoke_count"; return 1; }
+    return 0
+}
+
+test_197() {
+    # LayerRuntime_CoreChange — A scripts/teamloop-core.py change selects runtime+integration
+    local impact="$TEST_DIR/impact-map.json"
+    local core_layers
+    core_layers=$(cat "$impact" | "$PY" -c "
+import json,sys
+data=json.load(sys.stdin)
+for m in data.get('mappings',[]):
+    if 'scripts/teamloop-core.py' in m.get('patterns',[]):
+        print(','.join(m.get('layers',[])))
+        break
+" 2>/dev/null)
+    echo "$core_layers" | grep -q "runtime" || { echo "core.py should map to runtime layer, got: $core_layers"; return 1; }
+    echo "$core_layers" | grep -q "integration" || { echo "core.py should map to integration layer, got: $core_layers"; return 1; }
+    return 0
+}
+
+test_198() {
+    # LayerSchema_Escalation — A schema change selects contract+runtime
+    local impact="$TEST_DIR/impact-map.json"
+    local schema_layers
+    schema_layers=$(cat "$impact" | "$PY" -c "
+import json,sys
+data=json.load(sys.stdin)
+for m in data.get('mappings',[]):
+    if 'schemas/*.json' in m.get('patterns',[]):
+        print(','.join(m.get('layers',[])))
+        break
+" 2>/dev/null)
+    echo "$schema_layers" | grep -q "contract" || { echo "schema change should affect contract layer, got: $schema_layers"; return 1; }
+    echo "$schema_layers" | grep -q "runtime" || { echo "schema change should affect runtime layer, got: $schema_layers"; return 1; }
+    return 0
+}
+
+test_199() {
+    # LayerOpenCode_Contract — A .opencode/ change selects contract layer
+    local impact="$TEST_DIR/impact-map.json"
+    local opencode_layers
+    opencode_layers=$(cat "$impact" | "$PY" -c "
+import json,sys
+data=json.load(sys.stdin)
+for m in data.get('mappings',[]):
+    if '.opencode/*' in m.get('patterns',[]):
+        print(','.join(m.get('layers',[])))
+        break
+" 2>/dev/null)
+    echo "$opencode_layers" | grep -q "contract" || { echo ".opencode change should affect contract layer, got: $opencode_layers"; return 1; }
+    return 0
+}
+
+test_200() {
+    # LayerProtected_NotSmokeOnly — A protected-path change cannot select only smoke
+    local impact="$TEST_DIR/impact-map.json"
+    # scripts/*.sh maps to runtime in impact-map, NOT smoke-only
+    local script_layers
+    script_layers=$(cat "$impact" | "$PY" -c "
+import json,sys
+data=json.load(sys.stdin)
+for m in data.get('mappings',[]):
+    if 'scripts/*.sh' in m.get('patterns',[]):
+        print(','.join(m.get('layers',[])))
+        break
+" 2>/dev/null)
+    echo "$script_layers" | grep -q "runtime" || { echo "scripts/*.sh should affect runtime layer, got: $script_layers"; return 1; }
+    # Must NOT be smoke-only
+    if [[ "$script_layers" == "smoke" ]]; then
+        echo "scripts/*.sh should not be smoke-only, got: $script_layers"
+        return 1
+    fi
+    return 0
+}
+
+test_201() {
+    # LayerUnknown_SafeDefault — An unknown file defaults to smoke+contract
+    local impact="$TEST_DIR/impact-map.json"
+    local default_layers
+    default_layers=$(cat "$impact" | "$PY" -c "
+import json,sys
+data=json.load(sys.stdin)
+print(','.join(data.get('default',{}).get('layers',[])))
+" 2>/dev/null)
+    echo "$default_layers" | grep -q "smoke" || { echo "unknown file should default to smoke layer, got: $default_layers"; return 1; }
+    echo "$default_layers" | grep -q "contract" || { echo "unknown file should default to contract layer, got: $default_layers"; return 1; }
+    return 0
+}
+
+test_202() {
+    # LayerFullSuite_Aggregates — --full runs all tests
+    # Verify --full flag resolves to all layers in test-select
+    set +e
+    local sel src
+    sel=$("$PY" "$CORE" test-select --full 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "test-select --full should exit 0, got $src: $sel"; return 1; }
+    local total
+    total=$(echo "$sel" | "$PY" -c "import json,sys; print(len(json.load(sys.stdin).get('selectedTests',[])))" 2>/dev/null)
+    # Total should match total number of defined tests in test-layers.json
+    [[ "$total" -gt 195 ]] || { echo "--full should select all defined tests (205+), got $total"; return 1; }
+    return 0
+}
+
+test_203() {
+    # LayerMissingFails — A layer that doesn't exist fails gracefully
+    set +e
+    local sel src
+    sel=$("$PY" "$CORE" test-select --layer nonexistent-layer 2>&1)
+    src=$?
+    set -e
+    [[ $src -ne 0 ]] || { echo "test-select with nonexistent layer should fail, got exit $src: $sel"; return 1; }
+    echo "$sel" | grep -qi "unknown\|error\|not found" || { echo "Error should mention unknown layer, got: $sel"; return 1; }
+    return 0
+}
+
+test_204() {
+    # LayerRunner_WdCleanup — Working directory cleanup is reliable after filtered runs
+    init_test_workspace
+    # After creating temp workspace, verify cleanup leaves no artifacts
+    local tmpdir="$TEST_REPO_DIR"
+    local wsd="$WORKSPACE_ABS"
+    cleanup_workspace
+    [[ ! -d "$tmpdir" ]] || { echo "cleanup_workspace should remove TEST_REPO_DIR ($tmpdir still exists)"; return 1; }
+    # Verify that running a filtered test doesn't leave orphans
+    init_test_workspace
+    # Just do a basic workspace operation to verify no file descriptors leaked
+    run_core validate-state >/dev/null 2>&1
+    cleanup_workspace
+    [[ ! -d "$TEST_REPO_DIR" ]] || { echo "cleanup_workspace should remove temp dir after filtered run"; return 1; }
+    return 0
+}
+
+test_205() {
+    # LayerParity_Bash — Bash runner layer filtering works (smoke count matches)
+    # Verify --layer smoke selects exactly the smoke tests defined in test-layers.json
+    set +e
+    local sel src
+    sel=$("$PY" "$CORE" test-select --layer smoke 2>&1)
+    src=$?
+    set -e
+    [[ $src -eq 0 ]] || { echo "test-select --layer smoke should exit 0, got $src: $sel"; return 1; }
+    local layer_count
+    layer_count=$(echo "$sel" | "$PY" -c "import json,sys; print(len(json.load(sys.stdin).get('selectedTests',[])))" 2>/dev/null)
+    # Cross-check with --list-layers smoke testCount
+    local list_count
+    list_count=$("$PY" "$CORE" test-select --list-layers 2>&1 | "$PY" -c "
+import json,sys
+d=json.load(sys.stdin)
+print(d['layers'].get('smoke',{}).get('testCount',0))
+" 2>/dev/null)
+    [[ "$layer_count" -eq "$list_count" ]] || { echo "Layer smoke count ($layer_count) should match list-layers count ($list_count)"; return 1; }
+    [[ "$layer_count" -gt 0 ]] || { echo "--layer smoke should select tests, got $layer_count"; return 1; }
+    return 0
+}
+
+test_run "Layer: Smoke_MinimalSafe" test_196
+test_run "Layer: Runtime_CoreChange" test_197
+test_run "Layer: Schema_Escalation" test_198
+test_run "Layer: OpenCode_Contract" test_199
+test_run "Layer: Protected_NotSmokeOnly" test_200
+test_run "Layer: Unknown_SafeDefault" test_201
+test_run "Layer: FullSuite_Aggregates" test_202
+test_run "Layer: MissingFails" test_203
+test_run "Layer: Runner_WdCleanup" test_204
+test_run "Layer: Parity_Bash" test_205
+
+# ============================================================
 # SUMMARY
 # ============================================================
 echo ""

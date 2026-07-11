@@ -203,6 +203,16 @@
     "test_192": ["runtime", "full"],
     "test_193": ["runtime", "full"],
     "test_194": ["runtime", "full"],
-    "test_195": ["runtime", "full"]
+    "test_195": ["runtime", "full"],
+    "test_196": ["smoke", "full"],
+    "test_197": ["runtime", "integration", "full"],
+    "test_198": ["contract", "runtime", "full"],
+    "test_199": ["contract", "full"],
+    "test_200": ["runtime", "full"],
+    "test_201": ["smoke", "contract", "full"],
+    "test_202": ["smoke", "full"],
+    "test_203": ["contract", "full"],
+    "test_204": ["smoke", "full"],
+    "test_205": ["smoke", "contract", "full"]
   }
 }
