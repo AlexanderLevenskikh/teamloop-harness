@@ -16,6 +16,7 @@ import subprocess
 import sys
 import fnmatch
 import teamloop_fast_execution as fast_execution
+from teamloop_context import WorkspaceContext
 
 
 # ---------------------------------------------------------------------------
@@ -271,22 +272,17 @@ def cmd_init_workspace(args):
 # ---------------------------------------------------------------------------
 
 def cmd_validate_state(args):
-    workspace = resolve_workspace(args.workspace)
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    schemas_dir = os.path.join(project_root, "schemas")
+    host = WorkspaceContext(args.workspace)
+    workspace = host.workspace
+    project_root = host.project_root
 
     errors = []
 
-    # Load schemas
-    schema_map = {}
-    for name in os.listdir(schemas_dir):
-        if name.endswith(".schema.json"):
-            base = name.replace(".schema.json", "")
-            schema_map[base] = read_json(os.path.join(schemas_dir, name))
+    # Load schemas via WorkspaceContext
+    schema_map = host.schemas
 
     # --- team-state.json ---
-    state_file = os.path.join(workspace, "state", "team-state.json")
-    state = read_json_file_safe(state_file)
+    state = host.state_safe
     if state is None:
         errors.append("team-state.json: file not found or invalid JSON")
     else:
@@ -311,12 +307,12 @@ def cmd_validate_state(args):
         task_id = state.get("currentTaskId", "")
         if task_id:
             found = False
-            for task in read_jsonl(os.path.join(workspace, "state", "backlog.jsonl")):
+            for task in host.backlog:
                 if task.get("taskId") == task_id:
                     found = True
                     break
             if not found:
-                ct = read_json_file_safe(os.path.join(workspace, "state", "current-task.json"))
+                ct = host.current_task
                 if ct and ct.get("taskId") == task_id:
                     found = True
             if not found:
@@ -325,10 +321,10 @@ def cmd_validate_state(args):
         # currentRunId validation
         run_id = state.get("currentRunId", "")
         if run_id:
-            run_dir = os.path.join(workspace, "runs", run_id)
+            run_dir = host.find_run_dir(run_id)
             if not os.path.isdir(run_dir):
                 run_found = False
-                for entry in read_jsonl(os.path.join(workspace, "state", "run-ledger.jsonl")):
+                for entry in host.run_ledger:
                     if entry.get("runId") == run_id:
                         run_found = True
                         break
@@ -359,16 +355,14 @@ def cmd_validate_state(args):
             errors.append(f"{name}.jsonl: JSON parse error: {e}")
 
     # --- current-task.json ---
-    ct_path = os.path.join(workspace, "state", "current-task.json")
-    ct = read_json_file_safe(ct_path)
+    ct = host.current_task
     if ct is not None:
         schema_errors = validate_against_schema(ct, schema_map.get("task", {}), "current-task.json")
         errors.extend(schema_errors)
 
     # --- active-profile.json ---
-    profile_path = os.path.join(workspace, "profiles", "active-profile.json")
-    profile = read_json_file_safe(profile_path)
-    if profile is None:
+    profile = host.active_profile
+    if not profile:
         errors.append("active-profile.json: file not found or invalid JSON")
     else:
         schema_errors = validate_against_schema(profile, schema_map.get("profile", {}), "active-profile.json")
@@ -518,8 +512,7 @@ def cmd_validate_state(args):
     # --- Stale current-task.json check ---
     # If team-state has no active task but current-task.json exists with IN_PROGRESS, that's stale.
     if state is not None and not state.get("currentTaskId", ""):
-        ct_path = os.path.join(workspace, "state", "current-task.json")
-        ct = read_json_file_safe(ct_path)
+        ct = host.current_task
         if ct and ct.get("status") == "IN_PROGRESS":
             errors.append("state/current-task.json: stale IN_PROGRESS task while team-state has no currentTaskId")
 
@@ -527,14 +520,12 @@ def cmd_validate_state(args):
     # If team-state has no currentTaskId but backlog contains IN_PROGRESS tasks,
     # those are orphaned (no active run tracking them).
     if state is not None and not state.get("currentTaskId", ""):
-        backlog_path = os.path.join(workspace, "state", "backlog.jsonl")
-        if os.path.exists(backlog_path):
-            for task in read_jsonl(backlog_path):
-                if task.get("status") == "IN_PROGRESS":
-                    errors.append(
-                        f"backlog: orphaned IN_PROGRESS task '{task.get('taskId', '?')}' "
-                        f"with no matching currentTaskId in team-state"
-                    )
+        for task in host.backlog:
+            if task.get("status") == "IN_PROGRESS":
+                errors.append(
+                    f"backlog: orphaned IN_PROGRESS task '{task.get('taskId', '?')}' "
+                    f"with no matching currentTaskId in team-state"
+                )
 
     # --- Active current-task.json taskId mismatch invariant ---
     # If phase is task-scoped and currentTaskId is set, current-task.json must exist
@@ -545,8 +536,7 @@ def cmd_validate_state(args):
             "REVIEW_FAILED", "GATE_FAILED"
         ])
         if phase in task_scoped_phases and task_id:
-            ct_path = os.path.join(workspace, "state", "current-task.json")
-            ct = read_json_file_safe(ct_path)
+            ct = host.current_task
             if ct is None:
                 errors.append(f"team-state: phase '{phase}' with currentTaskId '{task_id}' requires current-task.json to exist")
             elif ct.get("taskId") != task_id:
@@ -559,7 +549,6 @@ def cmd_validate_state(args):
     # --- Check all existing .json files for valid JSON ---
     # A file that exists but contains invalid JSON is a validation error.
     # A file that doesn't exist is optional — ignored.
-    import glob as globmod
     json_pattern = os.path.join(workspace, "**", "*.json")
     for jpath in globmod.glob(json_pattern, recursive=True):
         rel = os.path.relpath(jpath, workspace)
