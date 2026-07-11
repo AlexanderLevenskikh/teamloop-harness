@@ -13,13 +13,13 @@ PY=/usr/bin/python3 bash tests/run-tests.sh
 Expected for this revision:
 
 ```text
-Results: 195/195 passed, 0 failed
+Results: 205/205 passed, 0 failed
 ```
 
 The runner also supports bounded diagnostic ranges without skipping tests in normal CI:
 
 ```bash
-TEAMLOOP_TEST_FROM=151 TEAMLOOP_TEST_TO=195 \
+TEAMLOOP_TEST_FROM=151 TEAMLOOP_TEST_TO=205 \
   PY=/usr/bin/python3 bash tests/run-tests.sh
 ```
 
