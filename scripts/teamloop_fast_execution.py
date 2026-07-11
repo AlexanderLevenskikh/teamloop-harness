@@ -17,8 +17,20 @@ import json
 import os
 import pathlib
 import subprocess
+import sys as _sys
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+# ---------------------------------------------------------------------------
+# WorkspaceContext integration
+# ---------------------------------------------------------------------------
+
+# Ensure scripts/ is on sys.path so that same-dir imports work regardless
+# of how the module is loaded (python -m, direct script, or import).
+_scripts_dir = os.path.dirname(os.path.abspath(__file__))
+if _scripts_dir not in _sys.path:
+    _sys.path.insert(0, _scripts_dir)
+from teamloop_context import WorkspaceContext
 
 
 SCHEMA_POLICY = "teamloop-execution-policy/v1"
@@ -125,17 +137,7 @@ def file_sha256(path: str) -> str:
 
 
 def _repo_root(workspace: str) -> str:
-    start = os.path.abspath(os.path.dirname(workspace))
-    try:
-        proc = subprocess.run(
-            ["git", "-C", start, "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if proc.returncode == 0:
-            return proc.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return start
+    return WorkspaceContext(workspace).git_root
 
 
 def _git_output(repo: str, args: Sequence[str]) -> str:
@@ -208,25 +210,27 @@ def patterns_overlap(a: str, b: str) -> bool:
 
 
 def _state(workspace: str) -> Dict[str, Any]:
-    return read_json(os.path.join(workspace, "state", "team-state.json"))
+    host = WorkspaceContext(workspace)
+    return host.state
 
 
 def _backlog(workspace: str) -> List[Dict[str, Any]]:
-    return read_jsonl(os.path.join(workspace, "state", "backlog.jsonl"))
+    host = WorkspaceContext(workspace)
+    return host.backlog
 
 
 def load_task(workspace: str, task_id: str = "") -> Dict[str, Any]:
-    state = _state(workspace)
+    host = WorkspaceContext(workspace)
+    state = host.state
     resolved_id = task_id or state.get("currentTaskId", "")
-    current_path = os.path.join(workspace, "state", "current-task.json")
-    current = read_json_optional(current_path)
+    current = host.current_task
     if current and (not resolved_id or current.get("taskId") == resolved_id):
         return current
-    for task in _backlog(workspace):
+    for task in host.backlog:
         if task.get("taskId") == resolved_id:
             return task
     if not resolved_id:
-        for task in _backlog(workspace):
+        for task in host.backlog:
             if task.get("status") in ("READY", "IN_PROGRESS", "NEEDS_REVIEW", "REVIEW_FAILED"):
                 return task
     raise FastExecutionError(f"task '{resolved_id or '<none>'}' not found")
@@ -235,11 +239,12 @@ def load_task(workspace: str, task_id: str = "") -> Dict[str, Any]:
 def resolve_run_id(workspace: str, explicit_run_id: str = "", task_id: str = "") -> str:
     if explicit_run_id:
         return explicit_run_id
-    state = _state(workspace)
+    host = WorkspaceContext(workspace)
+    state = host.state
     if state.get("currentRunId"):
         return str(state["currentRunId"])
     resolved_task = task_id or state.get("currentTaskId", "")
-    ledger = read_jsonl(os.path.join(workspace, "state", "run-ledger.jsonl"))
+    ledger = host.run_ledger
     for entry in reversed(ledger):
         if not resolved_task or entry.get("taskId") == resolved_task:
             return str(entry.get("runId", ""))
@@ -266,14 +271,15 @@ def _task_revision(task: Dict[str, Any]) -> str:
 
 
 def _policy_sources(workspace: str, task: Dict[str, Any]) -> Dict[str, str]:
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    host = WorkspaceContext(workspace)
+    project_root = host.project_root
     paths = {
         "task": None,
-        "scopePolicy": os.path.join(workspace, "policies", "scope-policy.json"),
-        "rolePolicy": os.path.join(workspace, "policies", "role-policy.json"),
-        "gatePolicy": os.path.join(workspace, "policies", "gate-policy.json"),
-        "protectedPathPolicy": os.path.join(workspace, "policies", "protected-paths.json"),
-        "activeProfile": os.path.join(workspace, "profiles", "active-profile.json"),
+        "scopePolicy": host._ws("policies", "scope-policy.json"),
+        "rolePolicy": host._ws("policies", "role-policy.json"),
+        "gatePolicy": host._ws("policies", "gate-policy.json"),
+        "protectedPathPolicy": host._ws("policies", "protected-paths.json"),
+        "activeProfile": host._ws("profiles", "active-profile.json"),
         "executionPolicySchema": os.path.join(project_root, "schemas", "execution-policy.schema.json"),
         "executionManifestSchema": os.path.join(project_root, "schemas", "execution-manifest.schema.json"),
         "roleRoutingSchema": os.path.join(project_root, "schemas", "role-routing-decision.schema.json"),
@@ -289,11 +295,13 @@ def _policy_sources(workspace: str, task: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _protected_scope(workspace: str, task: Dict[str, Any]) -> Tuple[str, List[str]]:
-    policy_path = os.path.join(workspace, "policies", "protected-paths.json")
-    if not os.path.exists(policy_path):
+    host = WorkspaceContext(workspace)
+    policy = host.protected_paths
+    if not policy:
         return "NOT_CONFIGURED", []
-    policy = read_json(policy_path)
     protected = policy.get("protectedPaths", [])
+    if not protected:
+        return "NOT_CONFIGURED", []
     task_patterns = list(task.get("scope", [])) + list(task.get("allowedWrites", []))
     matches = sorted({tp for tp in task_patterns for pp in protected if patterns_overlap(tp, pp)})
     if matches:
@@ -445,10 +453,10 @@ def materialize_policy(
 
 
 def _required_gates(workspace: str) -> List[str]:
-    policy_path = os.path.join(workspace, "policies", "gate-policy.json")
-    if not os.path.exists(policy_path):
+    host = WorkspaceContext(workspace)
+    policy = host.gate_policy
+    if not policy:
         return []
-    policy = read_json(policy_path)
     return sorted(
         str(item.get("name")) for item in policy.get("gates", [])
         if item.get("required", True) and item.get("name")
@@ -514,7 +522,8 @@ def verify_integrity(artifact: Dict[str, Any]) -> bool:
 
 
 def _run_ledger_entry(workspace: str, run_id: str) -> Optional[Dict[str, Any]]:
-    for entry in read_jsonl(os.path.join(workspace, "state", "run-ledger.jsonl")):
+    host = WorkspaceContext(workspace)
+    for entry in host.run_ledger:
         if entry.get("runId") == run_id:
             return entry
     return None
@@ -922,15 +931,16 @@ def _suppression_only(previous: Dict[str, Any], current: Dict[str, Any]) -> bool
 
 
 def build_progress_snapshot(workspace: str, run_id: str, core_script: str) -> Tuple[Dict[str, Any], int]:
+    host = WorkspaceContext(workspace)
     manifest = read_json_optional(os.path.join(run_dir(workspace, run_id), "execution-manifest.json"))
     if manifest is None or not verify_integrity(manifest):
         raise FastExecutionError("valid execution manifest is required before recording progress")
     task = load_task(workspace, str(manifest.get("taskId", "")))
-    repo = _repo_root(workspace)
-    blockers = [b for b in read_jsonl(os.path.join(workspace, "state", "blockers.jsonl")) if not b.get("resolvedAtUtc")]
+    repo = host.git_root
+    blockers = [b for b in host.blockers if not b.get("resolvedAtUtc")]
     open_work = sorted(
         str(t.get("taskId")) + ":" + str(t.get("status"))
-        for t in _backlog(workspace)
+        for t in host.backlog
         if t.get("status") not in ("DONE", "CANCELLED")
     )
     validation_fp, process_count = _validation_fingerprint(workspace, core_script)
@@ -950,7 +960,9 @@ def build_progress_snapshot(workspace: str, run_id: str, core_script: str) -> Tu
         "evidence": _normalized_artifact_fingerprint(_latest_artifact(workspace, "review-evidence.json", run_id)),
         "validationFailures": validation_fp,
         "unresolvedExecutableWork": semantic_hash(open_work),
-        "continuationDecision": _normalized_artifact_fingerprint(read_json_optional(os.path.join(workspace, "state", "continuation-decision.json"))),
+        "continuationDecision": _normalized_artifact_fingerprint(
+            read_json_optional(os.path.join(workspace, "state", "continuation-decision.json"))
+        ),
     }
     signature = semantic_hash(components)
     quality_signals = _scoped_quality_signals(repo, manifest.get("allowedRoots", []), findings_artifact)
@@ -1028,7 +1040,8 @@ def record_progress(workspace: str, run_id: str, core_script: str) -> Tuple[Dict
 
 
 def active_no_progress_route(workspace: str) -> Optional[Dict[str, Any]]:
-    state = _state(workspace)
+    host = WorkspaceContext(workspace)
+    state = host.state
     run_id = resolve_run_id(workspace, task_id=str(state.get("currentTaskId", "")))
     result = _active_no_progress(workspace, run_id)
     if result and result.get("status") == "NO_PROGRESS_DETECTED":
