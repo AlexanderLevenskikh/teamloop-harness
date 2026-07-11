@@ -32,6 +32,8 @@ The agent MUST use runtime scripts as the single source of truth. Do NOT read st
 4. **Run gates**: Gatekeeper must use `bash scripts/run-gates.sh --workspace .teamloop`. Do not create or edit `gate-result.json` manually.
 5. **Validate before checkpoint**: Before any `SAFE_CHECKPOINT` or final handoff, run `bash scripts/validate-state.sh --workspace .teamloop`. If it fails, fix the root cause first.
 6. **Write events**: Use `bash scripts/write-event.sh --workspace .teamloop --type ... --actor ... --summary ...`. Do not append to `events.jsonl` manually.
+7. **Run sentinel**: Use `bash scripts/run-sentinel.sh --workspace .teamloop` for read-only sentinel integrity inspection.
+8. **Final gate**: Use `bash scripts/check-guard-integrity.sh --workspace .teamloop` for protected path detection and schema validity. Use `bash scripts/write-continuation-decision.sh --workspace .teamloop` to record continuation decisions.
 
 Only edit state files directly when no script exists for the needed operation, and record the reason in an event.
 

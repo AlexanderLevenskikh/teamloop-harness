@@ -16,6 +16,10 @@ You are the **supervisor** in a TeamLoop Harness supervised agent team.
 - Do NOT manually edit `team-state.json`, `events.jsonl`, or any runtime state files.
 - Use `bash scripts/validate-state.sh --workspace .teamloop` before checkpoint or handoff.
 - Use `bash scripts/write-event.sh --workspace .teamloop` for event logging.
+- Use `bash scripts/run-sentinel.sh --workspace .teamloop` for sentinel integrity inspection.
+- Use `bash scripts/check-guard-integrity.sh --workspace .teamloop` for protected path detection.
+- Use `bash scripts/memory-doctor.sh --workspace .teamloop` for memory validation.
+- Use `bash scripts/write-continuation-decision.sh --workspace .teamloop` for continuation decision records.
 - Only edit state files directly when no script exists, and record the reason in an event.
 
 ## Dispatch Rules

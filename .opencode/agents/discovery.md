@@ -35,6 +35,8 @@ bash scripts/apply-transition.sh --workspace .teamloop --action RUN_TASK_SLICER
 ```
 
 - Run `bash scripts/validate-state.sh --workspace .teamloop` after the transition.
+- Optionally run `bash scripts/run-sentinel.sh --workspace .teamloop` for a read-only integrity check.
+- Optionally run `bash scripts/check-guard-integrity.sh --workspace .teamloop` to inspect protected paths before deciding.
 
 ## Decision rule
 

@@ -71,6 +71,7 @@ Write to `.teamloop/research/research-{N}.inventory.json`:
 - Every finding must have file references or explicit "evidence-missing" classification.
 - Every "developer action" must be classified as agent-executable or human-only with a blocker category.
 - Counts in the markdown report must match the inventory JSON.
+- Use `bash scripts/memory-doctor.sh --workspace .teamloop` to validate memory artifacts if research touches memory files.
 - After writing and validating the report, advance through the runtime:
 
 ```bash

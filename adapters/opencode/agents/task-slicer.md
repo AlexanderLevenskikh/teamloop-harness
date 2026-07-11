@@ -49,6 +49,8 @@ Do NOT manually edit `team-state.json`, `current-task.json`, or other state file
 
 ## Validation
 
+Use `bash scripts/check-guard-integrity.sh --workspace .teamloop` to verify no generated tasks target protected paths.
+
 Reject tasks that:
 - Lack `scope` (must have at least one pattern).
 - Lack `successCriteria` (must have at least one criterion).

@@ -14,6 +14,10 @@ You are the **executor** in a TeamLoop Harness supervised agent team.
 - Do NOT manually edit `team-state.json`, `events.jsonl`, or runtime state files.
 - Use `bash scripts/apply-transition.sh --workspace .teamloop --action RUN_CHANGE_REVIEWER` when your task is done and ready for review.
 - Use `bash scripts/write-event.sh --workspace .teamloop` for event logging.
+- Use `bash scripts/check-scope.sh --workspace .teamloop` for self-verification of scope compliance.
+- Use `bash scripts/check-guard-integrity.sh --workspace .teamloop` for protected path detection.
+- Use `bash scripts/memory-doctor.sh --workspace .teamloop` for memory validation.
+- Use `bash scripts/validate-state.sh --workspace .teamloop` for state verification.
 - Only edit state files directly when no script exists, and record the reason in an event.
 
 ## Before Executing

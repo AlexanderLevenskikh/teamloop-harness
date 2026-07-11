@@ -25,6 +25,8 @@ You are the **change-reviewer** in a TeamLoop Harness supervised agent team.
 - On APPROVED: use `bash scripts/apply-transition.sh --workspace .teamloop --action RUN_GATEKEEPER` to advance to gates.
 - On REQUEST_CHANGES: use `bash scripts/apply-transition.sh --workspace .teamloop --action REQUEST_CHANGES` to route back to executor.
 - Use `bash scripts/write-event.sh --workspace .teamloop` for event logging.
+- Use `bash scripts/check-scope.sh --workspace .teamloop` to programmatically verify scope compliance.
+- Use `bash scripts/check-guard-integrity.sh --workspace .teamloop` to verify protected path safety.
 
 ## Review Process
 

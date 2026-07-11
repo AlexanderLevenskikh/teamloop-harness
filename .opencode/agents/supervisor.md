@@ -36,6 +36,10 @@ You are the **supervisor** in a TeamLoop Harness supervised agent team.
 - Delegate only the single role named by `nextAction`; do not run several lifecycle stages in one subagent call.
 - Use `bash scripts/validate-state.sh --workspace .teamloop` before checkpoint or handoff.
 - Use `bash scripts/write-event.sh --workspace .teamloop` for event logging.
+- Use `bash scripts/run-sentinel.sh --workspace .teamloop` for sentinel integrity inspection.
+- Use `bash scripts/check-guard-integrity.sh --workspace .teamloop` for protected path detection.
+- Use `bash scripts/memory-doctor.sh --workspace .teamloop` for memory validation.
+- Use `bash scripts/write-continuation-decision.sh --workspace .teamloop` for continuation decision records.
 - Only write non-runtime artifacts directly when the responsible role contract requires them and no writer command exists.
 
 ## Dispatch Rules

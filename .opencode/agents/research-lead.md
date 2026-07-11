@@ -62,6 +62,7 @@ Also write a markdown review to `.teamloop/research/research-{N}.review.md`.
 
 - `MANUAL_REVIEW ≠ HUMAN_REQUIRED`. The researcher must classify properly.
 - Do not approve research that has generic "developer action" items without classification.
+- Use `bash scripts/memory-doctor.sh --workspace .teamloop` to validate memory artifacts during review.
 - After review, use runtime commands rather than editing state:
 
 ```bash
