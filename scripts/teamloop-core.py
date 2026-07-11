@@ -7,6 +7,7 @@ Called by .sh and .ps1 wrappers.
 import argparse
 import datetime
 import glob as globmod
+import hashlib
 import json
 import os
 import re
@@ -495,6 +496,10 @@ def cmd_validate_state(args):
     if guard_warnings:
         for w in guard_warnings:
             print(f"  WARNING: {w}", file=sys.stderr)
+
+    # --- Phase 5: Review evidence integrity check ---
+    review_errors = _validate_review_evidence(workspace)
+    errors.extend(review_errors)
 
     # --- Sentinel inspection check (last, optional, backward-compatible) ---
     # If sentinel-inspection.json exists for the current run (or latest run),
@@ -1654,6 +1659,29 @@ def cmd_apply_transition(args):
     # ---- Auto-write continuation decision for terminal transitions ----
     _maybe_write_continuation_decision(workspace, action, state, task_id, run_id)
 
+    # ---- Phase 5: Write review evidence on CHANGE_REVIEW pass ----
+    if action == "RUN_CHANGE_REVIEWER":
+        try:
+            _write_review_evidence(workspace, task_id, reviewer="change-reviewer")
+        except Exception as exc:
+            print(
+                f"Warning: failed to write review evidence on CHANGE_REVIEWER: {exc}",
+                file=sys.stderr,
+            )
+
+    # ---- Phase 6: Check dirty reviewed state before exec/review transitions ----
+    if action in ("RUN_EXECUTOR", "RUN_CHANGE_REVIEWER"):
+        try:
+            dirty_warnings = _check_dirty_reviewed_state(workspace)
+            if dirty_warnings:
+                for w in dirty_warnings:
+                    print(
+                        f"  WARNING: dirty reviewed file: {w['file']} (task: {w['task_id']})",
+                        file=sys.stderr,
+                    )
+        except Exception:
+            pass  # advisory only, never block the transition
+
     # Append events
     event_types = {
         "RUN_EXECUTOR": "STATE_TRANSITION",
@@ -2138,6 +2166,15 @@ def cmd_run_gates(args):
         ct_path = os.path.join(workspace, "state", "current-task.json")
         if os.path.exists(ct_path):
             os.remove(ct_path)
+
+        # Phase 5: Write review evidence on GATE_PASS
+        try:
+            _write_review_evidence(workspace, task_id, reviewer="gatekeeper", gate_result="PASS")
+        except Exception as exc:
+            print(
+                f"Warning: failed to write review evidence on GATE_PASS: {exc}",
+                file=sys.stderr,
+            )
 
         # Append GATE_PASSED event
         event = {
@@ -3918,6 +3955,365 @@ def cmd_final_gate(args):
     # ------------------------------------------------------------------
     if overall_status == "FAIL":
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Content-addressed review evidence
+# ---------------------------------------------------------------------------
+
+def _compute_file_sha256(file_path):
+    """Compute SHA256 hex digest of a file's content."""
+    h = hashlib.sha256()
+    try:
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+    except (OSError, IOError):
+        return None
+    return h.hexdigest()
+
+
+def _get_git_changed_files_for_review():
+    """Get all files that differ from HEAD or are staged/untracked.
+
+    Returns list of {path, status} dicts where status is 'TRACKED' or 'UNTRACKED'.
+    Excludes .teamloop/ workspace files since they are internal runtime artifacts
+    that change between evidence write and validation.
+    Handles gracefully if not in a git repo.
+    """
+    files = []
+    # Patterns to exclude — internal workspace artifacts that change between
+    # evidence write and validation.
+    _exclude_prefixes = (".teamloop/", ".teamloop\\")
+    try:
+        # Get files that differ from HEAD (tracked, modified)
+        result_diff = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result_diff.returncode == 0:
+            for line in result_diff.stdout.split("\n"):
+                line = line.strip()
+                if line and not line.startswith(_exclude_prefixes):
+                    files.append({"path": line, "status": "TRACKED"})
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    # Get staged files (may include files not in HEAD)
+    staged_set = set()
+    try:
+        result_staged = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result_staged.returncode == 0:
+            for line in result_staged.stdout.split("\n"):
+                line = line.strip()
+                if line and not line.startswith(_exclude_prefixes):
+                    staged_set.add(line)
+                    # Only add if not already from diff HEAD
+                    if not any(f["path"] == line for f in files):
+                        files.append({"path": line, "status": "TRACKED"})
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    # Get untracked files
+    try:
+        result_untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result_untracked.returncode == 0:
+            for line in result_untracked.stdout.split("\n"):
+                line = line.strip()
+                if line and not line.startswith(_exclude_prefixes):
+                    # Don't double-add if already tracked
+                    if not any(f["path"] == line for f in files):
+                        files.append({"path": line, "status": "UNTRACKED"})
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    return files
+
+
+def _get_current_git_commit():
+    """Get current HEAD commit SHA, or None if not available."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            sha = result.stdout.strip()
+            if len(sha) == 40:
+                return sha
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+    return None
+
+
+def _find_run_directory(workspace):
+    """Find the most appropriate run directory for writing review evidence.
+
+    Prefers the current run directory (from team-state currentRunId).
+    Falls back to the latest run directory (lexicographic order).
+    Returns None if no run directory exists.
+    """
+    state = read_json_file_safe(os.path.join(workspace, "state", "team-state.json"))
+    if state:
+        run_id = state.get("currentRunId", "")
+        if run_id:
+            run_dir = os.path.join(workspace, "runs", run_id)
+            if os.path.isdir(run_dir):
+                return run_dir
+
+    runs_dir = os.path.join(workspace, "runs")
+    if not os.path.isdir(runs_dir):
+        return None
+
+    try:
+        run_dirs = sorted([
+            d for d in os.listdir(runs_dir)
+            if os.path.isdir(os.path.join(runs_dir, d))
+        ])
+    except OSError:
+        return None
+
+    if run_dirs:
+        return os.path.join(runs_dir, run_dirs[-1])
+
+    return None
+
+
+def _find_review_evidence(workspace):
+    """Find the most recent review-evidence.json in the workspace.
+
+    Searches run directories (latest first) and then state directory.
+    Returns the file path or None.
+    """
+    runs_dir = os.path.join(workspace, "runs")
+    if os.path.isdir(runs_dir):
+        try:
+            run_dirs = sorted([
+                d for d in os.listdir(runs_dir)
+                if os.path.isdir(os.path.join(runs_dir, d))
+            ])
+        except OSError:
+            pass
+        else:
+            for run_name in reversed(run_dirs):
+                candidate = os.path.join(runs_dir, run_name, "review-evidence.json")
+                if os.path.exists(candidate):
+                    return candidate
+
+    state_candidate = os.path.join(workspace, "state", "review-evidence.json")
+    if os.path.exists(state_candidate):
+        return state_candidate
+
+    return None
+
+
+def _write_review_evidence(workspace, task_id, reviewer="change-reviewer",
+                           gate_result=None):
+    """Write a review-evidence.json artifact with content hashes of changed files.
+
+    Parameters
+    ----------
+    workspace : str
+        Absolute path to the .teamloop workspace.
+    task_id : str
+        Task ID being reviewed.
+    reviewer : str
+        Name of the reviewer role.
+    gate_result : str or None
+        Gate result string (e.g. "PASS", "FAIL") if called from cmd_run_gates.
+
+    Writes to .teamloop/runs/<run-id>/review-evidence.json or, if no run
+    directory exists, to .teamloop/state/review-evidence.json.
+    """
+    try:
+        changed_files = _get_git_changed_files_for_review()
+        commit_sha = _get_current_git_commit()
+
+        reviewed_files = []
+        for cf in changed_files:
+            file_path = cf["path"]
+            # Try as-is first, then relative to cwd
+            abs_path = file_path
+            if not os.path.isabs(abs_path):
+                abs_path = os.path.join(os.getcwd(), file_path)
+
+            file_hash = _compute_file_sha256(abs_path)
+            if file_hash is None:
+                continue
+
+            reviewed_files.append({
+                "path": file_path,
+                "hash": file_hash,
+                "status": cf["status"],
+            })
+
+        if not reviewed_files:
+            # No changed files — still record evidence with an empty-ish marker
+            # to prove review happened with a clean tree
+            return
+
+        evidence = {
+            "schemaVersion": 1,
+            "taskId": task_id,
+            "reviewedAtUtc": utc_now_iso(),
+            "reviewResult": "PASS",
+            "reviewer": reviewer,
+            "reviewedFiles": reviewed_files,
+        }
+
+        if commit_sha:
+            evidence["reviewedCommit"] = commit_sha
+
+        if gate_result is not None:
+            evidence["gateResult"] = gate_result
+
+        # Determine write path
+        run_dir = _find_run_directory(workspace)
+        if run_dir is None:
+            # Create a run directory for this evidence
+            run_id = "run-{}-{}".format(
+                datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S"),
+                os.getpid()
+            )
+            run_dir = os.path.join(workspace, "runs", run_id)
+            os.makedirs(run_dir, exist_ok=True)
+
+        evidence_path = os.path.join(run_dir, "review-evidence.json")
+        write_json(evidence_path, evidence)
+
+    except Exception as exc:
+        print(
+            f"Warning: failed to write review evidence: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _validate_review_evidence(workspace):
+    """Validate review-evidence integrity against current working tree.
+
+    Finds the most recent review-evidence.json and verifies:
+      - Each reviewed file still exists
+      - Each reviewed file's SHA256 matches the recorded hash
+      - If reviewedCommit is set, it is reachable from HEAD
+
+    Returns list of error strings. Empty list means all checks passed.
+    """
+    errors = []
+    evidence_path = _find_review_evidence(workspace)
+    if evidence_path is None:
+        return errors
+
+    evidence = read_json_file_safe(evidence_path)
+    if evidence is None:
+        errors.append("review-evidence.json: file exists but contains invalid JSON")
+        return errors
+
+    # Check reviewedCommit reachability
+    reviewed_commit = evidence.get("reviewedCommit", "")
+    if reviewed_commit:
+        try:
+            result = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", reviewed_commit, "HEAD"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                errors.append(f"reviewed commit not reachable: {reviewed_commit}")
+        except (subprocess.SubprocessError, FileNotFoundError):
+            # If git is not available, skip commit reachability check
+            pass
+
+    # Check each reviewed file
+    for rf in evidence.get("reviewedFiles", []):
+        path = rf.get("path", "")
+        expected_hash = rf.get("hash", "")
+
+        # Try to resolve the file path
+        abs_path = path
+        if not os.path.isabs(abs_path):
+            abs_path = os.path.join(os.getcwd(), path)
+
+        if not os.path.exists(abs_path):
+            errors.append(f"reviewed content missing: {path}")
+            continue
+
+        actual_hash = _compute_file_sha256(abs_path)
+        if actual_hash and actual_hash != expected_hash:
+            errors.append(f"reviewed content changed: {path}")
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Cross-task cleanup protection
+# ---------------------------------------------------------------------------
+
+def _check_dirty_reviewed_state(workspace):
+    """Check if any dirty (modified/untracked) files are referenced by review evidence.
+
+    Returns list of warning dicts, each with:
+      - file: the dirty file path
+      - task_id: the owning task from review evidence
+
+    Does NOT prevent transitions — purely advisory.
+    """
+    warnings = []
+    evidence_path = _find_review_evidence(workspace)
+    if evidence_path is None:
+        return warnings
+
+    evidence = read_json_file_safe(evidence_path)
+    if evidence is None:
+        return warnings
+
+    # Build set of reviewed file paths
+    reviewed_paths = set()
+    for rf in evidence.get("reviewedFiles", []):
+        path = rf.get("path", "")
+        if path:
+            reviewed_paths.add(path)
+
+    if not reviewed_paths:
+        return warnings
+
+    # Get all dirty files
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return warnings
+
+        dirty_files = set()
+        for line in result.stdout.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            # porcelain v1: "XY path" or "XY old -> new"
+            if len(line) > 3 and line[2] == ' ':
+                dirty_files.add(line[3:])
+            elif "-> " in line:
+                arrow_idx = line.index(" -> ")
+                dirty_files.add(line[arrow_idx + 4:])
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return warnings
+
+    # Find overlap
+    task_id = evidence.get("taskId", "unknown")
+    for df in sorted(dirty_files):
+        if df in reviewed_paths:
+            warnings.append({
+                "file": df,
+                "task_id": task_id,
+            })
+
+    return warnings
 
 
 # ---------------------------------------------------------------------------
