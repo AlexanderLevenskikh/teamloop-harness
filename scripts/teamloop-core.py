@@ -2224,6 +2224,314 @@ def cmd_write_continuation_decision(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: check-guard-integrity
+# ---------------------------------------------------------------------------
+
+def cmd_check_guard_integrity(args):
+    """Check guard integrity for the workspace.
+
+    Performs three checks:
+      1. Protected path modifications — loads .teamloop/policies/protected-paths.json
+         and compares git status against protectedPaths glob patterns.
+      2. Dangerous operations — detects test file deletion, gate-policy modification,
+         and schema file deletion from git status.
+      3. Schema integrity — verifies all .json files in schemas/ are valid parseable JSON.
+
+    Outputs structured JSON to stdout.  Exit 0 for PASS/WARNING, exit 1 for FAIL
+    (unless enforcementLevel is 'warn', in which case always exit 0).
+    """
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    checks = []
+    violations = []
+
+    # ------------------------------------------------------------------
+    # Determine enforcement level from protected-paths policy (if present)
+    # ------------------------------------------------------------------
+    enforcement_level = "error"  # default
+    policy_loaded = False
+
+    policy_path = os.path.join(workspace, "policies", "protected-paths.json")
+    policy = None
+    if os.path.exists(policy_path):
+        policy = read_json_file_safe(policy_path)
+        if policy is not None:
+            policy_loaded = True
+            enforcement_level = policy.get("enforcementLevel", "error")
+
+    # ------------------------------------------------------------------
+    # Get git changed files
+    # ------------------------------------------------------------------
+    git_status_entries = _get_git_status_entries()
+
+    # ------------------------------------------------------------------
+    # Check 1: protected-paths
+    # ------------------------------------------------------------------
+    pp_check, pp_violations = _check_protected_paths(
+        policy, git_status_entries, workspace
+    )
+    checks.append(pp_check)
+    violations.extend(pp_violations)
+
+    # ------------------------------------------------------------------
+    # Check 2: dangerous-operations
+    # ------------------------------------------------------------------
+    do_check, do_violations = _check_dangerous_operations(git_status_entries)
+    checks.append(do_check)
+    violations.extend(do_violations)
+
+    # ------------------------------------------------------------------
+    # Check 3: schema-integrity
+    # ------------------------------------------------------------------
+    si_check, si_violations = _check_schema_integrity(project_root)
+    checks.append(si_check)
+    violations.extend(si_violations)
+
+    # ------------------------------------------------------------------
+    # Compute overall status
+    # ------------------------------------------------------------------
+    has_fail = any(c["status"] == "FAIL" for c in checks)
+    has_warn = any(c["status"] == "WARNING" for c in checks)
+
+    if has_fail:
+        overall_status = "FAIL"
+    elif has_warn:
+        overall_status = "WARNING"
+    else:
+        overall_status = "PASS"
+
+    result = {
+        "schemaVersion": 1,
+        "status": overall_status,
+        "checks": checks,
+        "violations": violations,
+    }
+
+    if not policy_loaded:
+        result["note"] = "protected-paths.json not found; policy is not configured"
+
+    print(json.dumps(result, ensure_ascii=False))
+
+    # Exit code: 1 for FAIL (unless enforcementLevel is 'warn')
+    if overall_status == "FAIL" and enforcement_level != "warn":
+        sys.exit(1)
+
+
+def _get_git_status_entries():
+    """Parse git status --porcelain into list of {status, path} dicts.
+
+    Each entry has:
+      - status: the porcelain status string (e.g. 'M ', 'D ', '??')
+      - path: the file path relative to git root
+      - raw: the raw porcelain line
+    """
+    entries = []
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain=v1"],
+            capture_output=True, text=True, timeout=10,
+        )
+        git_root_result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=10,
+        )
+        git_root = git_root_result.stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return entries
+
+    for line in result.stdout.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+
+        # porcelain v1: "XY path" or "XY old -> new"
+        status = line[:2]
+        path_part = line[3:] if len(line) > 3 else ""
+
+        if "-> " in path_part:
+            arrow_idx = path_part.index(" -> ")
+            path_part = path_part[arrow_idx + 4:]
+
+        if not path_part:
+            continue
+
+        # Make relative if absolute
+        if os.path.isabs(path_part) and git_root:
+            try:
+                path_part = os.path.relpath(path_part, git_root)
+            except ValueError:
+                pass
+
+        entries.append({"status": status, "path": path_part, "raw": line})
+
+    return entries
+
+
+def _check_protected_paths(policy, git_status_entries, workspace):
+    """Check 1: protected path modifications.
+
+    Returns (check_dict, violations_list).
+    """
+    violations = []
+    details = "no modifications"
+
+    if policy is None:
+        return {
+            "name": "protected-paths",
+            "status": "PASS",
+            "details": "policy not configured (protected-paths.json missing)",
+        }, []
+
+    protected_patterns = policy.get("protectedPaths", [])
+    if not protected_patterns:
+        return {
+            "name": "protected-paths",
+            "status": "PASS",
+            "details": "no protected paths configured",
+        }, []
+
+    # Find changed files that match protected patterns
+    matched_files = []
+    for entry in git_status_entries:
+        path = entry["path"]
+        for pat in protected_patterns:
+            if _glob_match(path, pat):
+                matched_files.append({
+                    "path": path,
+                    "git_status": entry["status"],
+                    "matched_pattern": pat,
+                })
+                break
+
+    if matched_files:
+        details = f"{len(matched_files)} protected path(s) modified"
+        violations.append({
+            "check": "protected-paths",
+            "paths": [m["path"] for m in matched_files],
+            "detail": details,
+        })
+        return {
+            "name": "protected-paths",
+            "status": "FAIL",
+            "details": details,
+        }, violations
+
+    return {
+        "name": "protected-paths",
+        "status": "PASS",
+        "details": details,
+    }, []
+
+
+def _check_dangerous_operations(git_status_entries):
+    """Check 2: dangerous operations detection.
+
+    Detects:
+      - Test file deletion (files in tests/ showing as deleted)
+      - Gate policy modification (.teamloop/policies/gate-policy.json modified)
+      - Schema file deletion (files in schemas/ deleted)
+
+    Returns (check_dict, violations_list).
+    """
+    violations = []
+
+    for entry in git_status_entries:
+        status = entry["status"]
+        path = entry["path"]
+
+        # Is file deleted? (status starts with 'D')
+        is_deleted = status[0] == "D"
+        # Is file modified? (status starts with 'M' or 'A')
+        is_modified = status[0] in ("M", "A", "R", "C", "T")
+
+        # Test file deletion
+        if is_deleted and (path.startswith("tests/") or path.startswith("tests\\")):
+            violations.append({
+                "check": "dangerous-operations",
+                "type": "test-file-deleted",
+                "path": path,
+                "detail": f"Test file deleted: {path}",
+            })
+
+        # Gate policy modification
+        if is_modified and path in (".teamloop/policies/gate-policy.json", ".teamloop\\policies\\gate-policy.json"):
+            violations.append({
+                "check": "dangerous-operations",
+                "type": "gate-policy-modified",
+                "path": path,
+                "detail": f"Gate policy modified: {path}",
+            })
+
+        # Schema file deletion
+        if is_deleted and (path.startswith("schemas/") or path.startswith("schemas\\")):
+            violations.append({
+                "check": "dangerous-operations",
+                "type": "schema-file-deleted",
+                "path": path,
+                "detail": f"Schema file deleted: {path}",
+            })
+
+    if violations:
+        return {
+            "name": "dangerous-operations",
+            "status": "FAIL",
+            "details": f"{len(violations)} dangerous operation(s) detected",
+        }, violations
+
+    return {
+        "name": "dangerous-operations",
+        "status": "PASS",
+        "details": "none detected",
+    }, []
+
+
+def _check_schema_integrity(project_root):
+    """Check 3: schema integrity.
+
+    Verifies all .json files in schemas/ are valid parseable JSON.
+
+    Returns (check_dict, violations_list).
+    """
+    violations = []
+    schemas_dir = os.path.join(project_root, "schemas")
+
+    if not os.path.isdir(schemas_dir):
+        return {
+            "name": "schema-integrity",
+            "status": "PASS",
+            "details": "schemas directory not found (nothing to check)",
+        }, []
+
+    schema_files_checked = 0
+    for name in sorted(os.listdir(schemas_dir)):
+        if not name.endswith(".json"):
+            continue
+        schema_files_checked += 1
+        fpath = os.path.join(schemas_dir, name)
+        if is_invalid_json_file(fpath):
+            violations.append({
+                "check": "schema-integrity",
+                "type": "invalid-json",
+                "path": f"schemas/{name}",
+                "detail": f"Schema file contains invalid JSON: {name}",
+            })
+
+    if violations:
+        return {
+            "name": "schema-integrity",
+            "status": "FAIL",
+            "details": f"{len(violations)} schema file(s) with invalid JSON",
+        }, violations
+
+    return {
+        "name": "schema-integrity",
+        "status": "PASS",
+        "details": f"all {schema_files_checked} schema(s) valid",
+    }, []
+
+
+# ---------------------------------------------------------------------------
 # Workspace path resolution
 # ---------------------------------------------------------------------------
 
@@ -2294,6 +2602,10 @@ def main():
     p_mdoctor = subparsers.add_parser("memory-doctor", help="Validate memory JSONL files and report findings")
     p_mdoctor.add_argument("--workspace", "-w", default=".teamloop")
 
+    # check-guard-integrity
+    p_ghi = subparsers.add_parser("check-guard-integrity", help="Check guard integrity for protected paths, dangerous operations, and schema validity")
+    p_ghi.add_argument("--workspace", "-w", default=".teamloop")
+
     # write-continuation-decision
     p_wcd = subparsers.add_parser("write-continuation-decision", help="Write a continuation decision record")
     p_wcd.add_argument("--workspace", "-w", default=".teamloop")
@@ -2324,6 +2636,7 @@ def main():
         "validate-research": cmd_validate_research,
         "memory-doctor": cmd_memory_doctor,
         "write-continuation-decision": cmd_write_continuation_decision,
+        "check-guard-integrity": cmd_check_guard_integrity,
     }
 
     commands[args.command](args)
