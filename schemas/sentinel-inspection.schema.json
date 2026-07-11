@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SentinelInspection",
+  "description": "Structured sentinel inspection report produced by the sentinel watcher",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "inspectedAtUtc", "findings", "overallStatus"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "runId": { "type": "string", "pattern": "^run-" },
+    "inspectedAtUtc": { "type": "string", "pattern": "^[0-9]{4}-" },
+    "overallStatus": {
+      "type": "string",
+      "enum": ["PASS", "WARNING", "FAIL"]
+    },
+    "findings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["category", "severity", "title", "description", "evidence"],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "scope-policy-weakening",
+              "gate-policy-weakening",
+              "schema-integrity",
+              "test-suppression",
+              "state-mutation",
+              "protected-file-changes",
+              "hidden-unresolved-work",
+              "manual-state-mutation",
+              "evidence-manipulation"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["CRITICAL", "WARNING", "INFO"]
+          },
+          "title": { "type": "string", "minLength": 1 },
+          "description": { "type": "string", "minLength": 1 },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["type", "detail"],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "FILE_PATH",
+                    "GIT_DIFF",
+                    "STATE_FIELD",
+                    "EVENT_MISMATCH",
+                    "MISSING_ARTIFACT",
+                    "SCHEMA_FIELD"
+                  ]
+                },
+                "detail": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "resolutionHint": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["totalFindings", "criticalCount", "warningCount", "infoCount"],
+      "properties": {
+        "totalFindings": { "type": "integer" },
+        "criticalCount": { "type": "integer" },
+        "warningCount": { "type": "integer" },
+        "infoCount": { "type": "integer" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
