@@ -14,7 +14,10 @@ import hashlib
 import json
 import os
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from teamloop_statestore import StateStore
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +96,12 @@ class WorkspaceContext:
     cache : ValidationCache, optional
         Optional content-addressed validation cache instance.  When
         provided, accessible via the ``validation_cache`` property.
+    state_store : StateStore, optional
+        Optional state store abstraction for all file I/O.  When
+        provided, the context delegates ``load``, ``load_safe``,
+        ``save``, ``exists``, ``append_jsonl``, and ``read_jsonl``
+        to it instead of direct filesystem access.  When *None*
+        (the default), behaviour is identical to before this change.
 
     Examples
     --------
@@ -103,7 +112,9 @@ class WorkspaceContext:
     27
     """
 
-    def __init__(self, workspace_arg: str, cache=None) -> None:
+    def __init__(
+        self, workspace_arg: str, cache=None, state_store=None
+    ) -> None:
         # Eager: resolve workspace and project_root immediately.
         self.workspace: str = _resolve_workspace(workspace_arg)
         self.project_root: str = os.path.dirname(
@@ -115,6 +126,9 @@ class WorkspaceContext:
 
         # Optional validation cache for deterministic command results.
         self._validation_cache = cache
+
+        # Optional state store for abstracted file I/O.
+        self._state_store: Optional["StateStore"] = state_store
 
     # ------------------------------------------------------------------
     # Helpers
@@ -142,7 +156,7 @@ class WorkspaceContext:
         """team-state.json — raises if missing or invalid."""
         return self._cached(
             "state",
-            lambda: _read_json(self._ws("state", "team-state.json")),
+            lambda: self._store_or_json(os.path.join("state", "team-state.json")),
         )
 
     @property
@@ -150,7 +164,7 @@ class WorkspaceContext:
         """team-state.json — None if missing or unparseable."""
         return self._cached(
             "state_safe",
-            lambda: _read_json_file_safe(self._ws("state", "team-state.json")),
+            lambda: self._store_or_json_safe(os.path.join("state", "team-state.json")),
         )
 
     @property
@@ -192,7 +206,7 @@ class WorkspaceContext:
         """All entries from state/backlog.jsonl."""
         return self._cached(
             "backlog",
-            lambda: _read_jsonl(self._ws("state", "backlog.jsonl")),
+            lambda: self._store_or_jsonl(os.path.join("state", "backlog.jsonl")),
         )
 
     @property
@@ -200,7 +214,7 @@ class WorkspaceContext:
         """policies/scope-policy.json — empty dict if missing."""
         return self._cached(
             "scope_policy",
-            lambda: _read_json_file_safe(self._ws("policies", "scope-policy.json")) or {},
+            lambda: self._store_or_json_safe(os.path.join("policies", "scope-policy.json")) or {},
         )
 
     @property
@@ -208,7 +222,7 @@ class WorkspaceContext:
         """policies/gate-policy.json — empty dict if missing."""
         return self._cached(
             "gate_policy",
-            lambda: _read_json_file_safe(self._ws("policies", "gate-policy.json")) or {},
+            lambda: self._store_or_json_safe(os.path.join("policies", "gate-policy.json")) or {},
         )
 
     @property
@@ -216,7 +230,7 @@ class WorkspaceContext:
         """policies/protected-paths.json — empty dict if missing."""
         return self._cached(
             "protected_paths",
-            lambda: _read_json_file_safe(self._ws("policies", "protected-paths.json")) or {},
+            lambda: self._store_or_json_safe(os.path.join("policies", "protected-paths.json")) or {},
         )
 
     @property
@@ -224,7 +238,7 @@ class WorkspaceContext:
         """profiles/active-profile.json — empty dict if missing."""
         return self._cached(
             "active_profile",
-            lambda: _read_json_file_safe(self._ws("profiles", "active-profile.json")) or {},
+            lambda: self._store_or_json_safe(os.path.join("profiles", "active-profile.json")) or {},
         )
 
     @property
@@ -232,7 +246,7 @@ class WorkspaceContext:
         """All entries from state/run-ledger.jsonl."""
         return self._cached(
             "run_ledger",
-            lambda: _read_jsonl(self._ws("state", "run-ledger.jsonl")),
+            lambda: self._store_or_jsonl(os.path.join("state", "run-ledger.jsonl")),
         )
 
     @property
@@ -240,7 +254,7 @@ class WorkspaceContext:
         """All entries from state/blockers.jsonl."""
         return self._cached(
             "blockers",
-            lambda: _read_jsonl(self._ws("state", "blockers.jsonl")),
+            lambda: self._store_or_jsonl(os.path.join("state", "blockers.jsonl")),
         )
 
     @property
@@ -248,7 +262,7 @@ class WorkspaceContext:
         """All entries from state/events.jsonl."""
         return self._cached(
             "events",
-            lambda: _read_jsonl(self._ws("state", "events.jsonl")),
+            lambda: self._store_or_jsonl(os.path.join("state", "events.jsonl")),
         )
 
     @property
@@ -264,7 +278,7 @@ class WorkspaceContext:
         """state/current-task.json — None if missing or unparseable."""
         return self._cached(
             "current_task",
-            lambda: _read_json_file_safe(self._ws("state", "current-task.json")),
+            lambda: self._store_or_json_safe(os.path.join("state", "current-task.json")),
         )
 
     # ------------------------------------------------------------------
@@ -506,14 +520,41 @@ class WorkspaceContext:
         """Return the ValidationCache instance, or None if not configured."""
         return self._validation_cache
 
+    @property
+    def state_store(self) -> Optional["StateStore"]:
+        """Return the configured StateStore, or None if using direct I/O."""
+        return self._state_store
+
+    # ------------------------------------------------------------------
+    # Delegation helpers — use store when available, fall back to direct I/O
+    # ------------------------------------------------------------------
+
+    def _store_or_json(self, rel_path: str) -> Dict[str, Any]:
+        """Load a JSON workspace file via store or inline helper."""
+        if self._state_store is not None:
+            return self._state_store.load(rel_path)
+        return _read_json(self._ws(rel_path))
+
+    def _store_or_json_safe(self, rel_path: str) -> Optional[Dict[str, Any]]:
+        """Load a JSON workspace file (safe) via store or inline helper."""
+        if self._state_store is not None:
+            return self._state_store.load_safe(rel_path)
+        return _read_json_file_safe(self._ws(rel_path))
+
+    def _store_or_jsonl(self, rel_path: str) -> List[Dict[str, Any]]:
+        """Read a JSONL workspace file via store or inline helper."""
+        if self._state_store is not None:
+            return self._state_store.read_jsonl(rel_path)
+        return _read_jsonl(self._ws(rel_path))
+
     def __current_run_id(self) -> str:
         """Determine current run id from state or run-ledger."""
         # Try state first
-        state = _read_json_file_safe(self._ws("state", "team-state.json"))
+        state = self._store_or_json_safe(os.path.join("state", "team-state.json"))
         if state and state.get("currentRunId"):
             return str(state["currentRunId"])
         # Fall back to last run-ledger entry
-        ledger = _read_jsonl(self._ws("state", "run-ledger.jsonl"))
+        ledger = self._store_or_jsonl(os.path.join("state", "run-ledger.jsonl"))
         if ledger:
             return str(ledger[-1].get("runId", ""))
         return ""
