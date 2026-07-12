@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "opencode",
+  "version": "1.0.0",
+  "description": "OpenCode adapter for TeamLoop Harness",
+  "requiredCommands": [
+    "next-action",
+    "apply-transition",
+    "write-event",
+    "check-scope",
+    "run-gates",
+    "validate-state",
+    "validate-task",
+    "validate-artifact",
+    "memory-doctor",
+    "run-sentinel",
+    "check-guard-integrity",
+    "final-gate",
+    "prepare-execution",
+    "validate-execution-contract",
+    "record-progress",
+    "route-role"
+  ],
+  "optionalCommands": [
+    "cache-inspect",
+    "cache-clear",
+    "cache-stats",
+    "test-select",
+    "release-info",
+    "compat-check",
+    "schema-lint",
+    "dogfood",
+    "inbox-send",
+    "inbox-receive",
+    "inbox-stats",
+    "advisory-check",
+    "performance-report",
+    "record-performance"
+  ],
+  "providedAgents": [
+    {"name": "supervisor", "file": "adapters/opencode/agents/supervisor.md"},
+    {"name": "discovery", "file": "adapters/opencode/agents/discovery.md"},
+    {"name": "researcher", "file": "adapters/opencode/agents/researcher.md"},
+    {"name": "research-lead", "file": "adapters/opencode/agents/research-lead.md"},
+    {"name": "task-slicer", "file": "adapters/opencode/agents/task-slicer.md"},
+    {"name": "executor", "file": "adapters/opencode/agents/executor.md"},
+    {"name": "change-reviewer", "file": "adapters/opencode/agents/change-reviewer.md"},
+    {"name": "gatekeeper", "file": "adapters/opencode/agents/gatekeeper.md"},
+    {"name": "orchestrator", "file": "adapters/opencode/agents/orchestrator.md"},
+    {"name": "sentinel", "file": "adapters/opencode/agents/sentinel.md"},
+    {"name": "watchdog", "file": "adapters/opencode/agents/watchdog.md"}
+  ],
+  "providedCommands": [
+    {"name": "supervised-task", "file": "adapters/opencode/commands/supervised-task.md"}
+  ],
+  "supportedProfiles": ["generic-software-task"],
+  "supportedTransitions": [
+    "RUN_DISCOVERY",
+    "RUN_RESEARCHER",
+    "RUN_RESEARCH_LEAD",
+    "RUN_TASK_SLICER",
+    "RUN_EXECUTOR",
+    "RETRY_EXECUTOR",
+    "RUN_CHANGE_REVIEWER",
+    "RUN_GATEKEEPER",
+    "RUN_WATCHDOG",
+    "CONTINUE_LOOP",
+    "SET_SAFE_CHECKPOINT",
+    "SET_HUMAN_REQUIRED",
+    "GATE_FAILED",
+    "REQUEST_CHANGES",
+    "SET_DONE"
+  ],
+  "capabilities": {
+    "roleDispatch": true,
+    "transitionEngine": true,
+    "gateRunner": true,
+    "researchSupport": true,
+    "memorySupport": false
+  },
+  "outputFormat": {
+    "commandOutput": "both",
+    "errorHandling": "structured"
+  }
+}

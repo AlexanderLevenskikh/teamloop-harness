@@ -1,0 +1,147 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Adapter Contract",
+  "description": "Contract for adapter registration: defines what an adapter provides and what it requires from the TeamLoop Harness runtime.",
+  "type": "object",
+  "required": ["schemaVersion", "adapterId", "version", "requiredCommands"],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "Version of this adapter-contract schema"
+    },
+    "adapterId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique identifier for this adapter (e.g. 'opencode')"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\d+\\.\\d+\\.\\d+",
+      "description": "Semantic version of the adapter"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of the adapter"
+    },
+    "requiredCommands": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Runtime commands the adapter must be able to invoke (e.g. 'next-action', 'apply-transition')"
+    },
+    "optionalCommands": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Runtime commands the adapter may invoke if present"
+    },
+    "providedAgents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "file"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Agent role name (e.g. 'supervisor', 'executor')"
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Relative path to the agent prompt file"
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "Agent definitions provided by this adapter"
+    },
+    "providedCommands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "file"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Command name"
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Relative path to the command definition file"
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "Slash-commands provided by this adapter"
+    },
+    "supportedProfiles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Domain profiles the adapter supports (e.g. 'generic-software-task')"
+    },
+    "supportedTransitions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "State transitions the adapter can trigger via apply-transition"
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "roleDispatch": {
+          "type": "boolean",
+          "description": "Adapter can dispatch work to specific role agents"
+        },
+        "transitionEngine": {
+          "type": "boolean",
+          "description": "Adapter can drive state transitions"
+        },
+        "gateRunner": {
+          "type": "boolean",
+          "description": "Adapter can execute gate checks"
+        },
+        "researchSupport": {
+          "type": "boolean",
+          "description": "Adapter supports the research phase"
+        },
+        "memorySupport": {
+          "type": "boolean",
+          "description": "Adapter supports memory subsystem operations"
+        }
+      },
+      "additionalProperties": false
+    },
+    "outputFormat": {
+      "type": "object",
+      "properties": {
+        "commandOutput": {
+          "type": "string",
+          "enum": ["text", "json", "both"],
+          "description": "Expected output format from runtime commands"
+        },
+        "errorHandling": {
+          "type": "string",
+          "enum": ["exit-code", "stderr", "structured"],
+          "description": "How the adapter expects errors to be reported"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

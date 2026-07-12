@@ -5650,6 +5650,225 @@ def cmd_advisory_check(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: adapter-verify
+# ---------------------------------------------------------------------------
+
+def cmd_adapter_verify(args):
+    """Verify an adapter against the adapter contract schema and runtime.
+
+    Checks:
+      1. Adapter contract file exists and is valid JSON.
+      2. Contract validates against adapter-contract.schema.json.
+      3. All requiredCommands are available in the runtime.
+      4. All providedAgents reference existing files.
+      5. All supportedTransitions are valid runtime transitions.
+
+    Exits 0 if all checks pass, 1 otherwise.
+    """
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    workspace = resolve_workspace(args.workspace)
+    as_json = getattr(args, "json", False)
+
+    checks = []
+    violations = []
+
+    # Resolve the adapter directory
+    # Look for adapters/<id>/adapter-contract.json in project root
+    adapters_dir = os.path.join(project_root, "adapters")
+    adapter_contracts = []
+    if os.path.isdir(adapters_dir):
+        for entry in sorted(os.listdir(adapters_dir)):
+            contract_path = os.path.join(adapters_dir, entry, "adapter-contract.json")
+            if os.path.exists(contract_path):
+                adapter_contracts.append((entry, contract_path))
+
+    if not adapter_contracts:
+        checks.append({
+            "name": "adapter-contract-found",
+            "status": "FAIL",
+            "detail": "No adapter-contract.json found under adapters/"
+        })
+        violations.append("No adapter-contract.json found under adapters/")
+    else:
+        # Report found
+        checks.append({
+            "name": "adapter-contract-found",
+            "status": "PASS",
+            "detail": f"Found {len(adapter_contracts)} adapter contract(s)"
+        })
+
+        # Load schema
+        schema_path = os.path.join(project_root, "schemas", "adapter-contract.schema.json")
+        schema = {}
+        if os.path.exists(schema_path):
+            try:
+                schema = read_json(schema_path)
+            except (ValueError, json.JSONDecodeError):
+                checks.append({
+                    "name": "schema-load",
+                    "status": "FAIL",
+                    "detail": f"adapter-contract.schema.json is not valid JSON"
+                })
+                violations.append("adapter-contract.schema.json is not valid JSON")
+        else:
+            checks.append({
+                "name": "schema-load",
+                "status": "FAIL",
+                "detail": "adapter-contract.schema.json not found"
+            })
+            violations.append("adapter-contract.schema.json not found")
+
+        # Available runtime commands — the canonical list of subparsers we support.
+        # This mirrors the commands dict in main() but is safe to reference at module level.
+        _AVAILABLE_COMMANDS = {
+            "init-workspace", "validate-state", "next-action", "apply-transition",
+            "write-event", "check-scope", "run-gates", "validate-task",
+            "validate-artifact", "validate-research", "memory-doctor",
+            "write-continuation-decision", "check-guard-integrity", "run-sentinel",
+            "cache-inspect", "cache-clear", "cache-stats", "final-gate",
+            "resolve-execution-policy", "materialize-execution-manifest",
+            "validate-execution-contract", "prepare-execution", "record-progress",
+            "route-role", "record-performance", "performance-report", "test-select",
+            "release-info", "compat-check", "schema-lint", "dogfood",
+            "inbox-send", "inbox-receive", "inbox-stats", "advisory-check",
+            "adapter-verify",
+        }
+
+        for adapter_id, contract_path in adapter_contracts:
+            # 1. Parse contract
+            contract = read_json_file_safe(contract_path)
+            if contract is None:
+                checks.append({
+                    "name": f"parse-{adapter_id}",
+                    "status": "FAIL",
+                    "detail": f"adapters/{adapter_id}/adapter-contract.json is not valid JSON"
+                })
+                violations.append(f"adapters/{adapter_id}/adapter-contract.json is not valid JSON")
+                continue
+
+            # 2. Schema validation
+            if schema:
+                schema_errors = validate_against_schema(contract, schema, f"adapters/{adapter_id}/adapter-contract.json")
+                if schema_errors:
+                    for se in schema_errors:
+                        checks.append({
+                            "name": f"schema-validate-{adapter_id}",
+                            "status": "FAIL",
+                            "detail": se
+                        })
+                        violations.append(f"{adapter_id}: {se}")
+                else:
+                    checks.append({
+                        "name": f"schema-validate-{adapter_id}",
+                        "status": "PASS",
+                        "detail": f"adapters/{adapter_id}/adapter-contract.json validates against schema"
+                    })
+
+            # 3. Required commands exist in runtime
+            required_cmds = contract.get("requiredCommands", [])
+            missing_cmds = [c for c in required_cmds if c not in _AVAILABLE_COMMANDS]
+            if missing_cmds:
+                checks.append({
+                    "name": f"required-commands-{adapter_id}",
+                    "status": "FAIL",
+                    "detail": f"Missing runtime commands: {', '.join(missing_cmds)}"
+                })
+                violations.append(f"{adapter_id}: missing commands {missing_cmds}")
+            else:
+                checks.append({
+                    "name": f"required-commands-{adapter_id}",
+                    "status": "PASS",
+                    "detail": f"All {len(required_cmds)} required commands available"
+                })
+
+            # 4. Provided agents exist
+            agents = contract.get("providedAgents", [])
+            missing_agents = []
+            for agent in agents:
+                agent_file = agent.get("file", "")
+                agent_path = os.path.join(project_root, agent_file)
+                if not os.path.exists(agent_path):
+                    missing_agents.append(agent_file)
+            if missing_agents:
+                checks.append({
+                    "name": f"agents-exist-{adapter_id}",
+                    "status": "FAIL",
+                    "detail": f"Missing agent files: {', '.join(missing_agents)}"
+                })
+                violations.append(f"{adapter_id}: missing agent files {missing_agents}")
+            else:
+                checks.append({
+                    "name": f"agents-exist-{adapter_id}",
+                    "status": "PASS",
+                    "detail": f"All {len(agents)} agent files exist"
+                })
+
+            # 5. Provided commands exist
+            cmds = contract.get("providedCommands", [])
+            missing_cmd_files = []
+            for cmd in cmds:
+                cmd_file = cmd.get("file", "")
+                cmd_path = os.path.join(project_root, cmd_file)
+                if not os.path.exists(cmd_path):
+                    missing_cmd_files.append(cmd_file)
+            if missing_cmd_files:
+                checks.append({
+                    "name": f"commands-exist-{adapter_id}",
+                    "status": "FAIL",
+                    "detail": f"Missing command files: {', '.join(missing_cmd_files)}"
+                })
+                violations.append(f"{adapter_id}: missing command files {missing_cmd_files}")
+            else:
+                checks.append({
+                    "name": f"commands-exist-{adapter_id}",
+                    "status": "PASS",
+                    "detail": f"All {len(cmds)} command files exist"
+                })
+
+            # 6. Supported transitions are valid
+            supported_trans = contract.get("supportedTransitions", [])
+            known_transitions = set(_TRANSITIONS.keys())
+            unknown_trans = [t for t in supported_trans if t not in known_transitions]
+            if unknown_trans:
+                checks.append({
+                    "name": f"transitions-valid-{adapter_id}",
+                    "status": "FAIL",
+                    "detail": f"Unknown transitions: {', '.join(unknown_trans)}"
+                })
+                violations.append(f"{adapter_id}: unknown transitions {unknown_trans}")
+            else:
+                checks.append({
+                    "name": f"transitions-valid-{adapter_id}",
+                    "status": "PASS",
+                    "detail": f"All {len(supported_trans)} transitions are valid"
+                })
+
+    # Output
+    status = "PASS" if not violations else "FAIL"
+    result = {
+        "status": status,
+        "checks": checks,
+        "violations": violations,
+        "adapterCount": len(adapter_contracts),
+    }
+
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(f"ADAPTER VERIFY: {status}")
+        for chk in checks:
+            marker = "PASS" if chk["status"] == "PASS" else "FAIL"
+            print(f"  [{marker}] {chk['name']}: {chk['detail']}")
+        if violations:
+            print()
+            print("Violations:")
+            for v in violations:
+                print(f"  - {v}")
+
+    sys.exit(0 if not violations else 1)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -5876,6 +6095,11 @@ def main():
     p_advisory.add_argument("--workspace", "-w", default=".teamloop")
     p_advisory.add_argument("--json", action="store_true", help="Output as JSON (default: pretty-printed JSON)")
 
+    # adapter-verify
+    p_adapter_verify = subparsers.add_parser("adapter-verify", help="Verify adapter contract against runtime")
+    p_adapter_verify.add_argument("--workspace", "-w", default=".teamloop")
+    p_adapter_verify.add_argument("--json", action="store_true", help="Output as JSON")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5918,6 +6142,7 @@ def main():
         "inbox-receive": cmd_inbox_receive,
         "inbox-stats": cmd_inbox_stats,
         "advisory-check": cmd_advisory_check,
+        "adapter-verify": cmd_adapter_verify,
     }
 
     commands[args.command](args)
