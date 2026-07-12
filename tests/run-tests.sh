@@ -2410,9 +2410,9 @@ test_78() {
 }
 
 test_79() {
-    # WriteContinuationDecision: AllDecisionsValid — each of the 5 decisions succeeds
+    # WriteContinuationDecision: AllDecisionsValid — each of the 6 decisions succeeds
     init_test_workspace
-    local decisions="DONE SAFE_CHECKPOINT CONTINUE HUMAN_DECISION_REQUIRED BLOCKED"
+    local decisions="DONE SAFE_CHECKPOINT CONTINUE HUMAN_DECISION_REQUIRED BLOCKED CORRECTIVE_WORK_REQUIRED"
     for dec in $decisions; do
         set +e
         local wout wrc
@@ -2577,7 +2577,7 @@ test_89() {
 }
 
 test_90() {
-    # Schema: ContinuationDecisionEnum — schema contains all 5 decision values
+    # Schema: ContinuationDecisionEnum — schema contains all 6 decision values
     local schema_file="$PROJECT_ROOT/schemas/continuation-decision.schema.json"
     local enum_vals
     enum_vals=$(cat "$schema_file" | "$PY" -c "
@@ -2586,7 +2586,7 @@ schema = json.load(open(sys.argv[1]))
 vals = schema.get('properties', {}).get('decision', {}).get('enum', [])
 print(','.join(sorted(vals)))
 " "$schema_file")
-    [[ "$enum_vals" == "BLOCKED,CONTINUE,DONE,HUMAN_DECISION_REQUIRED,SAFE_CHECKPOINT" ]] || { echo "Schema should contain all 5 decisions, got: $enum_vals"; return 1; }
+    [[ "$enum_vals" == "BLOCKED,CONTINUE,CORRECTIVE_WORK_REQUIRED,DONE,HUMAN_DECISION_REQUIRED,SAFE_CHECKPOINT" ]] || { echo "Schema should contain all 6 decisions, got: $enum_vals"; return 1; }
     return 0
 }
 
@@ -4452,7 +4452,41 @@ test_run "Cache: AuditFreshExecution" test_215
 test_run "Cache: CannotBypassSentinel" test_216
 test_run "Cache: MalformedFailsCleanly" test_217
 test_run "Cache: DisabledRemainsValid" test_218
+test_229() {
+    # CacheResultTamperDetected — modifying result.status in a cached entry
+    # is detected by _verify_entry_integrity via resultHash mismatch
+    init_test_workspace
+    "$PY" - "$WORKSPACE_ABS" "$PROJECT_ROOT/scripts/teamloop_cache.py" <<'PY'
+import sys, os, json
+sys.path.insert(0, os.path.dirname(sys.argv[2]))
+from teamloop_cache import ValidationCache
+cache_path = os.path.join(sys.argv[1], "cache", "validation-cache.jsonl")
+cache = ValidationCache(cache_path, workspace=sys.argv[1], project_root=os.path.dirname(os.path.dirname(sys.argv[1])))
+key = cache.build_key("tamper-check", inputs={"v": "1"})
+cache.store(key, {"status": "PASS", "findings": []})
+# Should hit before tampering
+assert cache.get(key) is not None, "should hit before tampering"
+# Tamper: flip result.status from PASS to FAIL in the on-disk cache
+with open(cache_path, "r") as f:
+    lines = f.readlines()
+assert len(lines) >= 1, "cache file should have at least one entry"
+tampered = lines[0].replace('"status":"PASS"', '"status":"FAIL"')
+assert tampered != lines[0], "replacement should have changed the line"
+with open(cache_path, "w") as f:
+    f.write(tampered)
+# Reload — the resultHash will no longer match the tampered result
+cache2 = ValidationCache(cache_path, workspace=sys.argv[1], project_root=os.path.dirname(os.path.dirname(sys.argv[1])))
+result2 = cache2.get(key)
+assert result2 is None, "tampered result should cause cache miss (integrity fail)"
+# Integrity check should also flag it
+integrity = cache2.integrity_check()
+assert integrity["status"] == "FAIL", f"integrity should FAIL after tampering, got {integrity['status']}"
+PY
+    cleanup_workspace
+}
+
 test_run "Cache: RepeatedReportsIdempotent" test_219
+test_run "Cache: ResultTamperDetected" test_229
 
 # ============================================================
 # DOGFOOD TESTS 220-227
@@ -4681,6 +4715,271 @@ test_run "Dogfood: DetectsMissingTests" test_224
 test_run "Dogfood: ReportMatchesSchema" test_225
 test_run "Dogfood: OldNewCompare" test_226
 test_run "Dogfood: SchemaLintIntegration" test_227
+
+# ============================================================
+# CATALOG CONSISTENCY TEST
+# ============================================================
+test_228() {
+    # CatalogConsistency: test-layers.json matches test_run calls in run-tests.sh
+    local catalog="$TEST_DIR/test-layers.json"
+    local runner="$TEST_DIR/run-tests.sh"
+    [[ -f "$catalog" ]] || { echo "test-layers.json missing"; return 1; }
+    [[ -f "$runner" ]] || { echo "run-tests.sh missing"; return 1; }
+    local result
+    result=$("$PY" -c "
+import json, re, sys
+
+# Load catalog
+catalog_path = sys.argv[1]
+runner_path = sys.argv[2]
+
+with open(catalog_path) as f:
+    catalog_data = json.load(f)
+catalog_ids = set(k for k in catalog_data.get('tests', {}).keys())
+
+# Extract test_run function names from runner
+runner_ids = set()
+with open(runner_path) as f:
+    for line in f:
+        m = re.search(r'test_run\s+.*\s+(test_\d+)\s*$', line)
+        if m:
+            runner_ids.add(m.group(1))
+
+missing = sorted(runner_ids - catalog_ids)
+extra = sorted(catalog_ids - runner_ids)
+
+if missing:
+    print('MISSING_IN_CATALOG: ' + ', '.join(missing))
+if extra:
+    print('EXTRA_IN_CATALOG: ' + ', '.join(extra))
+if not missing and not extra:
+    print('OK')
+" "$catalog" "$runner" 2>/dev/null)
+    [[ "$result" == "OK" ]] || { echo "Catalog consistency mismatch: $result"; return 1; }
+    return 0
+}
+
+test_run "Catalog: ConsistencyCheck" test_228
+
+# ============================================================
+# INTEGRITY GATE TESTS 230-234
+# ============================================================
+
+test_230() {
+    # NextAction_NoReadyPlusGreenStateReturnsNoReadyTask
+    # Clean workspace with no READY tasks and no integrity issues should
+    # return NO_READY_TASK, not CORRECTIVE_WORK_REQUIRED.
+    init_test_workspace
+    # Set phase to READY_FOR_NEXT_TASK (all tasks DONE, no READY)
+    "$PY" -c "
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    state = json.load(f)
+state['currentPhase'] = 'READY_FOR_NEXT_TASK'
+state['currentRunId'] = ''
+state['currentTaskId'] = ''
+with open(path, 'w') as f:
+    json.dump(state, f, indent=2)
+" "$WORKSPACE_ABS/state/team-state.json"
+    set +e
+    local nout nrc
+    nout=$(run_core next-action 2>&1)
+    nrc=$?
+    set -e
+    [[ $nrc -eq 0 ]] || { echo "next-action should exit 0, got $nrc: $nout"; return 1; }
+    local action
+    action=$(echo "$nout" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('nextAction',''))" 2>/dev/null)
+    [[ "$action" == "NO_READY_TASK" ]] || { echo "Expected NO_READY_TASK, got '$action': $nout"; return 1; }
+    cleanup_workspace
+}
+
+test_231() {
+    # NextAction_NoReadyPlusReviewDriftReturnsCorrective
+    # Create review evidence with a fabricated file hash, then modify the file
+    # to change its hash. next-action should return CORRECTIVE_WORK_REQUIRED.
+    init_test_workspace
+    # Create a file and record a fake hash in review evidence
+    local testfile="$TEST_REPO_DIR/src/hello.txt"
+    mkdir -p "$TEST_REPO_DIR/src"
+    echo "original content" > "$testfile"
+    git -C "$TEST_REPO_DIR" add . >/dev/null 2>&1
+    git -C "$TEST_REPO_DIR" commit -m "add src" --no-verify >/dev/null 2>&1
+
+    # Create a run directory and write review evidence with the real hash
+    local run_dir="$WORKSPACE_ABS/runs/run-20260101000000-99999"
+    mkdir -p "$run_dir"
+    local real_hash
+    real_hash=$("$PY" -c "
+import hashlib, sys
+with open(sys.argv[1], 'rb') as f:
+    print(hashlib.sha256(f.read()).hexdigest())
+" "$testfile")
+    # Write evidence with a WRONG hash to simulate drift
+    "$PY" -c "
+import json, sys
+evidence = {
+    'schemaVersion': 1,
+    'taskId': 'task-drift',
+    'reviewedAtUtc': '2026-01-01T00:00:00.000Z',
+    'reviewResult': 'PASS',
+    'reviewer': 'change-reviewer',
+    'reviewedFiles': [
+        {'path': 'src/hello.txt', 'hash': '0000000000000000000000000000000000000000000000000000000000000000', 'status': 'TRACKED'}
+    ]
+}
+with open(sys.argv[1], 'w') as f:
+    json.dump(evidence, f, indent=2)
+    f.write('\n')
+" "$run_dir/review-evidence.json"
+
+    # Set phase to READY_FOR_NEXT_TASK
+    "$PY" -c "
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    state = json.load(f)
+state['currentPhase'] = 'READY_FOR_NEXT_TASK'
+state['currentRunId'] = ''
+state['currentTaskId'] = ''
+with open(path, 'w') as f:
+    json.dump(state, f, indent=2)
+" "$WORKSPACE_ABS/state/team-state.json"
+
+    set +e
+    local nout nrc
+    nout=$(run_core next-action 2>&1)
+    nrc=$?
+    set -e
+    [[ $nrc -eq 0 ]] || { echo "next-action should exit 0, got $nrc: $nout"; return 1; }
+    local action
+    action=$(echo "$nout" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('nextAction',''))" 2>/dev/null)
+    [[ "$action" == "CORRECTIVE_WORK_REQUIRED" ]] || { echo "Expected CORRECTIVE_WORK_REQUIRED, got '$action': $nout"; return 1; }
+    cleanup_workspace
+}
+
+test_232() {
+    # NextAction_OrphanedRunDetected
+    # Manually set currentRunId in team-state without a currentTaskId.
+    # next-action should return CORRECTIVE_WORK_REQUIRED.
+    init_test_workspace
+    "$PY" -c "
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    state = json.load(f)
+state['currentPhase'] = 'READY_FOR_NEXT_TASK'
+state['currentRunId'] = 'run-orphaned-12345'
+state['currentTaskId'] = ''
+with open(path, 'w') as f:
+    json.dump(state, f, indent=2)
+" "$WORKSPACE_ABS/state/team-state.json"
+
+    set +e
+    local nout nrc
+    nout=$(run_core next-action 2>&1)
+    nrc=$?
+    set -e
+    [[ $nrc -eq 0 ]] || { echo "next-action should exit 0, got $nrc: $nout"; return 1; }
+    local action
+    action=$(echo "$nout" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('nextAction',''))" 2>/dev/null)
+    [[ "$action" == "CORRECTIVE_WORK_REQUIRED" ]] || { echo "Expected CORRECTIVE_WORK_REQUIRED, got '$action': $nout"; return 1; }
+    cleanup_workspace
+}
+
+test_233() {
+    # SafeCheckpoint_BlockedWhenIntegrityBroken
+    # Workspace in SAFE_CHECKPOINT phase with reviewed-content drift.
+    # next-action should return CORRECTIVE_WORK_REQUIRED, not CONTINUE_LOOP.
+    init_test_workspace
+    # Create a file and review evidence with wrong hash
+    local testfile="$TEST_REPO_DIR/src/safecheck.txt"
+    mkdir -p "$TEST_REPO_DIR/src"
+    echo "safe check content" > "$testfile"
+    git -C "$TEST_REPO_DIR" add . >/dev/null 2>&1
+    git -C "$TEST_REPO_DIR" commit -m "add src" --no-verify >/dev/null 2>&1
+
+    local run_dir="$WORKSPACE_ABS/runs/run-20260201000000-88888"
+    mkdir -p "$run_dir"
+    "$PY" -c "
+import json, sys
+evidence = {
+    'schemaVersion': 1,
+    'taskId': 'task-sc',
+    'reviewedAtUtc': '2026-02-01T00:00:00.000Z',
+    'reviewResult': 'PASS',
+    'reviewer': 'change-reviewer',
+    'reviewedFiles': [
+        {'path': 'src/safecheck.txt', 'hash': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'status': 'TRACKED'}
+    ]
+}
+with open(sys.argv[1], 'w') as f:
+    json.dump(evidence, f, indent=2)
+    f.write('\n')
+" "$run_dir/review-evidence.json"
+
+    # Set phase to SAFE_CHECKPOINT
+    "$PY" -c "
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    state = json.load(f)
+state['currentPhase'] = 'SAFE_CHECKPOINT'
+state['currentRunId'] = ''
+state['currentTaskId'] = ''
+state['humanRequired'] = False
+with open(path, 'w') as f:
+    json.dump(state, f, indent=2)
+" "$WORKSPACE_ABS/state/team-state.json"
+
+    set +e
+    local nout nrc
+    nout=$(run_core next-action 2>&1)
+    nrc=$?
+    set -e
+    [[ $nrc -eq 0 ]] || { echo "next-action should exit 0, got $nrc: $nout"; return 1; }
+    local action
+    action=$(echo "$nout" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('nextAction',''))" 2>/dev/null)
+    [[ "$action" == "CORRECTIVE_WORK_REQUIRED" ]] || { echo "Expected CORRECTIVE_WORK_REQUIRED, got '$action': $nout"; return 1; }
+    cleanup_workspace
+}
+
+test_234() {
+    # SafeCheckpoint_ContinuesWhenClean
+    # Workspace in SAFE_CHECKPOINT phase with no integrity issues.
+    # next-action should return CONTINUE_LOOP.
+    init_test_workspace
+    # Set phase to SAFE_CHECKPOINT, clean state
+    "$PY" -c "
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    state = json.load(f)
+state['currentPhase'] = 'SAFE_CHECKPOINT'
+state['currentRunId'] = ''
+state['currentTaskId'] = ''
+state['humanRequired'] = False
+with open(path, 'w') as f:
+    json.dump(state, f, indent=2)
+" "$WORKSPACE_ABS/state/team-state.json"
+
+    set +e
+    local nout nrc
+    nout=$(run_core next-action 2>&1)
+    nrc=$?
+    set -e
+    [[ $nrc -eq 0 ]] || { echo "next-action should exit 0, got $nrc: $nout"; return 1; }
+    local action
+    action=$(echo "$nout" | "$PY" -c "import json,sys; print(json.load(sys.stdin).get('nextAction',''))" 2>/dev/null)
+    [[ "$action" == "CONTINUE_LOOP" ]] || { echo "Expected CONTINUE_LOOP, got '$action': $nout"; return 1; }
+    cleanup_workspace
+}
+
+test_run "Integrity: NoReadyPlusGreenStateReturnsNoReadyTask" test_230
+test_run "Integrity: NoReadyPlusReviewDriftReturnsCorrective" test_231
+test_run "Integrity: OrphanedRunDetected" test_232
+test_run "Integrity: SafeCheckpoint_BlockedWhenIntegrityBroken" test_233
+test_run "Integrity: SafeCheckpoint_ContinuesWhenClean" test_234
 
 # ============================================================
 # SUMMARY

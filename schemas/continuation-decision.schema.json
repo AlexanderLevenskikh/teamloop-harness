@@ -15,7 +15,7 @@
     "schemaVersion": { "type": "integer", "const": 1 },
     "decision": {
       "type": "string",
-      "enum": ["DONE", "SAFE_CHECKPOINT", "CONTINUE", "HUMAN_DECISION_REQUIRED", "BLOCKED"]
+      "enum": ["DONE", "SAFE_CHECKPOINT", "CONTINUE", "HUMAN_DECISION_REQUIRED", "BLOCKED", "CORRECTIVE_WORK_REQUIRED"]
     },
     "phase": { "type": "string", "minLength": 1 },
     "justification": { "type": "string", "minLength": 1 },

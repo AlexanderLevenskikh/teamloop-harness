@@ -105,6 +105,7 @@ class ValidationCache:
 
         # Load existing cache from disk.
         self._entries: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+        self._malformed_line_count: int = 0
         self._load()
 
     # ------------------------------------------------------------------
@@ -250,16 +251,20 @@ class ValidationCache:
             )
 
         script_fps = script_fingerprints or self._script_fingerprints()
+        result_stripped = strip_volatile(result)
+        result_canonical = canonical_json(result_stripped)
+        result_hash = hashlib.sha256(result_canonical.encode('utf-8')).hexdigest()
         entry: Dict[str, Any] = {
             "cacheKey": cache_key,
             "checkId": result.get("checkId", ""),
-            "result": strip_volatile(result),
+            "result": result_stripped,
             "inputFingerprints": input_fingerprints or {},
             "scriptFingerprints": script_fps,
             "cachedAtUtc": _utc_now_iso(),
             "implementationVersion": IMPLEMENTATION_VERSION,
             "ttl": self.ttl_seconds,
             "ttlSeconds": self.ttl_seconds,
+            "resultHash": result_hash,
         }
 
         # If already present, update in place (keeping position for LRU).
@@ -307,6 +312,7 @@ class ValidationCache:
         self.invalidate()
         self._hits = 0
         self._misses = 0
+        self._malformed_line_count = 0
 
     def integrity_check(self) -> Dict[str, Any]:
         """Verify that all cache records are untampered.
@@ -331,6 +337,7 @@ class ValidationCache:
             "totalEntries": len(self._entries),
             "validEntries": valid,
             "invalidEntries": invalid,
+            "malformedLineCount": self._malformed_line_count,
             "checkedAtUtc": _utc_now_iso(),
         }
 
@@ -366,8 +373,12 @@ class ValidationCache:
         if not os.path.exists(self.cache_path):
             return
         try:
+            malformed = 0
+            total = 0
+            entries: OrderedDict[str, Dict[str, Any]] = OrderedDict()
             with open(self.cache_path, "r", encoding="utf-8") as fh:
                 for raw_line in fh:
+                    total += 1
                     line = raw_line.strip()
                     if not line:
                         continue
@@ -377,10 +388,15 @@ class ValidationCache:
                             key = entry["cacheKey"]
                             # Only keep non-expired entries on load.
                             if not self._is_expired(entry):
-                                self._entries[key] = entry
+                                entries[key] = entry
                     except (json.JSONDecodeError, KeyError):
-                        # Skip corrupted lines silently.
-                        continue
+                        malformed += 1
+            self._malformed_line_count = malformed
+            # If corruption exceeds 10% of total lines, refuse to load.
+            if total > 0 and malformed / total > 0.1:
+                self._entries.clear()
+                return
+            self._entries = entries
         except OSError:
             pass
 
@@ -448,5 +464,15 @@ class ValidationCache:
             return False
         # Result must be present.
         if "result" not in entry:
+            return False
+        # Verify result integrity hash — prevents post-storage tampering.
+        stored_hash = entry.get("resultHash", "")
+        if stored_hash:
+            result_canonical = canonical_json(strip_volatile(entry["result"]))
+            computed_hash = hashlib.sha256(result_canonical.encode('utf-8')).hexdigest()
+            if computed_hash != stored_hash:
+                return False
+        else:
+            # Legacy entries without resultHash — treat as unverifiable.
             return False
         return True

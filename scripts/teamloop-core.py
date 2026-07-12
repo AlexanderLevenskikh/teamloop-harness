@@ -1547,6 +1547,63 @@ def _collect_memory_counts(memory_dir):
     return counts
 
 
+def _check_workspace_integrity(workspace):
+    """Perform lightweight integrity checks to determine if the workspace is safe.
+
+    Returns (is_safe: bool, reasons: list[str]).
+    When is_safe is False, reasons lists the blocking integrity issues.
+    """
+    reasons = []
+
+    # Check 1: Look for review evidence with stale content
+    evidence_path = _find_review_evidence(workspace)
+    if evidence_path is not None:
+        evidence = read_json_file_safe(evidence_path)
+        if evidence:
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            workspace_parent = os.path.dirname(os.path.normpath(workspace))
+            for rf in evidence.get("reviewedFiles", []):
+                path = rf.get("path", "")
+                expected_hash = rf.get("hash", "")
+                if not path or not expected_hash:
+                    continue
+                candidates = []
+                if os.path.isabs(path):
+                    candidates.append(path)
+                else:
+                    candidates.append(os.path.join(workspace_parent, path))
+                    candidates.append(os.path.join(project_root, path))
+                found = False
+                for abs_path in candidates:
+                    if os.path.exists(abs_path):
+                        actual = _compute_file_sha256(abs_path)
+                        if actual and actual != expected_hash:
+                            reasons.append(f"reviewed content changed: {path}")
+                        found = True
+                        break
+                if not found:
+                    reasons.append(f"reviewed content missing: {path}")
+
+    # Check 2: Orphaned run — currentRunId set but no active task and phase is not task-scoped
+    state = read_json_file_safe(os.path.join(workspace, "state", "team-state.json"))
+    if state:
+        run_id = state.get("currentRunId", "")
+        phase = state.get("currentPhase", "")
+        task_id = state.get("currentTaskId", "")
+        task_scoped = frozenset(["EXECUTING_TASK", "NEEDS_CHANGE_REVIEW", "NEEDS_GATE", "REVIEW_FAILED", "GATE_FAILED"])
+        if run_id and not task_id and phase not in task_scoped:
+            reasons.append(f"orphaned run '{run_id}': currentRunId set but no currentTaskId")
+
+    # Check 3: Stale IN_PROGRESS current-task.json
+    ct_path = os.path.join(workspace, "state", "current-task.json")
+    if os.path.exists(ct_path):
+        ct = read_json_file_safe(ct_path)
+        if ct and ct.get("status") == "IN_PROGRESS" and state and not state.get("currentTaskId", ""):
+            reasons.append("stale IN_PROGRESS current-task.json with no matching currentTaskId")
+
+    return (len(reasons) == 0, reasons)
+
+
 def cmd_next_action(args):
     started = fast_execution.clock_ms()
     workspace = resolve_workspace(args.workspace)
@@ -1591,6 +1648,16 @@ def _compute_next_action(phase, status, human_required, workspace):
             if task.get("status") == "READY":
                 return {"nextAction": "RUN_EXECUTOR", "phase": "EXECUTING_TASK", "taskId": task["taskId"], "humanRequired": False}
         if phase == "READY_FOR_NEXT_TASK":
+            # Check if workspace is genuinely safe before reporting NO_READY_TASK
+            is_safe, integrity_reasons = _check_workspace_integrity(workspace)
+            if not is_safe:
+                return {
+                    "nextAction": "CORRECTIVE_WORK_REQUIRED",
+                    "phase": "BLOCKED",
+                    "taskId": "",
+                    "humanRequired": False,
+                    "reason": "; ".join(integrity_reasons[:5]),
+                }
             return {"nextAction": "NO_READY_TASK", "phase": "READY_FOR_NEXT_TASK", "taskId": "", "humanRequired": False}
         if phase == "NEEDS_TASK_SLICING":
             return {"nextAction": "RUN_TASK_SLICER", "phase": "NEEDS_TASK_SLICING", "taskId": "", "humanRequired": False}
@@ -1628,6 +1695,16 @@ def _compute_next_action(phase, status, human_required, workspace):
     if phase == "SAFE_CHECKPOINT":
         if human_required:
             return {"nextAction": "HUMAN_DECISION", "phase": "HUMAN_DECISION_REQUIRED", "taskId": "", "humanRequired": True}
+        # Don't blindly continue from SAFE_CHECKPOINT if integrity is broken
+        is_safe, integrity_reasons = _check_workspace_integrity(workspace)
+        if not is_safe:
+            return {
+                "nextAction": "CORRECTIVE_WORK_REQUIRED",
+                "phase": "BLOCKED",
+                "taskId": "",
+                "humanRequired": False,
+                "reason": "; ".join(integrity_reasons[:5]),
+            }
         return {"nextAction": "CONTINUE_LOOP", "phase": "READY_FOR_NEXT_TASK", "taskId": "", "humanRequired": False}
 
     entry = dispatch.get(phase)
@@ -1664,6 +1741,7 @@ _TRANSITIONS = {
     "GATE_FAILED": ("GATE_FAILED", False, False),
     "REQUEST_CHANGES": ("REVIEW_FAILED", False, False),
     "SET_DONE": ("DONE", False, False),
+    "CORRECTIVE_WORK_REQUIRED": ("BLOCKED", False, False),
 }
 
 # Actions that must preserve the active run/task identity from the previous state.
@@ -2570,7 +2648,7 @@ def _write_continuation_decision(workspace, decision, phase, task_id="", run_id=
     workspace : str
         Absolute path to the .teamloop workspace.
     decision : str
-        One of: DONE, SAFE_CHECKPOINT, CONTINUE, HUMAN_DECISION_REQUIRED, BLOCKED.
+        One of: DONE, SAFE_CHECKPOINT, CONTINUE, HUMAN_DECISION_REQUIRED, BLOCKED, CORRECTIVE_WORK_REQUIRED.
     phase : str
         Current phase string (must be non-empty).
     task_id : str, optional

@@ -13,13 +13,15 @@ PY=/usr/bin/python3 bash tests/run-tests.sh
 Expected for this revision:
 
 ```text
-Results: 205/205 passed, 0 failed
+Results: N/N passed, 0 failed
 ```
+
+where N is the current number of test functions in `run-tests.sh`. The expected count should match the actual test function count in run-tests.sh. Run `--full` to verify.
 
 The runner also supports bounded diagnostic ranges without skipping tests in normal CI:
 
 ```bash
-TEAMLOOP_TEST_FROM=151 TEAMLOOP_TEST_TO=205 \
+TEAMLOOP_TEST_FROM=151 TEAMLOOP_TEST_TO=227 \
   PY=/usr/bin/python3 bash tests/run-tests.sh
 ```
 
