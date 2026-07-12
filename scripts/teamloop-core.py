@@ -17,6 +17,7 @@ import sys
 import fnmatch
 import teamloop_fast_execution as fast_execution
 import teamloop_cache as _cache_mod
+import teamloop_inbox as inbox_mod
 from teamloop_context import WorkspaceContext
 
 
@@ -5572,6 +5573,67 @@ def cmd_dogfood(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: inbox-send / inbox-receive / inbox-stats
+# ---------------------------------------------------------------------------
+
+def _resolve_run_id_for_inbox(workspace):
+    """Return the current or latest run id for inbox operations."""
+    state = read_json_file_safe(os.path.join(workspace, "state", "team-state.json"))
+    if state and state.get("currentRunId"):
+        return state["currentRunId"]
+    # Fallback: latest run directory
+    runs_dir = os.path.join(workspace, "runs")
+    if os.path.isdir(runs_dir):
+        try:
+            dirs = sorted(d for d in os.listdir(runs_dir)
+                          if os.path.isdir(os.path.join(runs_dir, d)))
+            if dirs:
+                return dirs[-1]
+        except OSError:
+            pass
+    return f"run-{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d%H%M%S')}"
+
+
+def cmd_inbox_send(args):
+    """Send a message via the per-run inbox."""
+    workspace = resolve_workspace(args.workspace)
+    run_id = args.run_id or _resolve_run_id_for_inbox(workspace)
+    message = inbox_mod.inbox_send(
+        workspace=workspace,
+        run_id=run_id,
+        from_actor=args.from_actor,
+        to_actor=args.to,
+        subject=args.subject,
+        body=args.body,
+    )
+    print(json.dumps(message, ensure_ascii=False))
+
+
+def cmd_inbox_receive(args):
+    """Receive unread messages from the per-run inbox."""
+    workspace = resolve_workspace(args.workspace)
+    run_id = args.run_id or _resolve_run_id_for_inbox(workspace)
+    messages = inbox_mod.inbox_receive(
+        workspace=workspace,
+        run_id=run_id,
+        actor=args.actor,
+    )
+    if not messages:
+        print("No unread messages.")
+        return
+    print(json.dumps(messages, ensure_ascii=False, indent=2))
+
+
+def cmd_inbox_stats(args):
+    """Show inbox statistics for the current run."""
+    workspace = resolve_workspace(args.workspace)
+    run_id = args.run_id or _resolve_run_id_for_inbox(workspace)
+    stats = inbox_mod.inbox_stats(workspace=workspace, run_id=run_id)
+    stats["runId"] = run_id
+    print(json.dumps(stats, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -5773,6 +5835,26 @@ def main():
         help="Run checks twice (direct subprocess vs WorkspaceContext) and compare",
     )
 
+    # inbox-send
+    p_inbox_send = subparsers.add_parser("inbox-send", help="Send a message via the per-run inbox")
+    p_inbox_send.add_argument("--workspace", "-w", default=".teamloop")
+    p_inbox_send.add_argument("--run-id", default="", help="Run ID (auto-resolved if omitted)")
+    p_inbox_send.add_argument("--from", dest="from_actor", required=True, help="Sender actor")
+    p_inbox_send.add_argument("--to", required=True, help="Recipient actor")
+    p_inbox_send.add_argument("--subject", required=True, help="Message subject")
+    p_inbox_send.add_argument("--body", required=True, help="Message body")
+
+    # inbox-receive
+    p_inbox_receive = subparsers.add_parser("inbox-receive", help="Receive unread inbox messages")
+    p_inbox_receive.add_argument("--workspace", "-w", default=".teamloop")
+    p_inbox_receive.add_argument("--run-id", default="", help="Run ID (auto-resolved if omitted)")
+    p_inbox_receive.add_argument("--actor", required=True, help="Recipient actor")
+
+    # inbox-stats
+    p_inbox_stats = subparsers.add_parser("inbox-stats", help="Show inbox statistics")
+    p_inbox_stats.add_argument("--workspace", "-w", default=".teamloop")
+    p_inbox_stats.add_argument("--run-id", default="", help="Run ID (auto-resolved if omitted)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5811,6 +5893,9 @@ def main():
         "compat-check": cmd_compat_check,
         "schema-lint": cmd_schema_lint,
         "dogfood": cmd_dogfood,
+        "inbox-send": cmd_inbox_send,
+        "inbox-receive": cmd_inbox_receive,
+        "inbox-stats": cmd_inbox_stats,
     }
 
     commands[args.command](args)
