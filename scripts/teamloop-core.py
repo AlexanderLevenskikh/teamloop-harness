@@ -5521,6 +5521,57 @@ def cmd_release_info(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: dogfood
+# ---------------------------------------------------------------------------
+
+def cmd_dogfood(args):
+    """Run the full gate chain on the workspace (dogfood test).
+
+    Exercises: validate-state, check-scope, run-gates, run-sentinel,
+    check-guard-integrity, memory-doctor, and final-gate as subprocess
+    invocations and produces a structured JSON report.
+
+    With --old-new-compare, runs each check twice (direct subprocess vs
+    WorkspaceContext) and compares results for parity.
+
+    Exit 0 on PASS, exit 1 on FAIL or ERROR.
+    """
+    import teamloop_dogfood as dogfood_mod
+
+    if args.old_new_compare:
+        result = dogfood_mod.run_dogfood_compare(args.workspace)
+    else:
+        result = dogfood_mod.run_dogfood(args.workspace)
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        # Human-readable summary
+        print(f"Dogfood report: {result['overallStatus']}")
+        for check in result["checks"]:
+            tag = check["status"]
+            summary = check.get("summary", "")
+            print(f"  [{tag}] {check['name']}: {summary}")
+            if "detail" in check:
+                detail = check["detail"][:200]
+                print(f"         detail: {detail}")
+        if result.get("oldNewCompare"):
+            comp = result["oldNewCompare"]
+            diffs = comp.get("differences", [])
+            print()
+            if diffs:
+                print(f"Comparison found {len(diffs)} difference(s) between direct and context runs:")
+                for d in diffs:
+                    print(f"  - {d['check']}: direct={d['directStatus']} context={d['contextStatus']}")
+            else:
+                print("Comparison: all checks match between direct and context runs.")
+        print()
+
+    if result["overallStatus"] != "PASS":
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -5707,6 +5758,21 @@ def main():
         help="Output detailed text report with per-schema breakdown",
     )
 
+    # dogfood
+    p_dogfood = subparsers.add_parser(
+        "dogfood",
+        help="Run the full gate chain on the workspace (dogfood test)",
+    )
+    p_dogfood.add_argument("--workspace", "-w", default=".teamloop")
+    p_dogfood.add_argument(
+        "--json", action="store_true",
+        help="Output full report as JSON",
+    )
+    p_dogfood.add_argument(
+        "--old-new-compare", action="store_true",
+        help="Run checks twice (direct subprocess vs WorkspaceContext) and compare",
+    )
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5744,6 +5810,7 @@ def main():
         "release-info": cmd_release_info,
         "compat-check": cmd_compat_check,
         "schema-lint": cmd_schema_lint,
+        "dogfood": cmd_dogfood,
     }
 
     commands[args.command](args)
