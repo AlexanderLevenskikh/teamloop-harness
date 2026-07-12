@@ -3624,6 +3624,7 @@ def cmd_run_sentinel(args):
     host.project_root = project_root
     host._WorkspaceContext__cache = {}
     host._validation_cache = cache
+    host._state_store = None
 
     # Determine runId
     run_id = _sentinel_get_run_id(host)
