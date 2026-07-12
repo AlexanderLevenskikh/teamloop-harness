@@ -18,6 +18,7 @@ import fnmatch
 import teamloop_fast_execution as fast_execution
 import teamloop_cache as _cache_mod
 import teamloop_inbox as inbox_mod
+import teamloop_advisory as advisory_mod
 from teamloop_context import WorkspaceContext
 
 
@@ -5634,6 +5635,21 @@ def cmd_inbox_stats(args):
 
 
 # ---------------------------------------------------------------------------
+# Command: advisory-check
+# ---------------------------------------------------------------------------
+
+def cmd_advisory_check(args):
+    """Run Product Director L0 advisory checks on the current task.
+
+    Advisory checks flag risky patterns as WARNING only — they never block
+    execution.  Exit code is always 0.
+    """
+    workspace = resolve_workspace(args.workspace)
+    result = advisory_mod.run_advisory(workspace)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -5855,6 +5871,11 @@ def main():
     p_inbox_stats.add_argument("--workspace", "-w", default=".teamloop")
     p_inbox_stats.add_argument("--run-id", default="", help="Run ID (auto-resolved if omitted)")
 
+    # advisory-check
+    p_advisory = subparsers.add_parser("advisory-check", help="Run Product Director L0 advisory checks on the current task")
+    p_advisory.add_argument("--workspace", "-w", default=".teamloop")
+    p_advisory.add_argument("--json", action="store_true", help="Output as JSON (default: pretty-printed JSON)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5896,6 +5917,7 @@ def main():
         "inbox-send": cmd_inbox_send,
         "inbox-receive": cmd_inbox_receive,
         "inbox-stats": cmd_inbox_stats,
+        "advisory-check": cmd_advisory_check,
     }
 
     commands[args.command](args)
