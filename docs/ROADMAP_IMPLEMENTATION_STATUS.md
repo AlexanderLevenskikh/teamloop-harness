@@ -96,7 +96,7 @@ This document honestly classifies the previously claimed Iterations 1–9 from t
 
 ---
 
-## Iteration 4 — Deterministic Validation Caching
+## Iteration 4 — Public Release and Compatibility Hardening
 
 **Original goal:** Provide deterministic validation caching for schema checks and sentinel findings, keyed by content-addressed fingerprints so that identical inputs produce identical cached results. The cache was intended as a PARTIAL improvement: resultHash-based integrity covering the result body, with the understanding that full semantic-field coverage would follow.
 
@@ -149,7 +149,7 @@ This document honestly classifies the previously claimed Iterations 1–9 from t
 
 ---
 
-## Iteration 6 — Runtime Resilience Checks
+## Iteration 6 — Minimal TeamLoop Inbox Contract
 
 **Original goal:** Implement runtime resilience checks including workspace integrity evaluation, sentinel report staleness detection, and cross-run state consistency guards.
 
@@ -175,7 +175,7 @@ This document honestly classifies the previously claimed Iterations 1–9 from t
 
 ---
 
-## Iteration 7 — Final Gate Aggregator
+## Iteration 7 — Product Director L0 Advisory Mode
 
 **Original goal:** Create a final gate that aggregates all blocking handoff checks including state validation, memory integrity, sentinel inspection, guard integrity, and reviewed-content integrity into a single blocking gate command.
 
@@ -259,10 +259,10 @@ This document honestly classifies the previously claimed Iterations 1–9 from t
 | I1: Single Validation Host | WorkspaceContext shared host | **PARTIAL** | ~10 |
 | I2: Layered Testing | Layer/impact-aware test runner | **SCAFFOLD_ONLY** | 10+ |
 | I3: Validation Cache | Content-addressed cache | **SCAFFOLD_ONLY** | 20 |
-| I4: Deterministic Validation Caching | Cache for schema/sentinel checks | **SCAFFOLD_ONLY** | 20 |
+| I4: Public Release and Compatibility Hardening | Cache for schema/sentinel checks | **SCAFFOLD_ONLY** | 20 |
 | I5: Dogfood Guard | Full gate chain, old/new guard | **PARTIAL** | 8 |
-| I6: Runtime Resilience Checks | Workspace integrity, sentinel staleness | **PARTIAL** | 0 |
-| I7: Final Gate Aggregator | Aggregate handoff checks | **PARTIAL** | 0 |
+| I6: Minimal TeamLoop Inbox Contract | Workspace integrity, sentinel staleness | **PARTIAL** | 0 |
+| I7: Product Director L0 Advisory Mode | Aggregate handoff checks | **PARTIAL** | 0 |
 | I8: StateStore ABC | Pluggable storage prep | **SCAFFOLD_ONLY** | 0 |
 | I9: Adapter Contract | Adapter schema and verify | **SCAFFOLD_ONLY** | 0 |
 
