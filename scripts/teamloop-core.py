@@ -1640,6 +1640,7 @@ def _evaluate_workspace_integrity(workspace):
     12. continuation-consistency — continuation-decision consistent with state
     13. malformed-artifacts — critical JSON artifacts parseable
     14. contradictory-sentinels — multiple PASS sentinels with conflicting fingerprints
+    15. cache-integrity — cache file integrity (malformed lines, hash failures)
     """
     checks = []
     blocking_issues = []
@@ -1850,6 +1851,31 @@ def _evaluate_workspace_integrity(workspace):
 
     # ===== Check 14: contradictory-sentinels =====
     _check_contradictory_sentinels(workspace, checks, blocking_issues)
+
+    # ===== Check 15: cache-integrity =====
+    try:
+        from teamloop_cache import SentinelCache
+        cache = SentinelCache(workspace)
+        cache_status = cache.integrity_check()
+        ci_status = cache_status.get("status", "UNKNOWN")
+        if ci_status in ("PASS", "EMPTY", "WARNING"):
+            _add_pass("cache-integrity",
+                       f"cache ok ({ci_status})")
+        elif ci_status == "CORRUPT":
+            _add_fail("cache-integrity",
+                       f"cache corruption: {cache_status.get('malformedLines', 0)} malformed lines, "
+                       f"{cache_status.get('corruptedCount', 0)} hash failures",
+                       blocking=True)
+        elif ci_status == "FAIL":
+            _add_fail("cache-integrity",
+                       cache_status.get("message", "cache integrity failure"),
+                       blocking=True)
+        else:
+            _add_skip("cache-integrity", f"unexpected cache status: {ci_status}")
+    except ImportError:
+        _add_skip("cache-integrity", "cache module not available")
+    except Exception as exc:
+        _add_fail("cache-integrity", f"cache check error: {exc}", blocking=True)
 
     # ---- compute overall status ----
     if blocking_issues:
@@ -5542,6 +5568,79 @@ def cmd_final_gate(args):
             "description": f"no-progress detector status is {no_progress.get('status', 'unknown')}",
             "blocking": True,
             "evidenceArtifact": os.path.relpath(no_progress_path, os.path.dirname(workspace)),
+        })
+
+    # ------------------------------------------------------------------
+    # Check 14: cache-integrity
+    # ------------------------------------------------------------------
+    try:
+        from teamloop_cache import SentinelCache
+        cache = SentinelCache(workspace)
+        cache_status = cache.integrity_check()
+        ci_status = cache_status.get("status", "UNKNOWN")
+        if ci_status in ("PASS", "EMPTY"):
+            checks.append({
+                "name": "cache-integrity",
+                "status": "PASS",
+                "description": "cache integrity check passed",
+                "blocking": True,
+            })
+            if cache_status.get("verifiedCount", 0) > 0:
+                checks[-1]["description"] = (
+                    f"cache integrity passed: {cache_status['verifiedCount']} verified, "
+                    f"{cache_status.get('legacyUntrustedCount', 0)} legacy"
+                )
+            if cache_status.get("legacyUntrustedCount", 0) > 0:
+                advisory_findings.append(
+                    f"cache has {cache_status['legacyUntrustedCount']} legacy-untrusted entries "
+                    f"(not served, safe to ignore)"
+                )
+        elif ci_status == "WARNING":
+            checks.append({
+                "name": "cache-integrity",
+                "status": "PASS",
+                "description": f"cache integrity warning: {cache_status.get('message', 'legacy entries present')}",
+                "blocking": False,
+            })
+            advisory_findings.append(cache_status.get("message", "cache has legacy or untrusted entries"))
+        elif ci_status == "CORRUPT":
+            checks.append({
+                "name": "cache-integrity",
+                "status": "FAIL",
+                "description": "cache corruption detected",
+                "blocking": True,
+                "reason": f"{cache_status.get('malformedLines', 0)} malformed JSON lines, "
+                          f"{cache_status.get('corruptedCount', 0)} integrity-hash failures",
+            })
+        elif ci_status == "FAIL":
+            checks.append({
+                "name": "cache-integrity",
+                "status": "FAIL",
+                "description": "cache integrity check failed",
+                "blocking": True,
+                "reason": cache_status.get("message", "cache integrity failure")[:500],
+            })
+        else:
+            checks.append({
+                "name": "cache-integrity",
+                "status": "SKIP",
+                "description": f"cache returned unexpected status: {ci_status}",
+                "blocking": False,
+            })
+    except ImportError:
+        checks.append({
+            "name": "cache-integrity",
+            "status": "SKIP",
+            "description": "cache module not available",
+            "blocking": False,
+        })
+    except Exception as exc:
+        checks.append({
+            "name": "cache-integrity",
+            "status": "FAIL",
+            "description": "cache integrity check error",
+            "blocking": True,
+            "reason": str(exc)[:500],
         })
 
     # Optimized execution contracts preserve the existing mandatory final
