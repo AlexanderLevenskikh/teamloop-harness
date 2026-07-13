@@ -242,6 +242,16 @@
     "test_231": ["contract", "runtime", "full"],
     "test_232": ["contract", "runtime", "full"],
     "test_233": ["contract", "runtime", "full"],
-    "test_234": ["contract", "runtime", "full"]
+    "test_234": ["contract", "runtime", "full"],
+    "test_235": ["contract", "full"],
+    "test_236": ["contract", "full"],
+    "test_237": ["contract", "full"],
+    "test_238": ["smoke", "contract", "full"],
+    "test_239": ["contract", "full"],
+    "test_240": ["contract", "full"],
+    "test_241": ["contract", "full"],
+    "test_242": ["smoke", "full"],
+    "test_243": ["integration", "full"],
+    "test_244": ["runtime", "full"]
   }
 }

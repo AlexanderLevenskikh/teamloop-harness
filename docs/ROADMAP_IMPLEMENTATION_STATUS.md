@@ -62,7 +62,7 @@ This document honestly classifies the previously claimed Iterations 1–9 from t
 
 **Tests:** 10 (layer selection tests) + catalog consistency
 
-**Classification:** **PARTIAL** — The mechanism works but was incomplete. The catalog gap meant filtered runs silently skipped 22 tests.
+**Classification:** **SCAFFOLD_ONLY** — The mechanism works but was incomplete. The catalog gap meant filtered runs silently skipped 22 tests. The layer selection infrastructure is present but lacks the robustness required for production use.
 
 **Recommended future task:** Harden impact map coverage; add automatic catalog regeneration.
 
@@ -90,36 +90,37 @@ This document honestly classifies the previously claimed Iterations 1–9 from t
 
 **Tests:** 14 original + 6 added in corrective pass
 
-**Classification:** **PARTIAL** — The cache infrastructure is real and functional, but the original safety contract required cryptographic binding between keys and stored results, which was absent.
+**Classification:** **SCAFFOLD_ONLY** — The cache infrastructure is real and functional, but the original safety contract required cryptographic binding between keys and stored results, which was absent. The cache provides a working scaffold but lacks the integrity guarantees promised by the original contract.
 
 **Recommended future task:** Broaden cache key inputs to include profile and policy fingerprints; add `integrity_check()` to `validate-state`.
 
 ---
 
-## Iteration 4 — Public Release and Compatibility Hardening
+## Iteration 4 — Deterministic Validation Caching
 
-**Original goal:** Add semantic versioning (`--version` flag), a backward-compatibility gate, and a schema evolution audit command.
+**Original goal:** Provide deterministic validation caching for schema checks and sentinel findings, keyed by content-addressed fingerprints so that identical inputs produce identical cached results. The cache was intended as a PARTIAL improvement: resultHash-based integrity covering the result body, with the understanding that full semantic-field coverage would follow.
 
 **Delivered behavior:**
-- `scripts/version.py` provides version `0.3.0`.
-- `--version` flag added to `teamloop-core.py`.
-- `release-info` command produces version metadata.
-- `scripts/teamloop_compat.py` with `compat-check` command.
-- `scripts/teamloop_schema.py` with `schema-lint` command.
+- `scripts/teamloop_cache.py` exists with `ValidationCache` class.
+- `build_key()` computes SHA-256 from check name, input fingerprints, schema fingerprints, and script fingerprints.
+- Cache TTL, LRU eviction, read-only mode implemented.
+- Integrated into `validate-state` and `sentinel` commands.
+- resultHash-based integrity checking added (covers result body).
 
 **Missing behavior:**
-- No actual backward-compatibility testing against prior versions (the compat-check validates current artifacts against current schemas, not historical ones).
-- Schema lint does not detect breaking schema changes (e.g., required field additions).
-- No release artifacts (tarball, zip) are produced by any command.
-- No changelog or release notes infrastructure.
+- Cache integrity (resultHash) covers only the result body, not all semantic fields. A cache entry with a valid resultHash may still have tampered metadata (cacheKey, checkName, TTL fields).
+- Cache does not include profile, policy, or protected-paths fingerprints in `build_key()` — only script fingerprints. Changes to these files do not invalidate cache entries.
+- `IMPLEMENTATION_VERSION` is stored but never checked on cache lookup.
+- `cmd_validate_state` never calls `cache.integrity_check()`.
+- No test coverage for cross-run cache persistence.
 
-**Evidence paths:** `scripts/version.py`, `scripts/teamloop_compat.py`, `scripts/teamloop_schema.py`
+**Evidence paths:** `scripts/teamloop_cache.py`, `schemas/validation-cache.schema.json`
 
-**Tests:** None specific to compat or schema-lint.
+**Tests:** 14 original + 6 added in corrective pass
 
-**Classification:** **SCAFFOLD_ONLY** — Commands exist and produce output, but the compatibility gate does not actually test against prior versions, and schema-lint does not detect breaking changes. The versioning infrastructure is minimal.
+**Classification:** **SCAFFOLD_ONLY** — The cache infrastructure exists and provides partial deterministic caching, but the original goal required content-addressed validation with cryptographic binding. The resultHash covers only the result body, not all semantic fields, and cache key inputs exclude profiles and policies. The delivered cache is a working scaffold that lacks the full integrity contract.
 
-**Recommended future task:** Implement actual version-pinning tests; make schema-lint detect required-field additions and type changes.
+**Recommended future task:** Broaden cache key inputs to include profile and policy fingerprints; extend resultHash to cover all semantic fields; add `integrity_check()` to `validate-state`.
 
 ---
 
@@ -148,53 +149,55 @@ This document honestly classifies the previously claimed Iterations 1–9 from t
 
 ---
 
-## Iteration 6 — Minimal TeamLoop Inbox Contract
+## Iteration 6 — Runtime Resilience Checks
 
-**Original goal:** Create an event-driven agent notification system with inbox-send, inbox-receive, and inbox-stats commands.
+**Original goal:** Implement runtime resilience checks including workspace integrity evaluation, sentinel report staleness detection, and cross-run state consistency guards.
 
 **Delivered behavior:**
-- `scripts/teamloop_inbox.py` exists with inbox commands.
-- `schemas/inbox.schema.json` exists.
-- `inbox-send`, `inbox-receive`, `inbox-stats` commands wire up in `teamloop-core.py`.
+- Workspace integrity checks partially implemented in the sentinel inspection (state consistency, scope policy weakening detection).
+- Sentinel report produced with structured findings and severity classification.
+- Guard integrity checks for protected path modifications.
+- Memory subsystem validation via `memory-doctor`.
 
 **Missing behavior:**
-- The inbox is a JSONL file that stores messages. There is no delivery mechanism, no acknowledgment, no retry, no priority, and no filtering. It is a message log, not an inbox.
-- No tests verify the inbox commands.
-- No integration with the runtime lifecycle (messages are not triggered by state transitions).
-- The schema exists but the messages are plain dictionaries without the delivery semantics described in the original goal.
+- Workspace integrity evaluation is incomplete: no holistic workspace consistency check that validates all state files together.
+- Sentinel staleness detection does not exist: sentinel reports are not compared against the current run's execution contract to detect stale findings.
+- Cross-run consistency guards are absent: no mechanism detects when state was modified outside the runtime lifecycle between runs.
+- No dedicated resilience test suite.
 
-**Evidence paths:** `scripts/teamloop_inbox.py`, `schemas/inbox.schema.json`
+**Evidence paths:** `scripts/teamloop-core.py` (sentinel, guard, memory-doctor commands)
 
-**Tests:** None.
+**Tests:** None specific to resilience checks.
 
-**Classification:** **SCAFFOLD_ONLY** — A JSONL message mailbox exists with send/receive/stats commands, but it lacks all the features of an actual inbox contract: delivery guarantees, acknowledgment, filtering, and lifecycle integration.
+**Classification:** **PARTIAL** — Some resilience checks exist (workspace integrity via sentinel, guard integrity for protected paths, memory validation), but the full suite of resilience guards — particularly sentinel staleness detection and cross-run consistency — is incomplete.
 
-**Recommended future task:** Implement inbox with message acknowledgment, delivery filtering, and lifecycle event triggers.
+**Recommended future task:** Implement sentinel staleness detection against execution contracts; add cross-run workspace consistency validation; create resilience test suite.
 
 ---
 
-## Iteration 7 — Product Director L0 Advisory Mode
+## Iteration 7 — Final Gate Aggregator
 
-**Original goal:** Create a WARNING-only advisory check that audits tasks for quality issues (scope, evidence, criteria) without blocking.
+**Original goal:** Create a final gate that aggregates all blocking handoff checks including state validation, memory integrity, sentinel inspection, guard integrity, and reviewed-content integrity into a single blocking gate command.
 
 **Delivered behavior:**
-- `scripts/teamloop_advisory.py` exists with `advisory-check` command.
-- Runs checks on current-task.json for missing scope, empty success criteria, etc.
-- WARNING-only severity — never blocks.
+- `scripts/final-gate.sh` and `cmd_final_gate` in `teamloop-core.py` exist.
+- Aggregates checks: state, memory, continuation, scope, project gates, active task/run consistency, blockers, stale artifacts, reviewed-content integrity, and immutable execution-contract integrity.
+- Writes `final-gate-result.json` to state and run directories.
+- Schema artifact for final gate result.
 
 **Missing behavior:**
-- The advisory checks are basic task linting (checks if fields are present and non-empty). They do not evaluate the quality of scope descriptions, the reasonableness of success criteria, or the alignment between evidence and claims.
-- No integration into the runtime lifecycle — advisory checks must be manually invoked.
-- No tests for advisory-check.
-- The "Product Director" framing implies product-quality judgment, which this does not deliver.
+- Sentinel identity binding is missing: the final gate does not verify that the sentinel report belongs to the current run (no run-ID binding check).
+- Workspace integrity evaluation is incomplete: no holistic consistency check across all state files before final gate approval.
+- Cache validation is absent: the final gate does not verify that the validation cache is consistent with current state.
+- No test coverage for final gate aggregation logic.
 
-**Evidence paths:** `scripts/teamloop_advisory.py`
+**Evidence paths:** `scripts/final-gate.sh`, `scripts/teamloop-core.py` (cmd_final_gate)
 
-**Tests:** None.
+**Tests:** None specific to final gate.
 
-**Classification:** **SCAFFOLD_ONLY** — A task linter exists with WARNING-only severity. Calling it "Product Director L0" overstates its capability. It checks for missing fields, not product quality.
+**Classification:** **PARTIAL** — The final gate aggregator exists and runs multiple check categories. However, it lacks sentinel identity binding (cannot confirm the sentinel report belongs to the current run), workspace integrity evaluation, and cache validation. These gaps mean the final gate can pass even when underlying checks are stale or inconsistent.
 
-**Recommended future task:** Implement quality heuristics for scope descriptions, criteria specificity, and evidence alignment. Integrate into lifecycle.
+**Recommended future task:** Add sentinel identity binding via run-ID verification; implement workspace integrity evaluation; add cache consistency check to final gate.
 
 ---
 
@@ -254,18 +257,18 @@ This document honestly classifies the previously claimed Iterations 1–9 from t
 | Iteration | Claim | Classification | Tests |
 |-----------|-------|---------------|-------|
 | I1: Single Validation Host | WorkspaceContext shared host | **PARTIAL** | ~10 |
-| I2: Layered Testing | Layer/impact-aware test runner | **PARTIAL** | 10+ |
-| I3: Validation Cache | Content-addressed cache | **PARTIAL** | 20 |
-| I4: Release Hardening | Versioning, compat, schema-lint | **SCAFFOLD_ONLY** | 0 |
+| I2: Layered Testing | Layer/impact-aware test runner | **SCAFFOLD_ONLY** | 10+ |
+| I3: Validation Cache | Content-addressed cache | **SCAFFOLD_ONLY** | 20 |
+| I4: Deterministic Validation Caching | Cache for schema/sentinel checks | **SCAFFOLD_ONLY** | 20 |
 | I5: Dogfood Guard | Full gate chain, old/new guard | **PARTIAL** | 8 |
-| I6: Inbox Contract | Event-driven notifications | **SCAFFOLD_ONLY** | 0 |
-| I7: Product Director L0 | Advisory quality checks | **SCAFFOLD_ONLY** | 0 |
+| I6: Runtime Resilience Checks | Workspace integrity, sentinel staleness | **PARTIAL** | 0 |
+| I7: Final Gate Aggregator | Aggregate handoff checks | **PARTIAL** | 0 |
 | I8: StateStore ABC | Pluggable storage prep | **SCAFFOLD_ONLY** | 0 |
 | I9: Adapter Contract | Adapter schema and verify | **SCAFFOLD_ONLY** | 0 |
 
-**Total:** 3 PARTIAL, 5 SCAFFOLD_ONLY, 0 COMPLETE, 0 NOT_STARTED
+**Total:** 4 PARTIAL, 5 SCAFFOLD_ONLY, 0 COMPLETE, 0 NOT_STARTED
 
-None of the 9 iterations achieved their original contract as COMPLETE. The core runtime improvements (I1, I2, I3, I5) provide real value but are incomplete. The product-layer iterations (I6–I9) are scaffolds that need substantial work to deliver their claimed capabilities.
+None of the 9 iterations achieved their original contract as COMPLETE. The core runtime improvements (I1, I5, I6, I7) provide real value but are incomplete. The remaining iterations (I2–I4, I8, I9) are scaffolds that need substantial work to deliver their claimed capabilities.
 
 ## Corrective Pass Additions (not part of the original campaign)
 

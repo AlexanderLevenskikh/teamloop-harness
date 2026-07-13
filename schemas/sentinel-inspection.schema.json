@@ -3,11 +3,23 @@
   "title": "SentinelInspection",
   "description": "Structured sentinel inspection report produced by the sentinel watcher",
   "type": "object",
-  "required": ["schemaVersion", "runId", "inspectedAtUtc", "findings", "overallStatus"],
+  "required": ["schemaVersion", "runId", "inspectedAtUtc", "findings", "overallStatus", "repositoryHead", "taskId", "taskRevision", "implementationVersion", "semanticFingerprint", "policyFingerprints", "manifestFingerprint", "runtimeVersion"],
   "properties": {
     "schemaVersion": { "type": "integer", "const": 1 },
     "runId": { "type": "string", "pattern": "^run-" },
     "inspectedAtUtc": { "type": "string", "pattern": "^[0-9]{4}-" },
+    "repositoryHead": { "type": "string", "description": "Git HEAD commit hash when sentinel ran" },
+    "taskId": { "type": "string", "description": "Active task ID when sentinel ran" },
+    "taskRevision": { "type": "string", "description": "Task revision hash when sentinel ran" },
+    "implementationVersion": { "type": "string", "description": "Runtime implementation version" },
+    "semanticFingerprint": { "type": "string", "description": "Semantic fingerprint of findings" },
+    "policyFingerprints": {
+      "type": "object",
+      "description": "Fingerprints of policy files when sentinel ran",
+      "additionalProperties": { "type": "string" }
+    },
+    "manifestFingerprint": { "type": "string", "description": "Semantic fingerprint of the execution manifest, or empty string if no manifest" },
+    "runtimeVersion": { "type": "string", "description": "Runtime implementation version" },
     "overallStatus": {
       "type": "string",
       "enum": ["PASS", "WARNING", "FAIL"]

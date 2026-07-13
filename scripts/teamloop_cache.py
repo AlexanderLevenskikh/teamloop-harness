@@ -40,7 +40,8 @@ from teamloop_fast_execution import (
 
 DEFAULT_TTL_SECONDS = 86400  # 24 hours
 MAX_ENTRIES = 500
-SCHEMA_ID = "teamloop-validation-cache/v1"
+CACHE_SCHEMA_VERSION = "teamloop-validation-cache/v1"
+SCHEMA_ID = CACHE_SCHEMA_VERSION
 IMPLEMENTATION_VERSION = "1"
 
 # Keys that must never appear in a cache-key computation.
@@ -175,7 +176,7 @@ class ValidationCache:
         return sha256_text(canonical_json(payload))
 
     def get(self, cache_key: str) -> Optional[Dict[str, Any]]:
-        """Return the cached result for *cache_key*, or ``None`` on miss.
+        """Return the cached semantic result for *cache_key*, or ``None`` on miss.
 
         A hit requires:
         1. The key exists in the cache.
@@ -183,12 +184,23 @@ class ValidationCache:
         3. The entry passes integrity validation.
         4. Script fingerprints still match (no script change).
 
+        The returned dict is the stored ``result`` value itself — never wrapped
+        in a ``{"result": ...}`` container.  Callers receive the exact same
+        semantic type they passed to ``store()``.
+
         Returns
         -------
         dict or None
-            ``{"result": ..., "inputFingerprints": ..., "scriptFingerprints": ...}``
-            on hit; ``None`` on miss.
+            The semantic result (e.g. sentinel finding dict) on hit;
+            ``None`` on miss.
         """
+        # In audit (read-only) mode, refuse to serve any result from a
+        # cache file that had malformed lines on load — corruption could
+        # mask a tampered entry.
+        if self.read_only and self._malformed_line_count > 0:
+            self._misses += 1
+            return None
+
         entry = self._entries.get(cache_key)
         if entry is None:
             self._misses += 1
@@ -212,28 +224,35 @@ class ValidationCache:
         # Move to end (most recently used).
         self._entries.move_to_end(cache_key)
         self._hits += 1
-        return {
-            "result": entry["result"],
-            "inputFingerprints": entry.get("inputFingerprints", {}),
-            "scriptFingerprints": entry.get("scriptFingerprints", {}),
-            "cachedAtUtc": entry.get("cachedAtUtc", ""),
-        }
+        # Return the semantic result directly — not wrapped.
+        return dict(entry["result"])
 
     def store(
         self,
         cache_key: str,
         result: Dict[str, Any],
+        check_id: Optional[str] = None,
         input_fingerprints: Optional[Dict[str, str]] = None,
         script_fingerprints: Optional[Dict[str, str]] = None,
     ) -> None:
         """Store a validation result in the cache.
+
+        The ``result`` argument is the canonical semantic value.  For sentinel
+        checks this is the finding dict itself (``{"category": "...",
+        "severity": "...", "title": "..."}``).  ``get()`` returns this same
+        value on a hit — never a wrapper.
 
         Parameters
         ----------
         cache_key : str
             The SHA-256 cache key (from ``build_key``).
         result : dict
-            The validation result (e.g. ``{"status": "PASS", "findings": []}``).
+            The validation result (the semantic value, stored verbatim
+            after volatile-key stripping).
+        check_id : str, optional
+            Explicit check identifier.  Falls back to ``result.get("checkId")``
+            or ``result.get("category")`` if not given.  Stored separately from
+            the result so that the semantic value remains unchanged.
         input_fingerprints : dict, optional
             Per-input SHA-256 hashes stored for audit.
         script_fingerprints : dict, optional
@@ -250,21 +269,39 @@ class ValidationCache:
                 "store() is disabled to ensure fresh evidence on every run."
             )
 
+        resolved_check_id = check_id or result.get("checkId", "") or result.get("category", "")
         script_fps = script_fingerprints or self._script_fingerprints()
+        input_fps_store = input_fingerprints or {}
         result_stripped = strip_volatile(result)
         result_canonical = canonical_json(result_stripped)
         result_hash = hashlib.sha256(result_canonical.encode('utf-8')).hexdigest()
+
+        # Full-record integrity hash binding ALL semantic fields.
+        integrity_payload = {
+            "cacheKey": cache_key,
+            "checkId": resolved_check_id,
+            "result": result_stripped,
+            "inputFingerprints": json.dumps(input_fps_store, sort_keys=True),
+            "scriptFingerprints": json.dumps(script_fps, sort_keys=True),
+            "implementationVersion": IMPLEMENTATION_VERSION,
+            "cacheSchemaVersion": CACHE_SCHEMA_VERSION,
+        }
+        integrity_canonical = json.dumps(integrity_payload, sort_keys=True, separators=(",", ":"))
+        integrity_hash = hashlib.sha256(integrity_canonical.encode('utf-8')).hexdigest()
+
         entry: Dict[str, Any] = {
             "cacheKey": cache_key,
-            "checkId": result.get("checkId", ""),
+            "checkId": resolved_check_id,
             "result": result_stripped,
-            "inputFingerprints": input_fingerprints or {},
+            "inputFingerprints": input_fps_store,
             "scriptFingerprints": script_fps,
             "cachedAtUtc": _utc_now_iso(),
             "implementationVersion": IMPLEMENTATION_VERSION,
+            "cacheSchemaVersion": CACHE_SCHEMA_VERSION,
             "ttl": self.ttl_seconds,
             "ttlSeconds": self.ttl_seconds,
             "resultHash": result_hash,
+            "integrityHash": integrity_hash,
         }
 
         # If already present, update in place (keeping position for LRU).
@@ -314,6 +351,11 @@ class ValidationCache:
         self._misses = 0
         self._malformed_line_count = 0
 
+    @property
+    def has_corruption(self) -> bool:
+        """Return True if the cache file had malformed lines on load."""
+        return self._malformed_line_count > 0
+
     def integrity_check(self) -> Dict[str, Any]:
         """Verify that all cache records are untampered.
 
@@ -322,6 +364,7 @@ class ValidationCache:
         dict
             ``{"status": "PASS"|"FAIL", "totalEntries": N,
             "validEntries": M, "invalidEntries": [key, ...],
+            "malformedLineCount": N, "hasCorruption": bool,
             "checkedAtUtc": ...}``.
         """
         invalid: List[str] = []
@@ -332,12 +375,16 @@ class ValidationCache:
             else:
                 invalid.append(key)
 
+        has_corruption = self._malformed_line_count > 0
+        status = "PASS" if (not invalid and not has_corruption) else "FAIL"
+
         return {
-            "status": "PASS" if not invalid else "FAIL",
+            "status": status,
             "totalEntries": len(self._entries),
             "validEntries": valid,
             "invalidEntries": invalid,
             "malformedLineCount": self._malformed_line_count,
+            "hasCorruption": has_corruption,
             "checkedAtUtc": _utc_now_iso(),
         }
 
@@ -452,7 +499,7 @@ class ValidationCache:
 
     @staticmethod
     def _verify_entry_integrity(entry: Dict[str, Any]) -> bool:
-        """Verify the entry's cache key is consistent with its data."""
+        """Verify the entry's integrity hash or (fallback) result hash."""
         # The cache key itself is the integrity anchor: it must be present
         # and a valid 64-char hex string.
         key = entry.get("cacheKey", "")
@@ -465,7 +512,27 @@ class ValidationCache:
         # Result must be present.
         if "result" not in entry:
             return False
-        # Verify result integrity hash — prevents post-storage tampering.
+
+        # --- Full-record integrity hash (preferred, forward-looking) ---
+        stored_integrity = entry.get("integrityHash", "")
+        if stored_integrity:
+            # Recompute integrity hash over ALL semantic fields.
+            integrity_payload = {
+                "cacheKey": entry.get("cacheKey", ""),
+                "checkId": entry.get("checkId", ""),
+                "result": entry["result"],
+                "inputFingerprints": json.dumps(entry.get("inputFingerprints", {}), sort_keys=True),
+                "scriptFingerprints": json.dumps(entry.get("scriptFingerprints", {}), sort_keys=True),
+                "implementationVersion": entry.get("implementationVersion", ""),
+                "cacheSchemaVersion": entry.get("cacheSchemaVersion", ""),
+            }
+            integrity_canonical = json.dumps(integrity_payload, sort_keys=True, separators=(",", ":"))
+            computed_integrity = hashlib.sha256(integrity_canonical.encode('utf-8')).hexdigest()
+            if computed_integrity != stored_integrity:
+                return False
+            return True
+
+        # --- Legacy fallback: resultHash only ---
         stored_hash = entry.get("resultHash", "")
         if stored_hash:
             result_canonical = canonical_json(strip_volatile(entry["result"]))

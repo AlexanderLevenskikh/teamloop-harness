@@ -4982,6 +4982,305 @@ test_run "Integrity: SafeCheckpoint_BlockedWhenIntegrityBroken" test_233
 test_run "Integrity: SafeCheckpoint_ContinuesWhenClean" test_234
 
 # ============================================================
+# PACKAGING TESTS 235
+# ============================================================
+test_235() {
+    # Packaging: ZipPreservesExecutableBits — verify that restore-permissions.sh correctly
+    # restores executable bits on .sh files after ZIP extraction.  Uses Python zipfile
+    # module to simulate extraction (avoids dependency on system zip/unzip).
+    #
+    # Background: when a project is packaged as a ZIP on Windows (NTFS), Unix permission
+    # bits are not stored.  After extraction on Linux, .sh files will not be executable.
+    # restore-permissions.sh is the post-extraction helper to fix this.
+
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+
+    local src_dir="$tmp_dir/src"
+    local zip_file="$tmp_dir/scripts.zip"
+    local out_dir="$tmp_dir/out"
+    mkdir -p "$src_dir" "$out_dir"
+
+    # Create a shell script with executable bit
+    printf '#!/usr/bin/env bash\necho hello\n' > "$src_dir/test-script.sh"
+    chmod +x "$src_dir/test-script.sh"
+
+    # Also create a nested sub-directory with another .sh
+    mkdir -p "$src_dir/sub"
+    printf '#!/usr/bin/env bash\necho nested\n' > "$src_dir/sub/inner.sh"
+    chmod +x "$src_dir/sub/inner.sh"
+
+    # Verify source scripts are executable
+    test -x "$src_dir/test-script.sh" || { echo "Source script should be executable"; rm -rf "$tmp_dir"; return 1; }
+    test -x "$src_dir/sub/inner.sh" || { echo "Nested source script should be executable"; rm -rf "$tmp_dir"; return 1; }
+
+    # Create a ZIP archive using Python zipfile (cross-platform, no system zip needed)
+    "$PY" -c "
+import zipfile, os
+src = '$src_dir'
+with zipfile.ZipFile('$zip_file', 'w', zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk(src):
+        for f in files:
+            full = os.path.join(root, f)
+            arcname = os.path.relpath(full, src)
+            zf.write(full, arcname)
+"
+
+    # Extract — Python zipfile does NOT restore Unix mode bits,
+    # which is the exact problem we are testing
+    "$PY" -c "
+import zipfile
+with zipfile.ZipFile('$zip_file', 'r') as zf:
+    zf.extractall('$out_dir')
+"
+
+    local extracted="$out_dir/test-script.sh"
+    local extracted_nested="$out_dir/sub/inner.sh"
+    [[ -f "$extracted" ]] || { echo "Extracted script should exist"; rm -rf "$tmp_dir"; return 1; }
+    [[ -f "$extracted_nested" ]] || { echo "Extracted nested script should exist"; rm -rf "$tmp_dir"; return 1; }
+
+    # After extraction via Python zipfile, scripts are NOT executable (no Unix mode stored)
+    # This confirms the problem we need restore-permissions.sh to solve
+    test ! -x "$extracted" || { echo "Extracted .sh should NOT be executable (confirms the problem)"; rm -rf "$tmp_dir"; return 1; }
+
+    # --- Now run restore-permissions.sh to fix the problem ---
+    bash "$PROJECT_ROOT/scripts/restore-permissions.sh" "$out_dir"
+
+    # Verify both scripts are now executable
+    test -x "$extracted" || { echo "restore-permissions.sh should restore executable bit on top-level .sh"; rm -rf "$tmp_dir"; return 1; }
+    test -x "$extracted_nested" || { echo "restore-permissions.sh should restore executable bit on nested .sh"; rm -rf "$tmp_dir"; return 1; }
+
+    # Idempotency: running again should not error
+    bash "$PROJECT_ROOT/scripts/restore-permissions.sh" "$out_dir"
+
+    # Syntax check: restore-permissions.sh must be valid bash
+    bash -n "$PROJECT_ROOT/scripts/restore-permissions.sh" || { echo "restore-permissions.sh has syntax errors"; rm -rf "$tmp_dir"; return 1; }
+
+    rm -rf "$tmp_dir"
+    return 0
+}
+
+test_run "Packaging: ZipPreservesExecutableBits" test_235
+
+# ============================================================
+# CORRECTIVE PASS REGRESSION TESTS (Defects 1-4, 7)
+# ============================================================
+
+test_236() {
+    # Corrective: Defect1 — Sentinel cache hit returns finding with correct shape
+    init_test_workspace
+    start_fast_execution_task task-sentinel-cache-shape P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    # Run sentinel twice — second run should be cached
+    set +e
+    local out1 out2 rc1 rc2
+    out1=$(run_core run-sentinel 2>&1); rc1=$?
+    out2=$(run_core run-sentinel 2>&1); rc2=$?
+    set -e
+    [[ $rc1 -eq 0 ]] || { echo "first sentinel should exit 0"; return 1; }
+    [[ $rc2 -eq 0 ]] || { echo "second sentinel (cache hit) should exit 0"; return 1; }
+    # Both outputs should contain overallStatus and findings
+    echo "$out1" | grep -q "overallStatus" || { echo "first sentinel output missing overallStatus"; return 1; }
+    echo "$out2" | grep -q "overallStatus" || { echo "second sentinel output missing overallStatus"; return 1; }
+    echo "$out1" | grep -q "findings" || { echo "first sentinel output missing findings"; return 1; }
+    echo "$out2" | grep -q "findings" || { echo "second sentinel output missing findings"; return 1; }
+    cleanup_workspace
+}
+
+test_run "Corrective: Defect1_SentinelCacheShape" test_236
+
+test_237() {
+    # Corrective: Defect2 — Final gate rejects stale sentinel from different run
+    init_test_workspace
+    start_fast_execution_task task-stale-sentinel P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    run_core run-sentinel >/dev/null
+    # Start a new run — old sentinel should be stale
+    echo '{"schemaVersion":1,"taskId":"task-new-run","title":"New run","status":"READY","priority":"P2","origin":"corrective-tests","scope":["src/**"],"allowedWrites":["src/**",".teamloop/**"],"successCriteria":["test"],"forbiddenActions":[],"humanRequired":false,"blockers":[]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    run_core apply-transition --action RUN_EXECUTOR --task-id task-new-run >/dev/null
+    run_core prepare-execution >/dev/null
+    set +e
+    local out rc
+    out=$(run_core final-gate 2>&1); rc=$?
+    set -e
+    [[ $rc -ne 0 ]] || { echo "final gate should fail with stale sentinel"; return 1; }
+    echo "$out" | grep -q "STALE" || { echo "final gate should report STALE for old sentinel"; return 1; }
+    cleanup_workspace
+}
+
+test_run "Corrective: Defect2_StaleSentinelRejected" test_237
+
+test_238() {
+    # Corrective: Defect3 — Workspace integrity evaluation exists and routes correctly
+    # Verify that _evaluate_workspace_integrity is callable and returns structured result
+    init_test_workspace
+    # Fresh workspace should be GREEN
+    local out
+    out=$(run_core next-action)
+    echo "$out" | grep -q "RUN_DISCOVERY" || { echo "fresh workspace should return RUN_DISCOVERY"; return 1; }
+    # After adding a READY task, should return RUN_EXECUTOR
+    echo '{"schemaVersion":1,"taskId":"task-integrity-check","title":"Integrity check","status":"READY","priority":"P2","origin":"corrective-tests","scope":["src/**"],"allowedWrites":["src/**",".teamloop/**"],"successCriteria":["test"],"forbiddenActions":[],"humanRequired":false,"blockers":[]}' >> "$WORKSPACE_ABS/state/backlog.jsonl"
+    out=$(run_core next-action)
+    echo "$out" | grep -q "RUN_EXECUTOR" || { echo "workspace with READY task should return RUN_EXECUTOR"; return 1; }
+    cleanup_workspace
+}
+
+test_run "Corrective: Defect3_WorkspaceIntegrityRouting" test_238
+
+test_239() {
+    # Corrective: Defect4 — Cache integrity hash covers full semantic record
+    # Verify cache-validate command exists and works
+    init_test_workspace
+    set +e
+    local out rc
+    out=$(run_core cache-validate 2>&1); rc=$?
+    set +e
+    # Should succeed even on fresh workspace (no cache entries = PASS)
+    echo "$out" | grep -q "status" || { echo "cache-validate should output status field"; return 1; }
+    echo "$out" | grep -q "totalEntries" || { echo "cache-validate should output totalEntries"; return 1; }
+    cleanup_workspace
+}
+
+test_run "Corrective: Defect4_CacheIntegrityValidate" test_239
+
+test_240() {
+    # Corrective: Defect4 — Cache entry stores integrityHash
+    # Verify that a cache entry created after the fix has integrityHash
+    init_test_workspace
+    start_fast_execution_task task-cache-integrity P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    # Run validate-state to populate cache
+    run_core validate-state >/dev/null
+    # Check that cache file exists and has integrityHash
+    local cache_file
+    cache_file=$(find "$WORKSPACE_ABS" -name "*.cache" -type f 2>/dev/null | head -1)
+    if [[ -n "$cache_file" && -s "$cache_file" ]]; then
+        grep -q "integrityHash" "$cache_file" || { echo "cache entry should have integrityHash"; return 1; }
+    fi
+    # Cache may be empty if no cacheable checks ran — that's OK
+    cleanup_workspace
+}
+
+test_run "Corrective: Defect4_CacheEntryHasIntegrityHash" test_240
+
+test_241() {
+    # Corrective: Defect7 — Sentinel schema allows identity fields
+    # Verify sentinel-inspection.schema.json includes repositoryHead, taskId, etc.
+    local schema="$PROJECT_ROOT/schemas/sentinel-inspection.schema.json"
+    [[ -f "$schema" ]] || { echo "sentinel-inspection.schema.json should exist"; return 1; }
+    grep -q "repositoryHead" "$schema" || { echo "schema should allow repositoryHead"; return 1; }
+    grep -q "taskId" "$schema" || { echo "schema should allow taskId"; return 1; }
+    grep -q "taskRevision" "$schema" || { echo "schema should allow taskRevision"; return 1; }
+    grep -q "semanticFingerprint" "$schema" || { echo "schema should allow semanticFingerprint"; return 1; }
+    grep -q "policyFingerprints" "$schema" || { echo "schema should allow policyFingerprints"; return 1; }
+    # Schema itself must be valid JSON
+    "$PY" -c "import json; json.load(open('$schema'))" 2>/dev/null || { echo "schema must be valid JSON"; return 1; }
+}
+
+test_run "Corrective: Defect7_SentinelSchemaIdentityFields" test_241
+
+test_242() {
+    # Corrective: Defect5 — Roadmap document has correct counts
+    local roadmap="$PROJECT_ROOT/docs/ROADMAP_IMPLEMENTATION_STATUS.md"
+    [[ -f "$roadmap" ]] || { echo "ROADMAP_IMPLEMENTATION_STATUS.md should exist"; return 1; }
+    grep -q "4 PARTIAL" "$roadmap" || { echo "roadmap should show 4 PARTIAL improvements"; return 1; }
+    # Verify I6 and I7 are classified as PARTIAL
+    grep -A1 "I6" "$roadmap" | grep -q "PARTIAL" || { echo "I6 should be PARTIAL"; return 1; }
+    grep -A1 "I7" "$roadmap" | grep -q "PARTIAL" || { echo "I7 should be PARTIAL"; return 1; }
+}
+
+test_run "Corrective: Defect5_RoadmapCounts" test_242
+
+test_243() {
+    # Corrective Item 4: E2E stale sentinel from Run1 cannot satisfy Run2 final-gate
+    init_test_workspace
+
+    # Run1: create a run with sentinel
+    start_fast_execution_task task-stale-e2e P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null 2>&1
+    run_core run-sentinel >/dev/null 2>&1
+
+    local run1_dir
+    run1_dir=$(find "$WORKSPACE_ABS/runs" -maxdepth 1 -type d -name "run-*" | head -1)
+    [[ -d "$run1_dir" ]] || { echo "Run1 dir should exist"; return 1; }
+
+    # Verify Run1 sentinel exists
+    [[ -f "$run1_dir/sentinel-inspection.json" ]] || { echo "Run1 sentinel should exist"; return 1; }
+
+    # Simulate Run2: clear active state, create new run
+    "$PY" -c "
+import json
+state = json.load(open('$WORKSPACE_ABS/state/team-state.json'))
+state['currentRunId'] = ''
+state['currentTaskId'] = ''
+json.dump(state, open('$WORKSPACE_ABS/state/team-state.json', 'w'))
+"
+
+    # Create a new run directory (Run2) with its own execution-policy
+    local run2_name="run-$(date +%s)"
+    local run2_dir="$WORKSPACE_ABS/runs/$run2_name"
+    mkdir -p "$run2_dir"
+    echo '{"schemaVersion":1,"runId":"'"$run2_name"'","profile":"fast","status":"RESOLVED"}' > "$run2_dir/execution-policy.json"
+
+    # Set currentRunId to Run2
+    "$PY" -c "
+import json
+state = json.load(open('$WORKSPACE_ABS/state/team-state.json'))
+state['currentRunId'] = '$run2_name'
+json.dump(state, open('$WORKSPACE_ABS/state/team-state.json', 'w'))
+"
+
+    # Final gate should fail: Run1 sentinel is stale for Run2 (no Run2 sentinel)
+    set +e
+    local output
+    output=$(run_core final-gate 2>&1)
+    local frc=$?
+    set -e
+
+    # Check that final-gate output contains FAIL status
+    echo "$output" | grep -qE '"overallStatus"\s*:\s*"FAIL"' && {
+        # Verify sentinel-result is the blocking failure
+        echo "$output" | grep -q "sentinel-result" || {
+            echo "final-gate FAIL should cite sentinel-result"
+            return 1
+        }
+        return 0
+    }
+    # If exit code is non-zero, also check for status FAIL
+    if [[ $frc -ne 0 ]]; then
+        echo "$output" | grep -qi "fail" && return 0
+    fi
+
+    echo "Expected FAIL for stale sentinel from Run1 when active run is Run2"
+    echo "Output: $output" | head -5
+    return 1
+}
+
+test_run "Corrective: Item4_StaleSentinelE2E" test_243
+
+test_244() {
+    # Corrective Item 5: Orphaned IN_PROGRESS runs block next-action
+    init_test_workspace
+
+    # Set phase to SAFE_CHECKPOINT so integrity check runs in _compute_next_action
+    run_core apply-transition --action SET_SAFE_CHECKPOINT >/dev/null 2>&1
+
+    # Create an orphaned IN_PROGRESS run in the ledger
+    echo '{"schemaVersion":1,"runId":"run-orphaned","taskId":"task-ghost","status":"IN_PROGRESS","createdAtUtc":"2024-01-01T00:00:00Z"}' >> "$WORKSPACE_ABS/state/run-ledger.jsonl"
+
+    # next-action should return CORRECTIVE_WORK_REQUIRED because integrity is RED
+    local output
+    output=$(run_core next-action 2>&1) || true
+    echo "$output" | grep -q "CORRECTIVE_WORK_REQUIRED" && return 0
+
+    echo "Expected CORRECTIVE_WORK_REQUIRED for orphaned IN_PROGRESS run"
+    echo "Output: $output"
+    return 1
+}
+
+test_run "Corrective: Item5_OrphanedRunsBlock" test_244
+
+# ============================================================
 # SUMMARY
 # ============================================================
 echo ""

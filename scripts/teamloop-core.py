@@ -303,6 +303,9 @@ def _cached_schema_validate(cache, check_name, data, schema, data_path, schema_p
 
     Returns list of errors (same format as validate_against_schema).
     When cache is available, checks for a cached result first.
+
+    Canonical cache value: the stored result is ``{"checkId": ..., "errors": []}``.
+    ``cache.get()`` returns this directly — never wrapped.
     """
     if cache is None:
         return validate_against_schema(data, schema, errors_label)
@@ -319,7 +322,8 @@ def _cached_schema_validate(cache, check_name, data, schema, data_path, schema_p
 
     cached = cache.get(cache_key)
     if cached is not None:
-        errors = cached["result"].get("errors", [])
+        # cache.get() returns the result directly (no wrapper).
+        errors = cached.get("errors", [])
         return errors
 
     errors = validate_against_schema(data, schema, errors_label)
@@ -1604,6 +1608,664 @@ def _check_workspace_integrity(workspace):
     return (len(reasons) == 0, reasons)
 
 
+# ---------------------------------------------------------------------------
+# Canonical workspace readiness evaluation
+# ---------------------------------------------------------------------------
+
+def _evaluate_workspace_integrity(workspace):
+    """Canonical workspace readiness evaluation.
+
+    Returns:
+      {
+        "status": "GREEN" | "YELLOW" | "RED",
+        "checks": [
+          {"name": str, "status": "PASS" | "FAIL" | "SKIP", "detail": str},
+          ...
+        ],
+        "blockingIssues": [str, ...],  # non-empty when status is RED
+      }
+
+    Checks to run:
+    1. state-schema-validity — team-state.json parses and has required fields
+    2. task-run-consistency — currentTaskId/currentRunId consistent
+    3. orphaned-runs — detect orphaned IN_PROGRESS runs in ledger (blocking/RED)
+    4. stale-active-task — current-task.json stale vs state
+    5. stale-active-run — run directory exists for currentRunId
+    6. reviewed-content-integrity — reviewedFiles hashes match (existing logic)
+    7. unresolved-blockers — open blockers exist
+    8. failed-gate — latest required gate failed
+    9. sentinel-freshness — sentinel required but missing or stale
+    10. guard-integrity — guard required but failed
+    11. memory-configuration — memory issues
+    12. continuation-consistency — continuation-decision consistent with state
+    13. malformed-artifacts — critical JSON artifacts parseable
+    14. contradictory-sentinels — multiple PASS sentinels with conflicting fingerprints
+    """
+    checks = []
+    blocking_issues = []
+
+    # ---- helpers ----
+    def _add_check(name, status, detail=""):
+        checks.append({"name": name, "status": status, "detail": detail})
+
+    def _add_fail(name, detail, blocking=True):
+        checks.append({"name": name, "status": "FAIL", "detail": detail})
+        if blocking:
+            blocking_issues.append(detail)
+
+    def _add_pass(name, detail=""):
+        checks.append({"name": name, "status": "PASS", "detail": detail})
+
+    def _add_skip(name, detail=""):
+        checks.append({"name": name, "status": "SKIP", "detail": detail})
+
+    # ---- load state ----
+    state_path = os.path.join(workspace, "state", "team-state.json")
+    state = None
+
+    # ===== Check 1: state-schema-validity =====
+    try:
+        state = read_json(state_path)
+        required_fields = ["schemaVersion", "status", "currentPhase"]
+        missing = [f for f in required_fields if f not in state]
+        if missing:
+            _add_fail("state-schema-validity",
+                      f"team-state.json missing required fields: {', '.join(missing)}")
+        else:
+            _add_pass("state-schema-validity", "team-state.json valid with required fields")
+    except Exception as exc:
+        _add_fail("state-schema-validity", f"team-state.json cannot be read: {exc}")
+
+    if state is None:
+        # Cannot proceed meaningfully without state — still run remaining
+        # checks that don't depend on state
+        _add_skip("task-run-consistency", "state unavailable")
+        # orphaned-runs, stale-active-task, stale-active-run are handled by
+        # their dedicated helpers below which tolerate None state
+        # continue to remaining checks that are state-independent
+    else:
+        # ===== Check 2: task-run-consistency =====
+        current_task_id = state.get("currentTaskId", "")
+        current_run_id = state.get("currentRunId", "")
+        phase = state.get("currentPhase", "")
+
+        task_scoped_phases = frozenset([
+            "EXECUTING_TASK", "NEEDS_CHANGE_REVIEW", "NEEDS_GATE",
+            "REVIEW_FAILED", "GATE_FAILED",
+        ])
+
+        consistency_ok = True
+        consistency_detail = "currentTaskId/currentRunId consistent"
+
+        # If we're in a task-scoped phase, both should be present
+        if phase in task_scoped_phases:
+            if not current_task_id:
+                consistency_ok = False
+                consistency_detail = f"task-scoped phase '{phase}' has no currentTaskId"
+            if not current_run_id:
+                consistency_ok = False
+                consistency_detail = f"task-scoped phase '{phase}' has no currentRunId"
+
+        # If we're NOT in a task-scoped phase, both should be empty (identity cleared)
+        elif not (phase in ("", "NEEDS_DISCOVERY", "NEEDS_PLAN", "NEEDS_RESEARCH",
+                            "NEEDS_RESEARCH_REVIEW", "NEEDS_TASK_SLICING",
+                            "READY_FOR_NEXT_TASK", "SAFE_CHECKPOINT", "DONE",
+                            "HUMAN_DECISION_REQUIRED", "BLOCKED")):
+            # Unknown phase — warn but don't block
+            pass
+
+        if not consistency_ok:
+            _add_fail("task-run-consistency", consistency_detail)
+        else:
+            _add_pass("task-run-consistency", consistency_detail)
+
+    # ===== Check 3: orphaned-runs =====
+    _check_orphaned_runs(workspace, state, current_task_id if state else "",
+                          current_run_id if state else "", checks, blocking_issues)
+
+    # ===== Check 4: stale-active-task =====
+    if state:
+        ct_path = os.path.join(workspace, "state", "current-task.json")
+        if os.path.exists(ct_path):
+            ct = read_json_file_safe(ct_path)
+            if ct and ct.get("status") == "IN_PROGRESS" and not state.get("currentTaskId", ""):
+                _add_fail("stale-active-task",
+                          "current-task.json is IN_PROGRESS but team-state has no currentTaskId")
+            else:
+                _add_pass("stale-active-task")
+        else:
+            # No current-task.json — that's fine when no task is active
+            if state.get("currentTaskId", ""):
+                _add_fail("stale-active-task",
+                          "currentTaskId set in team-state but current-task.json missing")
+            else:
+                _add_pass("stale-active-task")
+    else:
+        _add_skip("stale-active-task", "state unavailable")
+
+    # ===== Check 5: stale-active-run =====
+    if state and state.get("currentRunId", ""):
+        run_id = state["currentRunId"]
+        run_dir = os.path.join(workspace, "runs", run_id)
+        if not os.path.isdir(run_dir):
+            _add_fail("stale-active-run",
+                      f"Run directory for currentRunId '{run_id}' not found")
+        else:
+            _add_pass("stale-active-run")
+    elif state:
+        _add_pass("stale-active-run")
+    else:
+        _add_skip("stale-active-run", "state unavailable")
+
+    # ===== Check 6: reviewed-content-integrity =====
+    evidence_path = _find_review_evidence(workspace)
+    if evidence_path is not None:
+        evidence = read_json_file_safe(evidence_path)
+        if evidence:
+            drift_found = False
+            drift_details = []
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            workspace_parent = os.path.dirname(os.path.normpath(workspace))
+            for rf in evidence.get("reviewedFiles", []):
+                path = rf.get("path", "")
+                expected_hash = rf.get("hash", "")
+                if not path or not expected_hash:
+                    continue
+                candidates = []
+                if os.path.isabs(path):
+                    candidates.append(path)
+                else:
+                    candidates.append(os.path.join(workspace_parent, path))
+                    candidates.append(os.path.join(project_root, path))
+                found = False
+                for abs_path in candidates:
+                    if os.path.exists(abs_path):
+                        actual = _compute_file_sha256(abs_path)
+                        if actual and actual != expected_hash:
+                            drift_details.append(f"reviewed content changed: {path}")
+                            drift_found = True
+                        found = True
+                        break
+                    # else continue to next candidate
+                if not found:
+                    drift_details.append(f"reviewed content missing: {path}")
+                    drift_found = True
+
+            if drift_found:
+                detail = "; ".join(drift_details[:5])
+                _add_fail("reviewed-content-integrity", detail)
+            else:
+                _add_pass("reviewed-content-integrity")
+        else:
+            _add_pass("reviewed-content-integrity")
+    else:
+        _add_pass("reviewed-content-integrity")
+
+    # ===== Check 7: unresolved-blockers =====
+    blockers_path = os.path.join(workspace, "state", "blockers.jsonl")
+    if os.path.exists(blockers_path):
+        try:
+            blockers = read_jsonl(blockers_path)
+            open_blockers = [b for b in blockers if not b.get("resolvedAtUtc")]
+            if open_blockers:
+                summaries = [b.get("summary", "no summary") for b in open_blockers[:5]]
+                detail = f"{len(open_blockers)} unresolved blocker(s): {'; '.join(summaries)}"
+                _add_fail("unresolved-blockers", detail)
+            else:
+                _add_pass("unresolved-blockers")
+        except Exception:
+            _add_pass("unresolved-blockers")
+    else:
+        _add_pass("unresolved-blockers")
+
+    # ===== Check 8: failed-gate =====
+    gate_failed = False
+    gate_detail = ""
+    if state and state.get("currentRunId", ""):
+        gr_path = os.path.join(workspace, "runs", state["currentRunId"], "gate-result.json")
+        if os.path.exists(gr_path):
+            gr = read_json_file_safe(gr_path)
+            if gr and gr.get("status") == "FAIL":
+                gate_failed = True
+                gate_detail = "latest gate result is FAIL"
+    if gate_failed:
+        _add_fail("failed-gate", gate_detail)
+    else:
+        _add_pass("failed-gate")
+
+    # ===== Check 9: sentinel-freshness =====
+    _check_sentinel_freshness(workspace, state, checks)
+
+    # ===== Check 10: guard-integrity =====
+    _check_guard_status(workspace, checks)
+
+    # ===== Check 11: memory-configuration =====
+    _check_memory_config(workspace, checks)
+
+    # ===== Check 12: continuation-consistency =====
+    _check_continuation_consistency(workspace, state, checks)
+
+    # ===== Check 13: malformed-artifacts =====
+    _check_malformed_artifacts(workspace, checks, blocking_issues)
+
+    # ===== Check 14: contradictory-sentinels =====
+    _check_contradictory_sentinels(workspace, checks, blocking_issues)
+
+    # ---- compute overall status ----
+    if blocking_issues:
+        overall = "RED"
+    elif any(c["status"] == "FAIL" for c in checks):
+        overall = "YELLOW"
+    else:
+        overall = "GREEN"
+
+    return {
+        "status": overall,
+        "checks": checks,
+        "blockingIssues": blocking_issues,
+    }
+
+
+def _check_orphaned_runs(workspace, state, current_task_id, current_run_id,
+                          checks, blocking_issues):
+    """Check 3: detect orphaned IN_PROGRESS runs in ledger."""
+    ledger_path = os.path.join(workspace, "state", "run-ledger.jsonl")
+    if not os.path.exists(ledger_path):
+        checks.append({"name": "orphaned-runs", "status": "PASS", "detail": "no run ledger"})
+        return
+
+    try:
+        ledger = read_jsonl(ledger_path)
+    except Exception:
+        checks.append({"name": "orphaned-runs", "status": "FAIL",
+                        "detail": "run-ledger.jsonl cannot be parsed"})
+        blocking_issues.append("run-ledger.jsonl cannot be parsed")
+        return
+
+    backlog_path = os.path.join(workspace, "state", "backlog.jsonl")
+    backlog = []
+    if os.path.exists(backlog_path):
+        try:
+            backlog = read_jsonl(backlog_path)
+        except Exception:
+            pass
+
+    active_tasks = {t["taskId"] for t in backlog if t.get("status") in ("IN_PROGRESS", "READY")}
+    done_tasks = {t["taskId"] for t in backlog if t.get("status") == "DONE"}
+
+    in_progress_runs = [r for r in ledger if r.get("status") == "IN_PROGRESS"]
+    all_run_ids = {r["runId"] for r in ledger}
+    orphan_details = []
+
+    # Sub-check: ledger contains IN_PROGRESS but team state has no current run
+    if in_progress_runs and state and not current_run_id:
+        orphan_details.append("run ledger has IN_PROGRESS runs but team-state has no currentRunId")
+
+    # Sub-check: team state references a run missing from ledger
+    if state and current_run_id and current_run_id not in all_run_ids:
+        orphan_details.append(f"team-state currentRunId '{current_run_id}' not found in run ledger")
+
+    # Sub-check: run references a task that is no longer active or does not exist
+    for run in in_progress_runs:
+        run_task_id = run.get("taskId", "")
+        if run_task_id:
+            if run_task_id not in active_tasks:
+                if run_task_id in done_tasks:
+                    orphan_details.append(
+                        f"run '{run.get('runId', '?')}' is IN_PROGRESS but task '{run_task_id}' is DONE"
+                    )
+                else:
+                    orphan_details.append(
+                        f"run '{run.get('runId', '?')}' references task '{run_task_id}' "
+                        f"which is not IN_PROGRESS or READY"
+                    )
+
+    # Sub-check: multiple conflicting active runs
+    if len(in_progress_runs) > 1:
+        orphan_details.append(
+            f"multiple IN_PROGRESS runs ({len(in_progress_runs)}) exist in ledger"
+        )
+
+    # Sub-check: current task/run pair disagrees
+    if state and current_run_id and current_task_id:
+        for run in in_progress_runs:
+            if run.get("runId") == current_run_id:
+                if run.get("taskId", "") and run["taskId"] != current_task_id:
+                    orphan_details.append(
+                        f"currentRunId '{current_run_id}' task '{run.get('taskId', '?')}' "
+                        f"does not match currentTaskId '{current_task_id}'"
+                    )
+                break
+
+    if orphan_details:
+        detail = "; ".join(orphan_details[:5])
+        checks.append({"name": "orphaned-runs", "status": "FAIL", "detail": detail})
+        # Orphaned IN_PROGRESS runs are blocking (RED) per spec
+        blocking_issues.append(f"Orphaned IN_PROGRESS runs: {len(orphan_details)} issue(s): {detail[:200]}")
+    else:
+        checks.append({"name": "orphaned-runs", "status": "PASS",
+                        "detail": "no orphaned runs detected"})
+
+
+def _check_contradictory_sentinels(workspace, checks, blocking_issues):
+    """Detect when multiple sentinel reports exist with conflicting fingerprints.
+
+    If two or more runs have PASS sentinel reports but with different
+    semanticFingerprint values, that is a contradiction — the workspace
+    has diverging integrity states.  Classified as RED (blocking).
+    """
+    runs_dir = os.path.join(workspace, "runs")
+    if not os.path.isdir(runs_dir):
+        checks.append({"name": "contradictory-sentinels", "status": "PASS",
+                        "detail": "no runs directory"})
+        return
+
+    pass_sentinels = []
+    try:
+        for run_name in sorted(os.listdir(runs_dir)):
+            run_dir = os.path.join(runs_dir, run_name)
+            if not os.path.isdir(run_dir):
+                continue
+            sentinel = os.path.join(run_dir, "sentinel-inspection.json")
+            if not os.path.exists(sentinel):
+                continue
+            report = read_json_file_safe(sentinel)
+            if report is None:
+                continue
+            if report.get("overallStatus") == "PASS":
+                pass_sentinels.append({
+                    "runId": run_name,
+                    "repositoryHead": report.get("repositoryHead", ""),
+                    "semanticFingerprint": report.get("semanticFingerprint", ""),
+                })
+    except OSError:
+        checks.append({"name": "contradictory-sentinels", "status": "SKIP",
+                        "detail": "could not read runs directory"})
+        return
+
+    # Contradictory: multiple PASS sentinels with different fingerprints
+    if len(pass_sentinels) > 1:
+        fingerprints = set(s["semanticFingerprint"] for s in pass_sentinels)
+        if len(fingerprints) > 1:
+            run_ids = [s["runId"] for s in pass_sentinels]
+            detail = (f"multiple PASS sentinel reports with conflicting fingerprints: "
+                       f"{', '.join(run_ids)}")
+            checks.append({"name": "contradictory-sentinels", "status": "FAIL",
+                            "detail": detail})
+            blocking_issues.append(f"Contradictory sentinel fingerprints: {detail[:200]}")
+            return
+
+    checks.append({"name": "contradictory-sentinels", "status": "PASS",
+                    "detail": f"{len(pass_sentinels)} PASS sentinel(s), no contradictions"})
+
+
+def _check_sentinel_freshness(workspace, state, checks):
+    """Check 9: sentinel required but missing or stale."""
+    if not state:
+        checks.append({"name": "sentinel-freshness", "status": "SKIP", "detail": "state unavailable"})
+        return
+
+    # Sentinel is expected when gates have run or when approaching final gate
+    # Check if a sentinel report exists in the current run
+    run_id = state.get("currentRunId", "")
+    phase = state.get("currentPhase", "")
+
+    # Sentinel is expected for phases that follow gate or for final-gate
+    sentinel_expected = phase in ("NEEDS_GATE", "SAFE_CHECKPOINT", "BLOCKED", "DONE")
+
+    if not sentinel_expected:
+        checks.append({"name": "sentinel-freshness", "status": "PASS",
+                        "detail": "sentinel not required for current phase"})
+        return
+
+    # Look for sentinel report
+    found = False
+    if run_id:
+        sp = os.path.join(workspace, "runs", run_id, "sentinel-inspection.json")
+        if os.path.exists(sp):
+            sr = read_json_file_safe(sp)
+            if sr and sr.get("overallStatus") in ("PASS", "WARNING"):
+                checks.append({"name": "sentinel-freshness", "status": "PASS",
+                                "detail": f"sentinel status: {sr.get('overallStatus')}"})
+                return
+            elif sr:
+                checks.append({"name": "sentinel-freshness", "status": "FAIL",
+                                "detail": f"sentinel status: {sr.get('overallStatus', 'unknown')}"})
+                return
+
+    # Check state-level sentinel
+    sp_state = os.path.join(workspace, "state", "sentinel-inspection.json")
+    if os.path.exists(sp_state):
+        sr = read_json_file_safe(sp_state)
+        if sr and sr.get("overallStatus") in ("PASS", "WARNING"):
+            checks.append({"name": "sentinel-freshness", "status": "PASS",
+                            "detail": f"sentinel status: {sr.get('overallStatus')}"})
+            return
+        elif sr:
+            checks.append({"name": "sentinel-freshness", "status": "FAIL",
+                            "detail": f"sentinel status: {sr.get('overallStatus', 'unknown')}"})
+            return
+
+    checks.append({"name": "sentinel-freshness", "status": "FAIL",
+                    "detail": "sentinel report missing for phase requiring it"})
+
+
+def _check_guard_status(workspace, checks):
+    """Check 10: guard required but failed.
+
+    Lightweight: only reads the last guard-integrity result file.
+    Does NOT re-run guard (no subprocess calls).
+    """
+    # Check for guard-integrity result in current run
+    runs_dir = os.path.join(workspace, "runs")
+    if os.path.isdir(runs_dir):
+        try:
+            run_dirs = sorted([
+                d for d in os.listdir(runs_dir)
+                if os.path.isdir(os.path.join(runs_dir, d))
+            ], reverse=True)
+        except OSError:
+            run_dirs = []
+
+        for run_name in run_dirs:
+            gp = os.path.join(runs_dir, run_name, "guard-integrity-result.json")
+            if os.path.exists(gp):
+                gr = read_json_file_safe(gp)
+                if gr:
+                    status = gr.get("status", "unknown")
+                    if status == "FAIL":
+                        checks.append({"name": "guard-integrity", "status": "FAIL",
+                                        "detail": f"guard integrity failed: {gr.get('detail', '')}"})
+                    else:
+                        checks.append({"name": "guard-integrity", "status": "PASS",
+                                        "detail": f"guard integrity: {status}"})
+                    return
+
+    # Check state-level
+    gp_state = os.path.join(workspace, "state", "guard-integrity-result.json")
+    if os.path.exists(gp_state):
+        gr = read_json_file_safe(gp_state)
+        if gr:
+            status = gr.get("status", "unknown")
+            if status == "FAIL":
+                checks.append({"name": "guard-integrity", "status": "FAIL",
+                                "detail": f"guard integrity failed: {gr.get('detail', '')}"})
+            else:
+                checks.append({"name": "guard-integrity", "status": "PASS",
+                                "detail": f"guard integrity: {status}"})
+            return
+
+    checks.append({"name": "guard-integrity", "status": "SKIP",
+                    "detail": "no guard-integrity result found"})
+
+
+def _check_memory_config(workspace, checks):
+    """Check 11: memory issues."""
+    memory_dir = os.path.join(workspace, "memory")
+    if not os.path.isdir(memory_dir):
+        checks.append({"name": "memory-configuration", "status": "SKIP",
+                        "detail": "no memory directory"})
+        return
+
+    issues = []
+
+    # Check lessons.jsonl
+    lessons_path = os.path.join(memory_dir, "lessons.jsonl")
+    if os.path.exists(lessons_path):
+        try:
+            lessons = read_jsonl(lessons_path)
+            evidence_path = os.path.join(memory_dir, "evidence-map.jsonl")
+            evidence_map = {}
+            if os.path.exists(evidence_path):
+                try:
+                    for ev in read_jsonl(evidence_path):
+                        evidence_map[ev.get("evidenceId", "")] = ev
+                except Exception:
+                    pass
+
+            for lesson in lessons:
+                if lesson.get("status") == "ACTIVE":
+                    for eid in lesson.get("evidenceIds", []):
+                        if eid not in evidence_map:
+                            issues.append(
+                                f"ACTIVE lesson '{lesson.get('lessonId', '?')}' "
+                                f"references missing evidence '{eid}'"
+                            )
+                        else:
+                            ev = evidence_map[eid]
+                            if ev.get("verified") is False:
+                                issues.append(
+                                    f"ACTIVE lesson '{lesson.get('lessonId', '?')}' "
+                                    f"references UNVERIFIED evidence '{eid}'"
+                                )
+
+                if lesson.get("status") == "SUPERSEDED":
+                    sup = lesson.get("supersededBy", "")
+                    if sup:
+                        found = any(l.get("lessonId") == sup for l in lessons)
+                        if not found:
+                            issues.append(
+                                f"SUPERSEDED lesson '{lesson.get('lessonId', '?')}' "
+                                f"references missing supersededBy '{sup}'"
+                            )
+        except Exception:
+            pass
+
+    if issues:
+        checks.append({"name": "memory-configuration", "status": "FAIL",
+                        "detail": "; ".join(issues[:5])})
+    else:
+        checks.append({"name": "memory-configuration", "status": "PASS",
+                        "detail": "no memory issues detected"})
+
+
+def _check_continuation_consistency(workspace, state, checks):
+    """Check 12: continuation-decision consistent with state."""
+    if not state:
+        checks.append({"name": "continuation-consistency", "status": "SKIP",
+                        "detail": "state unavailable"})
+        return
+
+    cd_path = os.path.join(workspace, "state", "continuation-decision.json")
+    if not os.path.exists(cd_path):
+        checks.append({"name": "continuation-consistency", "status": "PASS",
+                        "detail": "no continuation-decision.json present"})
+        return
+
+    cd = read_json_file_safe(cd_path)
+    if cd is None:
+        checks.append({"name": "continuation-consistency", "status": "FAIL",
+                        "detail": "continuation-decision.json exists but cannot be parsed"})
+        return
+
+    phase = state.get("currentPhase", "")
+    status = state.get("status", "")
+    cd_decision = cd.get("decision", "")
+    cd_phase = cd.get("phase", "")
+
+    inconsistencies = []
+
+    # Terminal states should have matching decision
+    if status in ("DONE",) and cd_decision and cd_decision != "DONE":
+        inconsistencies.append(
+            f"status is DONE but continuation decision is '{cd_decision}'"
+        )
+
+    if status == "HUMAN_DECISION_REQUIRED" and cd_decision and cd_decision != "HUMAN_DECISION_REQUIRED":
+        inconsistencies.append(
+            f"status is HUMAN_DECISION_REQUIRED but continuation decision is '{cd_decision}'"
+        )
+
+    if phase == "SAFE_CHECKPOINT" and cd_decision and cd_decision not in ("SAFE_CHECKPOINT", "CONTINUE", "DONE"):
+        inconsistencies.append(
+            f"phase is SAFE_CHECKPOINT but continuation decision is '{cd_decision}'"
+        )
+
+    if inconsistencies:
+        checks.append({"name": "continuation-consistency", "status": "FAIL",
+                        "detail": "; ".join(inconsistencies)})
+    else:
+        checks.append({"name": "continuation-consistency", "status": "PASS",
+                        "detail": "continuation-decision.json consistent with state"})
+
+
+def _check_malformed_artifacts(workspace, checks, blocking_issues):
+    """Check 13: critical JSON artifacts parseable."""
+    critical_files = [
+        ("state/team-state.json", True),
+        ("state/continuation-decision.json", False),
+    ]
+    jsonl_files = [
+        ("state/backlog.jsonl", False),
+        ("state/run-ledger.jsonl", True),
+        ("state/events.jsonl", False),
+        ("state/blockers.jsonl", False),
+    ]
+
+    issues = []
+    for rel_path, blocking in critical_files:
+        full_path = os.path.join(workspace, rel_path)
+        if os.path.exists(full_path) and os.path.getsize(full_path) > 0:
+            if is_invalid_json_file(full_path):
+                issues.append(f"{rel_path}: malformed JSON")
+                if blocking:
+                    blocking_issues.append(f"{rel_path}: malformed JSON")
+
+    for rel_path, blocking in jsonl_files:
+        full_path = os.path.join(workspace, rel_path)
+        if os.path.exists(full_path):
+            try:
+                read_jsonl(full_path)
+            except Exception as exc:
+                issues.append(f"{rel_path}: JSONL parse error: {exc}")
+                if blocking:
+                    blocking_issues.append(f"{rel_path}: JSONL parse error: {exc}")
+
+    if issues:
+        checks.append({"name": "malformed-artifacts", "status": "FAIL",
+                        "detail": "; ".join(issues[:5])})
+    else:
+        checks.append({"name": "malformed-artifacts", "status": "PASS",
+                        "detail": "all critical artifacts parseable"})
+
+
+# Legacy wrapper: delegates to _evaluate_workspace_integrity for backward compat
+def _check_workspace_integrity(workspace):
+    """Perform lightweight integrity checks to determine if the workspace is safe.
+
+    Returns (is_safe: bool, reasons: list[str]).
+    When is_safe is False, reasons lists the blocking integrity issues.
+
+    DELEGATES to _evaluate_workspace_integrity() for the canonical check.
+    """
+    result = _evaluate_workspace_integrity(workspace)
+    reasons = [
+        c["detail"] for c in result["checks"]
+        if c["status"] == "FAIL" and c["detail"]
+    ]
+    return (result["status"] != "RED", reasons)
+
+
 def cmd_next_action(args):
     started = fast_execution.clock_ms()
     workspace = resolve_workspace(args.workspace)
@@ -1649,14 +2311,22 @@ def _compute_next_action(phase, status, human_required, workspace):
                 return {"nextAction": "RUN_EXECUTOR", "phase": "EXECUTING_TASK", "taskId": task["taskId"], "humanRequired": False}
         if phase == "READY_FOR_NEXT_TASK":
             # Check if workspace is genuinely safe before reporting NO_READY_TASK
-            is_safe, integrity_reasons = _check_workspace_integrity(workspace)
-            if not is_safe:
+            integrity = _evaluate_workspace_integrity(workspace)
+            if integrity["status"] == "RED":
                 return {
                     "nextAction": "CORRECTIVE_WORK_REQUIRED",
                     "phase": "BLOCKED",
                     "taskId": "",
                     "humanRequired": False,
-                    "reason": "; ".join(integrity_reasons[:5]),
+                    "reason": "; ".join(integrity["blockingIssues"][:5]),
+                }
+            elif integrity["status"] == "YELLOW":
+                return {
+                    "nextAction": "NO_READY_TASK",
+                    "phase": "READY_FOR_NEXT_TASK",
+                    "taskId": "",
+                    "humanRequired": False,
+                    "reason": "safe checkpoint with advisory issues",
                 }
             return {"nextAction": "NO_READY_TASK", "phase": "READY_FOR_NEXT_TASK", "taskId": "", "humanRequired": False}
         if phase == "NEEDS_TASK_SLICING":
@@ -1696,14 +2366,23 @@ def _compute_next_action(phase, status, human_required, workspace):
         if human_required:
             return {"nextAction": "HUMAN_DECISION", "phase": "HUMAN_DECISION_REQUIRED", "taskId": "", "humanRequired": True}
         # Don't blindly continue from SAFE_CHECKPOINT if integrity is broken
-        is_safe, integrity_reasons = _check_workspace_integrity(workspace)
-        if not is_safe:
+        integrity = _evaluate_workspace_integrity(workspace)
+        if integrity["status"] == "RED":
             return {
                 "nextAction": "CORRECTIVE_WORK_REQUIRED",
                 "phase": "BLOCKED",
                 "taskId": "",
                 "humanRequired": False,
-                "reason": "; ".join(integrity_reasons[:5]),
+                "reason": "; ".join(integrity["blockingIssues"][:5]),
+            }
+        elif integrity["status"] == "YELLOW":
+            # Advisory issues: still continue but note them
+            return {
+                "nextAction": "CONTINUE_LOOP",
+                "phase": "READY_FOR_NEXT_TASK",
+                "taskId": "",
+                "humanRequired": False,
+                "reason": "continuing with advisory integrity issues",
             }
         return {"nextAction": "CONTINUE_LOOP", "phase": "READY_FOR_NEXT_TASK", "taskId": "", "humanRequired": False}
 
@@ -3679,6 +4358,45 @@ def cmd_cache_stats(args):
     print(json.dumps(result, ensure_ascii=False))
 
 
+# ---------------------------------------------------------------------------
+# Command: cache-validate
+# ---------------------------------------------------------------------------
+
+def cmd_cache_validate(args):
+    """Validate the entire validation cache and report structured findings.
+
+    Output JSON:
+      {
+        "status": "PASS" | "FAIL",
+        "totalEntries": N,
+        "validEntries": M,
+        "invalidEntries": [...],
+        "malformedLines": N,
+        "hasCorruption": true/false
+      }
+
+    Exit 0 if PASS, exit 1 if FAIL.
+    """
+    workspace = resolve_workspace(args.workspace)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cache = _create_cache(workspace, project_root)
+    if cache is None:
+        print(json.dumps({"error": "Cache is disabled (TEAMLOOP_NO_CACHE set)"}, ensure_ascii=False))
+        sys.exit(1)
+    integrity = cache.integrity_check()
+    result = {
+        "status": integrity["status"],
+        "totalEntries": integrity["totalEntries"],
+        "validEntries": integrity["validEntries"],
+        "invalidEntries": integrity["invalidEntries"],
+        "malformedLines": integrity["malformedLineCount"],
+        "hasCorruption": integrity["hasCorruption"],
+    }
+    print(json.dumps(result, ensure_ascii=False))
+    if result["status"] == "FAIL":
+        sys.exit(1)
+
+
 def cmd_run_sentinel(args):
     """READ-ONLY sentinel inspection command.
 
@@ -3714,6 +4432,12 @@ def cmd_run_sentinel(args):
     # Helper: run a sentinel check with optional caching.
     # Deterministic checks (2,3,4,6,7,8,9) are cached. Git-dependent
     # checks include git status in the cache key.
+    #
+    # Canonical cache value shape: the stored result IS the finding dict
+    # (e.g. {"category": "...", "severity": "INFO", "title": "..."}).
+    # cache.get() returns the finding directly — never a wrapper.
+    # Cache metadata (checkId, fingerprints, timestamps) stays in the
+    # cache entry on disk but is not returned to the caller.
     def _run_sentinel_check(check_name, check_fn, git_dependent=False):
         if cache is None:
             return check_fn(host)
@@ -3732,9 +4456,18 @@ def cmd_run_sentinel(args):
         )
         cached = cache.get(cache_key)
         if cached is not None:
-            return cached["result"]
-        result = check_fn(host)
-        cache.store(cache_key, {"checkId": check_name, "result": result})
+            # cache.get() now returns the finding directly (not wrapped).
+            # Validate it has the expected sentinel finding shape.
+            if isinstance(cached, dict) and "severity" in cached:
+                return cached
+            # Malformed cached value — fall through to recompute.
+        try:
+            result = check_fn(host)
+        except Exception:
+            raise
+        # Store the finding directly. cache.store() binds the checkId
+        # separately in the entry metadata for integrity hashing.
+        cache.store(cache_key, result, check_id=check_name)
         return result
 
     # Run all 9 checks
@@ -3763,10 +4496,70 @@ def cmd_run_sentinel(args):
     else:
         overall_status = "PASS"
 
+    # ------------------------------------------------------------------
+    # Sentinel identity binding (Defect 2 fix)
+    # ------------------------------------------------------------------
+    # Compute identity fields so that final-gate can verify the artifact
+    # was produced for the current context.
+    repo_root = host.git_root
+    current_head = ""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0:
+            current_head = proc.stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    task_id = ""
+    task_revision = ""
+    state = host.state_safe
+    if state:
+        task_id = state.get("currentTaskId", "")
+    if task_id:
+        task_obj = host.current_task
+        if task_obj:
+            task_revision = fast_execution._task_revision(task_obj)
+
+    # Resolve manifest fingerprint for identity binding.
+    manifest_fingerprint = ""
+    runs_dir_sentinel = os.path.join(workspace, "runs")
+    if os.path.isdir(runs_dir_sentinel):
+        for run_name in reversed(sorted(os.listdir(runs_dir_sentinel))):
+            manifest_path = os.path.join(runs_dir_sentinel, run_name, "execution-manifest.json")
+            if os.path.exists(manifest_path):
+                manifest_data = read_json_file_safe(manifest_path)
+                if manifest_data and "semanticFingerprint" in manifest_data:
+                    manifest_fingerprint = manifest_data["semanticFingerprint"]
+                break
+
+    # Semantic fingerprint over the findings (excluding volatile fields).
+    findings_stripped = fast_execution.strip_volatile(findings)
+    findings_fp = hashlib.sha256(
+        json.dumps(findings_stripped, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    # Policy fingerprints for staleness checking
+    policy_fps = {}
+    for pname in ("gate-policy.json", "scope-policy.json", "protected-paths.json"):
+        ppath = os.path.join(workspace, "policies", pname)
+        if os.path.exists(ppath):
+            policy_fps[pname] = fast_execution.file_sha256(ppath) if os.path.getsize(ppath) < 1_000_000 else ""
+
     report = {
         "schemaVersion": 1,
         "runId": run_id,
         "inspectedAtUtc": utc_now_iso(),
+        "repositoryHead": current_head,
+        "taskId": task_id,
+        "taskRevision": task_revision,
+        "implementationVersion": _cache_mod.IMPLEMENTATION_VERSION,
+        "semanticFingerprint": findings_fp,
+        "policyFingerprints": policy_fps,
+        "manifestFingerprint": manifest_fingerprint,
+        "runtimeVersion": _cache_mod.IMPLEMENTATION_VERSION,
         "findings": findings,
         "overallStatus": overall_status,
         "summary": {
@@ -3789,6 +4582,422 @@ def cmd_run_sentinel(args):
     )
     # Print to stdout
     print(json.dumps(report, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
+# Sentinel evidence evaluation (Defect 2 fix)
+# ---------------------------------------------------------------------------
+
+def _evaluate_sentinel_evidence(workspace, state):
+    """Evaluate sentinel evidence for final-gate.
+
+    Verifies the sentinel artifact is valid, current, and has no CRITICAL
+    findings.  Distinguishes PASS / NOT_REQUIRED / MISSING / STALE / FAIL /
+    INVALID.
+
+    Uses _resolve_applicable_identity() to determine the authoritative
+    execution contract identity, then validates the sentinel against it.
+
+    Parameters
+    ----------
+    workspace : str
+        Resolved .teamloop workspace path.
+    state : dict or None
+        Current team-state.json contents.
+
+    Returns
+    -------
+    dict
+        ``{"status": ..., "description": ..., "blocking": bool, ...}``
+        suitable for direct insertion into the final-gate checks list.
+    """
+    # ------------------------------------------------------------------
+    # 0. Resolve the applicable identity from execution contract
+    # ------------------------------------------------------------------
+    identity = _resolve_applicable_identity(workspace)
+
+    sentinel_required = identity["sentinelRequired"]
+
+    if not sentinel_required:
+        return {
+            "name": "sentinel-result",
+            "status": "NOT_REQUIRED",
+            "description": "no execution policy or manifest found; sentinel inspection not required",
+            "blocking": False,
+        }
+
+    # ------------------------------------------------------------------
+    # 2. Find the sentinel artifact
+    # ------------------------------------------------------------------
+    # Prefer identity's run sentinel; fall back to the latest.
+    candidate_paths = []
+    if identity["runId"]:
+        candidate_paths.append(
+            os.path.join(workspace, "runs", identity["runId"], "sentinel-inspection.json")
+        )
+
+    # Also consider the latest sentinel (may be same file).
+    runs_dir = os.path.join(workspace, "runs")
+    if os.path.isdir(runs_dir):
+        try:
+            for run_name in reversed(sorted(os.listdir(runs_dir))):
+                candidate = os.path.join(runs_dir, run_name, "sentinel-inspection.json")
+                if os.path.isfile(candidate) and candidate not in candidate_paths:
+                    candidate_paths.append(candidate)
+        except OSError:
+            pass
+
+    sentinel_path = None
+    sentinel_data = None
+    for p in candidate_paths:
+        data = read_json_file_safe(p)
+        if data is not None and isinstance(data, dict):
+            sentinel_path = p
+            sentinel_data = data
+            break
+
+    if sentinel_data is None:
+        return {
+            "name": "sentinel-result",
+            "status": "MISSING",
+            "description": "execution policy requires a final sentinel inspection; sentinel-inspection.json not found",
+            "blocking": True,
+            "reason": "no valid sentinel-inspection.json found" + (
+                f" (expected runs/{identity['runId']}/sentinel-inspection.json)"
+                if identity["runId"] else ""
+            ),
+        }
+
+    # ------------------------------------------------------------------
+    # 3. Validate artifact has required identity fields
+    # ------------------------------------------------------------------
+    if not isinstance(sentinel_data, dict):
+        return {
+            "name": "sentinel-result",
+            "status": "INVALID",
+            "description": "sentinel-inspection.json is not a JSON object",
+            "blocking": True,
+            "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+        }
+
+    # Required identity fields for staleness checking
+    required_identity_fields = {"repositoryHead", "runId", "overallStatus", "findings"}
+    missing_fields = required_identity_fields - set(sentinel_data.keys())
+    if missing_fields:
+        return {
+            "name": "sentinel-result",
+            "status": "INVALID",
+            "description": f"sentinel-inspection.json missing required fields: {', '.join(sorted(missing_fields))}",
+            "blocking": True,
+            "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+        }
+
+    # Item 3: When a contract exists, additional identity fields must be present
+    # and non-empty (taskId/taskRevision may be "" when no task is active).
+    if identity.get("source") in ("execution-manifest", "execution-policy", "team-state"):
+        additional_required = {"taskId", "taskRevision", "implementationVersion",
+                               "semanticFingerprint", "policyFingerprints"}
+        missing_additional = additional_required - set(sentinel_data.keys())
+        if missing_additional:
+            return {
+                "name": "sentinel-result",
+                "status": "INVALID",
+                "description": f"sentinel-inspection.json missing contract-required fields: {', '.join(sorted(missing_additional))}",
+                "blocking": True,
+                "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+            }
+        # Verify non-empty for fields that must have content
+        for field in ("implementationVersion", "semanticFingerprint"):
+            val = sentinel_data.get(field, "")
+            if not val:
+                return {
+                    "name": "sentinel-result",
+                    "status": "INVALID",
+                    "description": f"sentinel-inspection.json field '{field}' is empty when contract exists",
+                    "blocking": True,
+                    "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+                }
+
+    # ------------------------------------------------------------------
+    # 4. Check identity staleness
+    # ------------------------------------------------------------------
+    current_head = ""
+    repo_root = fast_execution._repo_root(workspace)
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0:
+            current_head = proc.stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    # 4a. repositoryHead must match current HEAD
+    artifact_head = sentinel_data.get("repositoryHead", "")
+    if current_head and artifact_head and artifact_head != current_head:
+        return {
+            "name": "sentinel-result",
+            "status": "STALE",
+            "description": "sentinel-inspection.json was produced for a different Git HEAD",
+            "blocking": True,
+            "reason": f"artifact HEAD {artifact_head[:12]} != current HEAD {current_head[:12]}",
+            "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+        }
+
+    # 4b. runId must match identity's run (if identity specifies one)
+    identity_run_id = identity.get("runId", "")
+    if identity_run_id:
+        artifact_run_id = sentinel_data.get("runId", "")
+        if artifact_run_id and artifact_run_id != identity_run_id:
+            return {
+                "name": "sentinel-result",
+                "status": "STALE",
+                "description": f"sentinel-inspection.json was produced for run {artifact_run_id}; runs/{identity_run_id}/sentinel-inspection.json is missing",
+                "blocking": True,
+                "reason": f"artifact run {artifact_run_id} != identity run {identity_run_id}",
+                "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+            }
+
+    # 4c. taskId must match identity's task (if identity specifies one)
+    identity_task_id = identity.get("taskId", "")
+    if identity_task_id:
+        artifact_task_id = sentinel_data.get("taskId", "")
+        if artifact_task_id and artifact_task_id != identity_task_id:
+            return {
+                "name": "sentinel-result",
+                "status": "STALE",
+                "description": "sentinel-inspection.json was produced for a different task",
+                "blocking": True,
+                "reason": f"artifact task {artifact_task_id} != identity task {identity_task_id}",
+                "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+            }
+
+    # 4d. policyFingerprints must match current policy files
+    artifact_policy_fps = sentinel_data.get("policyFingerprints", {})
+    if artifact_policy_fps:
+        current_policy_fps = {}
+        for pname in ("gate-policy.json", "scope-policy.json", "protected-paths.json"):
+            ppath = os.path.join(workspace, "policies", pname)
+            if os.path.exists(ppath):
+                try:
+                    current_policy_fps[pname] = fast_execution.file_sha256(ppath)
+                except (OSError, TypeError):
+                    pass
+        for pname, art_fp in artifact_policy_fps.items():
+            cur_fp = current_policy_fps.get(pname, "")
+            if art_fp and cur_fp and art_fp != cur_fp:
+                return {
+                    "name": "sentinel-result",
+                    "status": "STALE",
+                    "description": f"sentinel-inspection.json policy fingerprint for {pname} has changed",
+                    "blocking": True,
+                    "reason": f"{pname} hash mismatch: artifact {art_fp[:12]} vs current {cur_fp[:12]}",
+                    "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+                }
+
+    # 4e. Manifest fingerprint: if the sentinel was produced before the current
+    # manifest was materialized (different semanticFingerprint), the sentinel is STALE.
+    identity_manifest_fp = identity.get("manifestFingerprint", "")
+    artifact_manifest_fp = sentinel_data.get("manifestFingerprint", "")
+    if identity_manifest_fp and artifact_manifest_fp and identity_manifest_fp != artifact_manifest_fp:
+        return {
+            "name": "sentinel-result",
+            "status": "STALE",
+            "description": "sentinel-inspection.json was produced before the current execution manifest was materialized",
+            "blocking": True,
+            "reason": f"manifest fingerprint mismatch: artifact {artifact_manifest_fp[:12]} vs current {identity_manifest_fp[:12]}",
+            "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+        }
+
+    # ------------------------------------------------------------------
+    # 4f. Recompute and verify semanticFingerprint
+    # ------------------------------------------------------------------
+    stored_fp = sentinel_data.get("semanticFingerprint", "")
+    if stored_fp:
+        sent_findings = sentinel_data.get("findings", [])
+        if isinstance(sent_findings, list):
+            sent_findings_stripped = fast_execution.strip_volatile(sent_findings)
+            recomputed_fp = hashlib.sha256(
+                json.dumps(sent_findings_stripped, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if recomputed_fp != stored_fp:
+                return {
+                    "name": "sentinel-result",
+                    "status": "INVALID",
+                    "description": "sentinel-inspection.json semantic fingerprint mismatch — findings may have been tampered",
+                    "blocking": True,
+                    "reason": f"stored {stored_fp[:12]} != recomputed {recomputed_fp[:12]}",
+                    "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+                }
+
+    # ------------------------------------------------------------------
+    # 5. Check findings — overallStatus and CRITICAL findings
+    # ------------------------------------------------------------------
+    overall = sentinel_data.get("overallStatus", "")
+    if overall == "FAIL":
+        return {
+            "name": "sentinel-result",
+            "status": "FAIL",
+            "description": "sentinel-inspection.json reports overallStatus FAIL",
+            "blocking": True,
+            "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+        }
+
+    findings = sentinel_data.get("findings", [])
+    if not isinstance(findings, list):
+        findings = []
+    critical_findings = [f for f in findings if f.get("severity") == "CRITICAL"]
+    if critical_findings:
+        titles = [f.get("title", "unnamed") for f in critical_findings[:5]]
+        return {
+            "name": "sentinel-result",
+            "status": "FAIL",
+            "description": f"sentinel-inspection.json has {len(critical_findings)} CRITICAL finding(s)",
+            "blocking": True,
+            "reason": "; ".join(titles),
+            "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+        }
+
+    # ------------------------------------------------------------------
+    # 6. All checks passed
+    # ------------------------------------------------------------------
+    return {
+        "name": "sentinel-result",
+        "status": "PASS",
+        "description": "sentinel-inspection.json is current and has no CRITICAL findings",
+        "blocking": True,
+        "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Applicable identity resolver (Item 2 — bind sentinel to execution contract)
+# ---------------------------------------------------------------------------
+
+def _resolve_applicable_identity(workspace):
+    """Resolve the authoritative applicable identity for sentinel validation.
+
+    Determines which run/task contract governs the current workspace, in
+    priority order:
+      1. Execution manifest (most authoritative — immutable frozen contract).
+      2. Execution policy (resolved profile and fingerprints).
+      3. Active gate/review contract (run-ledger latest entry).
+      4. Team-state currentRunId/currentTaskId.
+      5. Repository-only mode (no task contract).
+
+    Returns
+    -------
+    dict
+        ``{
+          runId, taskId, taskRevision, repositoryHead,
+          manifestFingerprint, policyFingerprint,
+          protectedPathsFingerprint, implementationVersion,
+          runtimeVersion,
+          sentinelRequired: bool,
+          source: str  # how identity was resolved
+        }``
+    """
+    identity = {
+        "runId": "",
+        "taskId": "",
+        "taskRevision": "",
+        "repositoryHead": "",
+        "manifestFingerprint": "",
+        "policyFingerprint": "",
+        "protectedPathsFingerprint": "",
+        "implementationVersion": _cache_mod.IMPLEMENTATION_VERSION,
+        "runtimeVersion": _cache_mod.IMPLEMENTATION_VERSION,
+        "sentinelRequired": False,
+        "source": "none",
+    }
+
+    runs_dir = os.path.join(workspace, "runs")
+
+    # ------------------------------------------------------------------
+    # 1. Check for execution manifest (most authoritative)
+    # ------------------------------------------------------------------
+    host = WorkspaceContext(workspace)
+    state = host.state_safe
+
+    # First try to find the manifest for the current run
+    current_run_id = ""
+    current_task_id = ""
+    if state:
+        current_run_id = state.get("currentRunId", "")
+        current_task_id = state.get("currentTaskId", "")
+
+    # Try current run's manifest first
+    if current_run_id and os.path.isdir(runs_dir):
+        manifest_path = os.path.join(runs_dir, current_run_id, "execution-manifest.json")
+        manifest = read_json_file_safe(manifest_path)
+        if manifest and isinstance(manifest, dict):
+            identity["runId"] = current_run_id
+            identity["taskId"] = manifest.get("taskId", current_task_id)
+            identity["taskRevision"] = manifest.get("taskRevision", "")
+            identity["manifestFingerprint"] = manifest.get("semanticFingerprint", "")
+            identity["sentinelRequired"] = True
+            identity["source"] = "execution-manifest"
+            # Also load policy fingerprints from the same run
+            policy_path = os.path.join(runs_dir, current_run_id, "execution-policy.json")
+            policy_data = read_json_file_safe(policy_path)
+            if policy_data and isinstance(policy_data, dict):
+                identity["policyFingerprint"] = policy_data.get("policyFingerprint", "")
+            return identity
+
+    # Fallback: find the most recent manifest across all runs
+    if os.path.isdir(runs_dir):
+        for run_name in reversed(sorted(os.listdir(runs_dir))):
+            manifest_path = os.path.join(runs_dir, run_name, "execution-manifest.json")
+            manifest = read_json_file_safe(manifest_path)
+            if manifest and isinstance(manifest, dict):
+                identity["runId"] = run_name
+                identity["taskId"] = manifest.get("taskId", "")
+                identity["taskRevision"] = manifest.get("taskRevision", "")
+                identity["manifestFingerprint"] = manifest.get("semanticFingerprint", "")
+                identity["sentinelRequired"] = True
+                identity["source"] = "execution-manifest"
+                # Also load policy fingerprints from the same run
+                policy_path = os.path.join(runs_dir, run_name, "execution-policy.json")
+                policy_data = read_json_file_safe(policy_path)
+                if policy_data and isinstance(policy_data, dict):
+                    identity["policyFingerprint"] = policy_data.get("policyFingerprint", "")
+                return identity
+
+    # ------------------------------------------------------------------
+    # 2. Check for execution policy
+    # ------------------------------------------------------------------
+    if os.path.isdir(runs_dir):
+        for run_name in reversed(sorted(os.listdir(runs_dir))):
+            policy_path = os.path.join(runs_dir, run_name, "execution-policy.json")
+            policy_data = read_json_file_safe(policy_path)
+            if policy_data and isinstance(policy_data, dict):
+                identity["runId"] = run_name
+                identity["policyFingerprint"] = policy_data.get("policyFingerprint", "")
+                identity["sentinelRequired"] = True
+                identity["source"] = "execution-policy"
+                return identity
+
+    # ------------------------------------------------------------------
+    # 3. Check current active run/task in team-state
+    # ------------------------------------------------------------------
+    if state:
+        if current_run_id:
+            identity["runId"] = current_run_id
+            identity["source"] = "team-state-run"
+        if current_task_id:
+            identity["taskId"] = current_task_id
+            task_obj = host.current_task
+            if task_obj:
+                identity["taskRevision"] = fast_execution._task_revision(task_obj)
+        if current_run_id or current_task_id:
+            identity["source"] = "team-state"
+            return identity
+
+    # ------------------------------------------------------------------
+    # 5. Repository-only mode (no task contract)
+    # ------------------------------------------------------------------
+    return identity
 
 
 # ---------------------------------------------------------------------------
@@ -3891,6 +5100,19 @@ def cmd_final_gate(args):
     # Check 3: continuation-decision
     # ------------------------------------------------------------------
     state = host.state_safe
+
+    # Resolve contract_run_id early so that the sentinel-result check (Check 9)
+    # can evaluate staleness against the correct run context.
+    _task_id_for_contract = (state or {}).get("currentTaskId", "")
+    contract_run_id = fast_execution.resolve_run_id(
+        workspace, task_id=_task_id_for_contract
+    )
+    contract_present = bool(
+        contract_run_id and os.path.exists(os.path.join(
+            workspace, "runs", contract_run_id, "execution-manifest.json"
+        ))
+    )
+
     decision_file = os.path.join(workspace, "state", "continuation-decision.json")
     if os.path.exists(decision_file):
         decision = read_json_file_safe(decision_file)
@@ -4099,42 +5321,8 @@ def cmd_final_gate(args):
     # ------------------------------------------------------------------
     # Check 9: sentinel-result
     # ------------------------------------------------------------------
-    sentinel_path = host.latest_sentinel_report()
-    sentinel = None
-    if sentinel_path:
-        sentinel = read_json_file_safe(sentinel_path)
-    if sentinel is None:
-        checks.append({
-            "name": "sentinel-result",
-            "status": "SKIP",
-            "description": "no sentinel-inspection.json found; sentinel not yet run",
-            "blocking": False,
-        })
-    else:
-        findings = sentinel.get("findings", [])
-        if not isinstance(findings, list):
-            findings = []
-        critical_findings = [f for f in findings if f.get("severity") == "CRITICAL"]
-        if critical_findings:
-            titles = [f.get("title", "unnamed") for f in critical_findings[:5]]
-            checks.append({
-                "name": "sentinel-result",
-                "status": "FAIL",
-                "description": f"sentinel-inspection.json has {len(critical_findings)} CRITICAL finding(s)",
-                "blocking": True,
-                "reason": "; ".join(titles),
-                "evidenceArtifact": os.path.relpath(
-                    sentinel_path or "",
-                    os.path.dirname(workspace)
-                ),
-            })
-        else:
-            checks.append({
-                "name": "sentinel-result",
-                "status": "PASS",
-                "description": "sentinel-inspection.json has no CRITICAL findings",
-                "blocking": True,
-            })
+    sentinel_check_result = _evaluate_sentinel_evidence(workspace, state)
+    checks.append(sentinel_check_result)
 
     # ------------------------------------------------------------------
     # Check 10: guard-integrity-result
@@ -4264,14 +5452,7 @@ def cmd_final_gate(args):
     # ------------------------------------------------------------------
     # Check 12: execution-contract-integrity (optimization runs)
     # ------------------------------------------------------------------
-    contract_run_id = fast_execution.resolve_run_id(
-        workspace, task_id=(state or {}).get("currentTaskId", "")
-    )
-    contract_present = bool(
-        contract_run_id and os.path.exists(os.path.join(
-            workspace, "runs", contract_run_id, "execution-manifest.json"
-        ))
-    )
+    # contract_run_id / contract_present resolved earlier for Check 9.
     if not contract_present:
         checks.append({
             "name": "execution-contract-integrity",
@@ -4473,44 +5654,6 @@ def cmd_final_gate(args):
                     "description": "no scoped repository content changed during this run",
                     "blocking": False,
                 })
-            break
-
-        current_sentinel_path = os.path.join(
-            workspace, "runs", contract_run_id, "sentinel-inspection.json"
-        )
-        current_sentinel = read_json_file_safe(current_sentinel_path)
-        for check in checks:
-            if check.get("name") != "sentinel-result":
-                continue
-            if current_sentinel is None:
-                check.update({
-                    "status": "FAIL",
-                    "description": "execution policy requires a final sentinel inspection for the same run before handoff",
-                    "blocking": True,
-                    "reason": f"runs/{contract_run_id}/sentinel-inspection.json is missing or invalid",
-                })
-            else:
-                current_findings = current_sentinel.get("findings", [])
-                current_critical = [
-                    finding for finding in current_findings
-                    if str(finding.get("severity", "")).upper() == "CRITICAL"
-                    and str(finding.get("status", "OPEN")).upper() not in ("RESOLVED", "CLOSED", "VERIFIED")
-                ]
-                if current_critical:
-                    check.update({
-                        "status": "FAIL",
-                        "description": f"current-run sentinel has {len(current_critical)} unresolved CRITICAL finding(s)",
-                        "blocking": True,
-                        "reason": "; ".join(str(f.get("title", "unnamed")) for f in current_critical[:5]),
-                        "evidenceArtifact": os.path.relpath(current_sentinel_path, os.path.dirname(workspace)),
-                    })
-                else:
-                    check.update({
-                        "status": "PASS",
-                        "description": "current-run sentinel inspection has no unresolved CRITICAL findings",
-                        "blocking": True,
-                        "evidenceArtifact": os.path.relpath(current_sentinel_path, os.path.dirname(workspace)),
-                    })
             break
 
     # ------------------------------------------------------------------
@@ -6054,6 +7197,10 @@ def main():
     p_cache_stats = subparsers.add_parser("cache-stats", help="Show detailed cache statistics")
     p_cache_stats.add_argument("--workspace", "-w", default=".teamloop")
 
+    # cache-validate
+    p_cache_validate = subparsers.add_parser("cache-validate", help="Validate the entire validation cache")
+    p_cache_validate.add_argument("--workspace", "-w", default=".teamloop")
+
     # final-gate
     p_fg = subparsers.add_parser("final-gate", help="Run final gate aggregator")
     p_fg.add_argument("--workspace", "-w", default=".teamloop")
@@ -6203,6 +7350,7 @@ def main():
         "cache-inspect": cmd_cache_inspect,
         "cache-clear": cmd_cache_clear,
         "cache-stats": cmd_cache_stats,
+        "cache-validate": cmd_cache_validate,
         "final-gate": cmd_final_gate,
         "resolve-execution-policy": cmd_resolve_execution_policy,
         "materialize-execution-manifest": cmd_materialize_execution_manifest,
