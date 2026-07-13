@@ -5449,15 +5449,10 @@ test_run "Packaging: ReleasePackageExists" test_249
 
 # Test 250: Final-gate includes cache-integrity check
 test_250() {
-    local ws
-    ws=$(mktemp -d)
-
-    bash "$PROJECT_ROOT/scripts/init-workspace.sh" --workspace "$ws" --profile generic-software-task >/dev/null 2>&1 || {
-        echo "init-workspace failed"; return 1
-    }
+    init_test_workspace
 
     local output
-    output=$(bash "$PROJECT_ROOT/scripts/final-gate.sh" --workspace "$ws" 2>&1) || true
+    output=$(run_core final-gate 2>&1) || true
 
     echo "$output" | grep -q "cache-integrity" || {
         echo "final-gate output missing cache-integrity check"
@@ -5469,19 +5464,14 @@ test_run "FinalGate: CacheIntegrityPresent" test_250
 
 # Test 251: Corrupted cache causes final-gate to fail
 test_251() {
-    local ws
-    ws=$(mktemp -d)
-
-    bash "$PROJECT_ROOT/scripts/init-workspace.sh" --workspace "$ws" --profile generic-software-task >/dev/null 2>&1 || {
-        echo "init-workspace failed"; return 1
-    }
+    init_test_workspace
 
     # Create corrupted cache
-    mkdir -p "$ws/cache"
-    echo 'NOT VALID JSON' > "$ws/cache/sentinel.cache"
+    mkdir -p "$WORKSPACE_ABS/cache"
+    echo 'NOT VALID JSON' > "$WORKSPACE_ABS/cache/sentinel.cache"
 
     local output
-    output=$(bash "$PROJECT_ROOT/scripts/final-gate.sh" --workspace "$ws" 2>&1) || true
+    output=$(run_core final-gate 2>&1) || true
 
     local has_fail=0
     echo "$output" | grep -q '"FAIL"' && has_fail=1
