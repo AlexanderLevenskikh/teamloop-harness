@@ -1854,7 +1854,7 @@ def _evaluate_workspace_integrity(workspace):
 
     # ===== Check 15: cache-integrity =====
     try:
-        from teamloop_cache import SentinelCache
+        from teamloop_cache import ValidationCache as SentinelCache
         cache = SentinelCache(workspace)
         cache_status = cache.integrity_check()
         ci_status = cache_status.get("status", "UNKNOWN")
@@ -5574,7 +5574,7 @@ def cmd_final_gate(args):
     # Check 14: cache-integrity
     # ------------------------------------------------------------------
     try:
-        from teamloop_cache import SentinelCache
+        from teamloop_cache import ValidationCache as SentinelCache
         cache = SentinelCache(workspace)
         cache_status = cache.integrity_check()
         ci_status = cache_status.get("status", "UNKNOWN")
