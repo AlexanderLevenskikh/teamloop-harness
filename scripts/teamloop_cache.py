@@ -283,8 +283,12 @@ class ValidationCache:
             "result": result_stripped,
             "inputFingerprints": json.dumps(input_fps_store, sort_keys=True),
             "scriptFingerprints": json.dumps(script_fps, sort_keys=True),
+            "dependencyFingerprints": "",
+            "policyFingerprints": "",
             "implementationVersion": IMPLEMENTATION_VERSION,
             "cacheSchemaVersion": CACHE_SCHEMA_VERSION,
+            "ttl": self.ttl_seconds,
+            "provenance": "",
         }
         integrity_canonical = json.dumps(integrity_payload, sort_keys=True, separators=(",", ":"))
         integrity_hash = hashlib.sha256(integrity_canonical.encode('utf-8')).hexdigest()
@@ -362,27 +366,43 @@ class ValidationCache:
         Returns
         -------
         dict
-            ``{"status": "PASS"|"FAIL", "totalEntries": N,
+            ``{"status": "PASS"|"FAIL"|"WARNING", "totalEntries": N,
             "validEntries": M, "invalidEntries": [key, ...],
+            "legacyUntrustedCount": N, "legacyUntrustedEntries": [key, ...],
             "malformedLineCount": N, "hasCorruption": bool,
             "checkedAtUtc": ...}``.
+
+        Status semantics:
+        - PASS: all entries valid, no malformed lines, no legacy entries.
+        - WARNING: legacy entries present (quarantined but not corrupt).
+        - FAIL: corrupted entries or malformed lines detected.
         """
         invalid: List[str] = []
+        legacy: List[str] = []
         valid = 0
         for key, entry in self._entries.items():
             if self._verify_entry_integrity(entry):
                 valid += 1
+            elif entry.get("resultHash") and not entry.get("integrityHash"):
+                legacy.append(key)
             else:
                 invalid.append(key)
 
         has_corruption = self._malformed_line_count > 0
-        status = "PASS" if (not invalid and not has_corruption) else "FAIL"
+        if invalid or has_corruption:
+            status = "FAIL"
+        elif legacy:
+            status = "WARNING"
+        else:
+            status = "PASS"
 
         return {
             "status": status,
             "totalEntries": len(self._entries),
             "validEntries": valid,
             "invalidEntries": invalid,
+            "legacyUntrustedCount": len(legacy),
+            "legacyUntrustedEntries": legacy,
             "malformedLineCount": self._malformed_line_count,
             "hasCorruption": has_corruption,
             "checkedAtUtc": _utc_now_iso(),
@@ -499,7 +519,12 @@ class ValidationCache:
 
     @staticmethod
     def _verify_entry_integrity(entry: Dict[str, Any]) -> bool:
-        """Verify the entry's integrity hash or (fallback) result hash."""
+        """Verify the entry's integrity hash.
+
+        Returns True only if a valid integrityHash is present and matches.
+        Entries that only have resultHash (legacy) return False — they are
+        quarantined as LEGACY_UNTRUSTED and not served by get().
+        """
         # The cache key itself is the integrity anchor: it must be present
         # and a valid 64-char hex string.
         key = entry.get("cacheKey", "")
@@ -523,8 +548,12 @@ class ValidationCache:
                 "result": entry["result"],
                 "inputFingerprints": json.dumps(entry.get("inputFingerprints", {}), sort_keys=True),
                 "scriptFingerprints": json.dumps(entry.get("scriptFingerprints", {}), sort_keys=True),
+                "dependencyFingerprints": entry.get("dependencyFingerprints", ""),
+                "policyFingerprints": entry.get("policyFingerprints", ""),
                 "implementationVersion": entry.get("implementationVersion", ""),
                 "cacheSchemaVersion": entry.get("cacheSchemaVersion", ""),
+                "ttl": entry.get("ttl", entry.get("ttlSeconds", "")),
+                "provenance": entry.get("provenance", ""),
             }
             integrity_canonical = json.dumps(integrity_payload, sort_keys=True, separators=(",", ":"))
             computed_integrity = hashlib.sha256(integrity_canonical.encode('utf-8')).hexdigest()
@@ -532,14 +561,7 @@ class ValidationCache:
                 return False
             return True
 
-        # --- Legacy fallback: resultHash only ---
-        stored_hash = entry.get("resultHash", "")
-        if stored_hash:
-            result_canonical = canonical_json(strip_volatile(entry["result"]))
-            computed_hash = hashlib.sha256(result_canonical.encode('utf-8')).hexdigest()
-            if computed_hash != stored_hash:
-                return False
-        else:
-            # Legacy entries without resultHash — treat as unverifiable.
-            return False
-        return True
+        # --- Legacy: resultHash only — quarantine as LEGACY_UNTRUSTED ---
+        # Legacy entries are NOT trusted. They fail verification so get()
+        # returns None and integrity_check() reports them separately.
+        return False
