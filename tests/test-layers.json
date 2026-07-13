@@ -252,6 +252,13 @@
     "test_241": ["contract", "full"],
     "test_242": ["smoke", "full"],
     "test_243": ["integration", "full"],
-    "test_244": ["runtime", "full"]
+    "test_244": ["runtime", "full"],
+    "test_245": ["contract", "full"],
+    "test_246": ["contract", "full"],
+    "test_247": ["contract", "full"],
+    "test_248": ["smoke", "full"],
+    "test_249": ["smoke", "full"],
+    "test_250": ["integration", "full"],
+    "test_251": ["integration", "full"]
   }
 }

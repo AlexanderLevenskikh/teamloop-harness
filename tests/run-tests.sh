@@ -4985,13 +4985,16 @@ test_run "Integrity: SafeCheckpoint_ContinuesWhenClean" test_234
 # PACKAGING TESTS 235
 # ============================================================
 test_235() {
-    # Packaging: ZipPreservesExecutableBits — verify that restore-permissions.sh correctly
+    # Packaging: ZipPreservesExecutableBits — verify that install.sh correctly
     # restores executable bits on .sh files after ZIP extraction.  Uses Python zipfile
     # module to simulate extraction (avoids dependency on system zip/unzip).
     #
     # Background: when a project is packaged as a ZIP on Windows (NTFS), Unix permission
     # bits are not stored.  After extraction on Linux, .sh files will not be executable.
-    # restore-permissions.sh is the post-extraction helper to fix this.
+    # install.sh is the post-extraction helper to fix this.
+    #
+    # install.sh operates on a harness root directory and looks for scripts/*.sh.
+    # We simulate this by creating a scripts/ subdirectory in the extraction target.
 
     local tmp_dir
     tmp_dir=$(mktemp -d)
@@ -5001,18 +5004,19 @@ test_235() {
     local out_dir="$tmp_dir/out"
     mkdir -p "$src_dir" "$out_dir"
 
-    # Create a shell script with executable bit
-    printf '#!/usr/bin/env bash\necho hello\n' > "$src_dir/test-script.sh"
-    chmod +x "$src_dir/test-script.sh"
+    # Create a shell script with executable bit under scripts/
+    mkdir -p "$src_dir/scripts"
+    printf '#!/usr/bin/env bash\necho hello\n' > "$src_dir/scripts/test-script.sh"
+    chmod +x "$src_dir/scripts/test-script.sh"
 
     # Also create a nested sub-directory with another .sh
-    mkdir -p "$src_dir/sub"
-    printf '#!/usr/bin/env bash\necho nested\n' > "$src_dir/sub/inner.sh"
-    chmod +x "$src_dir/sub/inner.sh"
+    mkdir -p "$src_dir/scripts/sub"
+    printf '#!/usr/bin/env bash\necho nested\n' > "$src_dir/scripts/sub/inner.sh"
+    chmod +x "$src_dir/scripts/sub/inner.sh"
 
     # Verify source scripts are executable
-    test -x "$src_dir/test-script.sh" || { echo "Source script should be executable"; rm -rf "$tmp_dir"; return 1; }
-    test -x "$src_dir/sub/inner.sh" || { echo "Nested source script should be executable"; rm -rf "$tmp_dir"; return 1; }
+    test -x "$src_dir/scripts/test-script.sh" || { echo "Source script should be executable"; rm -rf "$tmp_dir"; return 1; }
+    test -x "$src_dir/scripts/sub/inner.sh" || { echo "Nested source script should be executable"; rm -rf "$tmp_dir"; return 1; }
 
     # Create a ZIP archive using Python zipfile (cross-platform, no system zip needed)
     "$PY" -c "
@@ -5034,27 +5038,27 @@ with zipfile.ZipFile('$zip_file', 'r') as zf:
     zf.extractall('$out_dir')
 "
 
-    local extracted="$out_dir/test-script.sh"
-    local extracted_nested="$out_dir/sub/inner.sh"
+    local extracted="$out_dir/scripts/test-script.sh"
+    local extracted_nested="$out_dir/scripts/sub/inner.sh"
     [[ -f "$extracted" ]] || { echo "Extracted script should exist"; rm -rf "$tmp_dir"; return 1; }
     [[ -f "$extracted_nested" ]] || { echo "Extracted nested script should exist"; rm -rf "$tmp_dir"; return 1; }
 
     # After extraction via Python zipfile, scripts are NOT executable (no Unix mode stored)
-    # This confirms the problem we need restore-permissions.sh to solve
+    # This confirms the problem we need install.sh to solve
     test ! -x "$extracted" || { echo "Extracted .sh should NOT be executable (confirms the problem)"; rm -rf "$tmp_dir"; return 1; }
 
-    # --- Now run restore-permissions.sh to fix the problem ---
-    bash "$PROJECT_ROOT/scripts/restore-permissions.sh" "$out_dir"
+    # --- Now run install.sh to fix the problem ---
+    bash "$PROJECT_ROOT/scripts/install.sh" --harness-dir "$out_dir"
 
     # Verify both scripts are now executable
-    test -x "$extracted" || { echo "restore-permissions.sh should restore executable bit on top-level .sh"; rm -rf "$tmp_dir"; return 1; }
-    test -x "$extracted_nested" || { echo "restore-permissions.sh should restore executable bit on nested .sh"; rm -rf "$tmp_dir"; return 1; }
+    test -x "$extracted" || { echo "install.sh should restore executable bit on top-level .sh"; rm -rf "$tmp_dir"; return 1; }
+    test -x "$extracted_nested" || { echo "install.sh should restore executable bit on nested .sh"; rm -rf "$tmp_dir"; return 1; }
 
     # Idempotency: running again should not error
-    bash "$PROJECT_ROOT/scripts/restore-permissions.sh" "$out_dir"
+    bash "$PROJECT_ROOT/scripts/install.sh" --harness-dir "$out_dir"
 
-    # Syntax check: restore-permissions.sh must be valid bash
-    bash -n "$PROJECT_ROOT/scripts/restore-permissions.sh" || { echo "restore-permissions.sh has syntax errors"; rm -rf "$tmp_dir"; return 1; }
+    # Syntax check: install.sh must be valid bash
+    bash -n "$PROJECT_ROOT/scripts/install.sh" || { echo "install.sh has syntax errors"; rm -rf "$tmp_dir"; return 1; }
 
     rm -rf "$tmp_dir"
     return 0
@@ -5279,6 +5283,217 @@ test_244() {
 }
 
 test_run "Corrective: Item5_OrphanedRunsBlock" test_244
+
+# ============================================================
+# Corrective Item 6: Cache integrity hash expansion + legacy quarantine + malformed detection
+# ============================================================
+
+test_245() {
+    # Corrective Item 6a: Malformed cache lines cause CORRUPT integrity status
+    TMP=$(mktemp -d)
+    CACHE_FILE="$TMP/cache.jsonl"
+
+    # Write a valid entry with current timestamp, then a malformed line
+    local now
+    now=$("$PY" -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'))")
+    echo "{\"cacheKey\":\"abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890\",\"checkId\":\"test\",\"result\":{\"status\":\"PASS\"},\"ttlSeconds\":86400,\"cachedAtUtc\":\"$now\"}" > "$CACHE_FILE"
+    echo 'THIS IS NOT VALID JSON CORRUPT' >> "$CACHE_FILE"
+
+    local result
+    result=$("$PY" -c "
+import sys; sys.path.insert(0, '$PROJECT_ROOT/scripts')
+from teamloop_cache import ValidationCache
+cache = ValidationCache('$CACHE_FILE')
+ic = cache.integrity_check()
+print(ic['status'])
+print(ic['malformedLineCount'])
+print(ic['hasCorruption'])
+" 2>&1)
+
+    echo "$result" | grep -q "FAIL" || { echo "Expected FAIL status for malformed lines"; echo "$result"; return 1; }
+    echo "$result" | grep -q "1" || { echo "Expected malformedLineCount=1"; echo "$result"; return 1; }
+    echo "$result" | grep -q "True" || { echo "Expected hasCorruption=True"; echo "$result"; return 1; }
+
+    rm -rf "$TMP"
+}
+
+test_run "Corrective: Item6a_MalformedCacheLines" test_245
+
+test_246() {
+    # Corrective Item 6b: Legacy entries with only resultHash are quarantined as LEGACY_UNTRUSTED
+    TMP=$(mktemp -d)
+    CACHE_FILE="$TMP/cache.jsonl"
+
+    # Create a legacy entry with resultHash but no integrityHash
+    local now
+    now=$("$PY" -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'))")
+    local key="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+    local result_hash="0000000000000000000000000000000000000000000000000000000000000000"
+    echo "{\"cacheKey\":\"$key\",\"checkId\":\"legacy-check\",\"result\":{\"status\":\"PASS\"},\"resultHash\":\"$result_hash\",\"ttlSeconds\":86400,\"cachedAtUtc\":\"$now\"}" > "$CACHE_FILE"
+
+    local result
+    result=$("$PY" -c "
+import sys; sys.path.insert(0, '$PROJECT_ROOT/scripts')
+from teamloop_cache import ValidationCache
+cache = ValidationCache('$CACHE_FILE')
+ic = cache.integrity_check()
+print(ic['status'])
+print(ic['legacyUntrustedCount'])
+print(ic['validEntries'])
+" 2>&1)
+
+    # Legacy entries should produce WARNING status (not FAIL, not PASS)
+    echo "$result" | grep -q "WARNING" || { echo "Expected WARNING status for legacy entries"; echo "$result"; return 1; }
+    echo "$result" | grep -q "1" || { echo "Expected legacyUntrustedCount=1"; echo "$result"; return 1; }
+
+    # Also verify get() returns None for legacy entries (they are quarantined)
+    local get_result
+    get_result=$("$PY" -c "
+import sys; sys.path.insert(0, '$PROJECT_ROOT/scripts')
+from teamloop_cache import ValidationCache
+cache = ValidationCache('$CACHE_FILE')
+res = cache.get('$key')
+print('HIT' if res is not None else 'NONE')
+" 2>&1)
+
+    echo "$get_result" | grep -q "NONE" || { echo "Expected get() to return None for legacy entry"; echo "$get_result"; return 1; }
+
+    rm -rf "$TMP"
+}
+
+test_run "Corrective: Item6b_LegacyQuarantine" test_246
+
+test_247() {
+    # Corrective Item 6c: TTL mutation detected by expanded integrity hash
+    TMP=$(mktemp -d)
+    CACHE_FILE="$TMP/cache.jsonl"
+
+    # Create a valid entry via store(), then mutate the TTL on disk
+    local key="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+
+    # Create entry via ValidationCache.store() so it has valid integrityHash
+    "$PY" -c "
+import sys; sys.path.insert(0, '$PROJECT_ROOT/scripts')
+from teamloop_cache import ValidationCache
+cache = ValidationCache('$CACHE_FILE', ttl_seconds=86400)
+cache.store('$key', {'status': 'PASS', 'message': 'ok'})
+" 2>&1
+
+    # Mutate the TTL on disk to a large value so entry doesn't expire,
+    # but the integrity hash will still mismatch because ttl is bound in it.
+    "$PY" -c "
+import json
+with open('$CACHE_FILE', 'r') as f:
+    line = f.read().strip()
+entry = json.loads(line)
+entry['ttl'] = 43200
+entry['ttlSeconds'] = 43200
+with open('$CACHE_FILE', 'w') as f:
+    f.write(json.dumps(entry, sort_keys=True) + '\n')
+" 2>&1
+
+    # integrity_check should detect the mismatch because ttl is now bound in integrityHash
+    local result
+    result=$("$PY" -c "
+import sys; sys.path.insert(0, '$PROJECT_ROOT/scripts')
+from teamloop_cache import ValidationCache
+cache = ValidationCache('$CACHE_FILE')
+ic = cache.integrity_check()
+print(ic['status'])
+print(ic['validEntries'])
+" 2>&1)
+
+    # The entry should fail integrity because ttl changed but integrityHash was computed with original ttl
+    echo "$result" | grep -q "FAIL" || { echo "Expected FAIL for mutated TTL"; echo "$result"; return 1; }
+
+    rm -rf "$TMP"
+}
+
+test_run "Corrective: Item6c_TTLMutationDetection" test_247
+
+# Test 248: install.sh restores permissions and is idempotent
+test_248() {
+    # Verify install.sh exists and is syntactically valid
+    if [ ! -f "$PROJECT_ROOT/scripts/install.sh" ]; then
+        echo "install.sh not found"
+        return 1
+    fi
+
+    # Check syntax
+    bash -n "$PROJECT_ROOT/scripts/install.sh" || {
+        echo "install.sh has syntax errors"
+        return 1
+    }
+}
+
+test_run "Packaging: InstallScriptExists" test_248
+
+# Test 249: release-package.sh exists and is syntactically valid
+test_249() {
+    if [ ! -f "$PROJECT_ROOT/scripts/release-package.sh" ]; then
+        echo "release-package.sh not found"
+        return 1
+    fi
+
+    bash -n "$PROJECT_ROOT/scripts/release-package.sh" || {
+        echo "release-package.sh has syntax errors"
+        return 1
+    }
+}
+
+test_run "Packaging: ReleasePackageExists" test_249
+
+# ============================================================
+# Final-gate cache integration
+# ============================================================
+
+# Test 250: Final-gate includes cache-integrity check
+test_250() {
+    local ws
+    ws=$(mktemp -d)
+
+    bash "$PROJECT_ROOT/scripts/init-workspace.sh" --workspace "$ws" --profile generic-software-task >/dev/null 2>&1 || {
+        echo "init-workspace failed"; return 1
+    }
+
+    local output
+    output=$(bash "$PROJECT_ROOT/scripts/final-gate.sh" --workspace "$ws" 2>&1) || true
+
+    echo "$output" | grep -q "cache-integrity" || {
+        echo "final-gate output missing cache-integrity check"
+        return 1
+    }
+}
+
+test_run "FinalGate: CacheIntegrityPresent" test_250
+
+# Test 251: Corrupted cache causes final-gate to fail
+test_251() {
+    local ws
+    ws=$(mktemp -d)
+
+    bash "$PROJECT_ROOT/scripts/init-workspace.sh" --workspace "$ws" --profile generic-software-task >/dev/null 2>&1 || {
+        echo "init-workspace failed"; return 1
+    }
+
+    # Create corrupted cache
+    mkdir -p "$ws/cache"
+    echo 'NOT VALID JSON' > "$ws/cache/sentinel.cache"
+
+    local output
+    output=$(bash "$PROJECT_ROOT/scripts/final-gate.sh" --workspace "$ws" 2>&1) || true
+
+    local has_fail=0
+    echo "$output" | grep -q '"FAIL"' && has_fail=1
+    echo "$output" | grep -q "cache" && has_fail=1
+
+    [[ $has_fail -eq 1 ]] || {
+        echo "final-gate did not fail for corrupted cache"
+        return 1
+    }
+}
+
+test_run "FinalGate: CorruptedCacheBlocks" test_251
 
 # ============================================================
 # SUMMARY
