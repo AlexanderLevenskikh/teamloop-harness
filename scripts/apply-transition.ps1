@@ -2,7 +2,7 @@ param(
     [Alias("w")][string]$Workspace = ".teamloop",
     [string]$Action,
     [Alias("tid")][string]$TaskId,
-    [Parameter(ValueFromRemaining=$true)][string[]]$Args
+    [Parameter(ValueFromRemainingArguments=$true)][string[]]$Args
 )
 
 $passThru = @()

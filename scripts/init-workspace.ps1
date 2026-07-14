@@ -1,7 +1,7 @@
 param(
     [Alias("w")][string]$Workspace = ".teamloop",
     [Alias("p")][string]$Profile,
-    [Parameter(ValueFromRemaining=$true)][string[]]$Args
+    [Parameter(ValueFromRemainingArguments=$true)][string[]]$Args
 )
 
 $passThru = @()

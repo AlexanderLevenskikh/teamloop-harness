@@ -6,7 +6,7 @@ param(
     [string]$RunId,
     [Alias("tid")][string]$TaskId,
     [string]$Data,
-    [Parameter(ValueFromRemaining=$true)][string[]]$Args
+    [Parameter(ValueFromRemainingArguments=$true)][string[]]$Args
 )
 
 $passThru = @()
