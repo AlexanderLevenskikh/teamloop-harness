@@ -92,7 +92,11 @@ opencode.jsonc
 .opencode/
 scripts/
 schemas/
+templates/
+tests/
 ```
+
+Copy the complete YourAITeam package into the project root instead of copying only selected wrappers. `templates/` is required to initialize a fresh `.teamloop` workspace, and `tests/` is required to verify the installation and future updates. If either directory is missing, initialization or validation may be incomplete even when the individual scripts are present.
 
 Do not start OpenCode one directory above or below this root.
 
@@ -408,9 +412,52 @@ Then view the boundary packet and decision.
 
 The runtime compares authoritative before/after measurements. Editing comments, counters, reports, or status labels does not count as deliverable progress.
 
+### “A Windows run starts investigating WSL paths”
+
+Use the native wrapper family for the environment that owns the checkout:
+
+- native Windows/OpenCode session: `scripts/*.ps1`;
+- Linux or a repository stored inside WSL: `scripts/*.sh`.
+
+Do not invoke WSL Bash against a Windows checkout merely to run YourAITeam checks. Mixed path spaces such as `C:\...` and `/mnt/c/...` are valid in their own environments but create misleading diagnostics when combined. Inspect sentinel `cacheSummary` before changing shells.
+
 ### “PowerShell reports encoding/parser errors”
 
 Use PowerShell 7 (`pwsh`) and the ASCII-safe wrappers from the current release. Avoid editing `.ps1` scripts with legacy encodings.
+
+---
+
+### “Sentinel failed, but the underlying problem was already fixed”
+
+The sentinel now performs a deterministic cache preflight. Its JSON contains `cacheSummary`:
+
+- `CACHE_BYPASSED` — the cache was corrupt/invalid, so every check ran fresh;
+- `STALE_ENTRY_RECOMPUTED` — a cached WARNING/CRITICAL changed during the automatic fresh retry;
+- `CACHE_EMPTY` — no reusable entries existed;
+- `CACHE_READY` — normal cache reuse.
+
+Do not start by debugging WSL paths, shell quoting, or manually deleting the cache. First inspect:
+
+```powershell
+$result = .\scripts\run-sentinel.ps1 -Workspace .teamloop | ConvertFrom-Json
+$result.cacheSummary
+```
+
+A fresh PASS is authoritative. Use `cache-clear` only as an explicit recovery operation, not as the default troubleshooting ritual.
+
+### Validate all shipped scripts
+
+Run the unified validator after copying/updating YourAITeam and whenever `scripts/` or the test launchers change:
+
+```powershell
+.\scripts\validate-scripts.ps1 -Root .
+```
+
+```bash
+bash scripts/validate-scripts.sh --root .
+```
+
+It checks every PowerShell, Bash, Python, and extensionless command wrapper. Missing PowerShell/Bash runtimes are reported as `UNAVAILABLE`; syntax that can be checked locally is still validated.
 
 ---
 

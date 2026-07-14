@@ -6190,6 +6190,35 @@ PYCODE
 test_run "BoundaryManager: GateAdvancementLock" test_266
 
 # ============================================================
+# TEST 267: Unified cross-platform script validator
+# ============================================================
+test_267() {
+    "$PY" "$PROJECT_ROOT/scripts/validate_scripts.py" --root "$PROJECT_ROOT" --json > "$TEST_DIR/script-validation-result.json" || {
+        cat "$TEST_DIR/script-validation-result.json"
+        return 1
+    }
+    "$PY" - "$TEST_DIR/script-validation-result.json" <<'PYCODE'
+import json,sys
+data=json.load(open(sys.argv[1],encoding="utf-8"))
+assert data["status"]=="PASS",data
+for kind in ("powershell","bash","python","shims"):
+    assert data["files"][kind] > 0,(kind,data)
+PYCODE
+    rm -f "$TEST_DIR/script-validation-result.json"
+}
+
+test_run "Scripts: UnifiedCrossPlatformValidator" test_267
+
+# ============================================================
+# TEST 268: Sentinel cache preflight and fresh retry
+# ============================================================
+test_268() {
+    (cd "$PROJECT_ROOT" && "$PY" -m unittest tests.test_runtime_efficiency) || return 1
+}
+
+test_run "Sentinel: CachePreflightAndFreshRetry" test_268
+
+# ============================================================
 # SUMMARY
 # ============================================================
 echo ""

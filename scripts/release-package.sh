@@ -32,6 +32,9 @@ if [ -z "$PYTHON_BIN" ]; then
   exit 1
 fi
 
+echo "Validating script surfaces before packaging..."
+"$PYTHON_BIN" "$HARNESS_DIR/scripts/validate_scripts.py" --root "$HARNESS_DIR"
+
 "$PYTHON_BIN" - "$HARNESS_DIR" "$ARCHIVE_PATH" "$MANIFEST_PATH" "$VERSION" "$COMMIT_SHA" <<'PYEOF'
 import zipfile
 import os

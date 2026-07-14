@@ -92,7 +92,11 @@ opencode.jsonc
 .opencode/
 scripts/
 schemas/
+templates/
+tests/
 ```
+
+Копируйте в корень проекта полный пакет YourAITeam, а не только отдельные wrapper-скрипты. Папка `templates/` нужна для создания нового workspace `.teamloop`, а `tests/` — для проверки установки и будущих обновлений. Если одной из этих папок нет, инициализация или проверка могут быть неполными, даже если сами скрипты на месте.
 
 Не запускайте OpenCode на уровень выше или ниже.
 
@@ -408,9 +412,52 @@ TICKET_CLOSED != USER_VALUE_ACCEPTED
 
 Рантайм сравнивает авторитетные before/after measurements. Изменение комментариев, counters, отчётов или status labels не считается улучшением результата.
 
+### «В Windows агент внезапно расследует WSL-пути»
+
+Используйте wrapper family той среды, которой принадлежит checkout:
+
+- нативный Windows/OpenCode: `scripts/*.ps1`;
+- Linux или репозиторий, физически расположенный внутри WSL: `scripts/*.sh`.
+
+Не запускайте WSL Bash поверх Windows-checkout только ради проверок YourAITeam. Пути `C:\...` и `/mnt/c/...` корректны каждый в своей среде, но при смешивании создают ложные диагностические ветки. Перед сменой shell сначала смотрите sentinel `cacheSummary`.
+
 ### «PowerShell выдаёт ошибки кодировки или parser error»
 
 Используйте PowerShell 7 (`pwsh`) и ASCII-safe wrappers из текущего релиза. Не сохраняйте `.ps1` в устаревшей кодировке.
+
+---
+
+### «Sentinel упал, хотя исходная проблема уже исправлена»
+
+Теперь sentinel сначала выполняет детерминированный cache-preflight. В JSON-результате есть `cacheSummary`:
+
+- `CACHE_BYPASSED` — cache повреждён/невалиден, поэтому проверки выполнены fresh;
+- `STALE_ENTRY_RECOMPUTED` — закэшированный WARNING/CRITICAL изменился при автоматической свежей перепроверке;
+- `CACHE_EMPTY` — переиспользуемых записей не было;
+- `CACHE_READY` — обычное безопасное переиспользование.
+
+Не начинайте с расследования WSL-путей, кавычек и ручного удаления cache. Сначала посмотрите:
+
+```powershell
+$result = .\scripts\run-sentinel.ps1 -Workspace .teamloop | ConvertFrom-Json
+$result.cacheSummary
+```
+
+Свежий PASS авторитетен. `cache-clear` нужен как явная recovery-операция, а не как стандартный ритуал диагностики.
+
+### Проверка всех поставляемых скриптов
+
+Запускайте единый валидатор после копирования/обновления YourAITeam и при изменениях в `scripts/` или test launchers:
+
+```powershell
+.\scripts\validate-scripts.ps1 -Root .
+```
+
+```bash
+bash scripts/validate-scripts.sh --root .
+```
+
+Он проверяет все PowerShell-, Bash-, Python-скрипты и extensionless wrappers. Отсутствующий PowerShell/Bash честно отображается как `UNAVAILABLE`, а доступные статические проверки всё равно выполняются.
 
 ---
 

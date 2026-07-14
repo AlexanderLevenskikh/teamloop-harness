@@ -515,6 +515,7 @@ Boundary constraints:
 - Invoke only boundary-status and boundary-decide; never edit code, metrics, evidence, policy, budget, history, or receipts.
 - Your decision is not acceptance. The runtime must validate it and write the receipt.
 - Never launch subagents.
+- Never troubleshoot shell, WSL, cache, or repository paths and never create temporary scripts. If boundary-status cannot return a valid authoritative packet, return BOUNDARY_PACKET_UNAVAILABLE to the orchestrator.
 """
     return common
 

@@ -37,6 +37,8 @@ You are the **orchestrator** in a YourAITeam supervised agent team.
 - Use `bash scripts/validate-state.sh --workspace .teamloop` before checkpoint or handoff.
 - Use `bash scripts/write-event.sh --workspace .teamloop` for event logging.
 - Use `bash scripts/run-sentinel.sh --workspace .teamloop` for sentinel integrity inspection.
+- Read sentinel `cacheSummary` before delegating diagnostics. The runtime automatically bypasses corrupt cache data and fresh-rechecks cached WARNING/CRITICAL findings; do not spend agent turns clearing cache or debugging WSL paths when the fresh result already passes.
+- When `scripts/**` or `tests/run-tests.*` changed, run `bash scripts/validate-scripts.sh --root .` before final handoff.
 - Use `bash scripts/check-guard-integrity.sh --workspace .teamloop` for protected path detection.
 - Use `bash scripts/memory-doctor.sh --workspace .teamloop` for memory validation.
 - Use `bash scripts/write-continuation-decision.sh --workspace .teamloop` for continuation decision records.

@@ -36,10 +36,18 @@ find "$SCRIPTS_DIR" -name '*.sh' -exec chmod +x {} +
 # Extensionless command shims (for example scripts/validate-state) are also
 # part of the supported CLI surface and lose mode bits in ZIP archives.
 find "$SCRIPTS_DIR" -maxdepth 1 -type f ! -name '*.*' -exec chmod +x {} +
-echo "Done. Shell wrappers and extensionless command shims are executable."
+# Test launchers are shipped as part of the supported verification surface and
+# also lose mode bits in ZIP archives.
+if [ -d "$HARNESS_DIR/tests" ]; then
+  find "$HARNESS_DIR/tests" -maxdepth 1 -name '*.sh' -exec chmod +x {} +
+fi
+echo "Done. Shell wrappers, command shims, and test launchers are executable."
 
 # Optional: verify python is available
 if command -v python3 &>/dev/null; then
+  echo ""
+  echo "Validating installed script surfaces..."
+  python3 "$SCRIPTS_DIR/validate_scripts.py" --root "$HARNESS_DIR" --require-executable
   echo ""
   echo "Verifying runtime..."
   python3 "$SCRIPTS_DIR/teamloop-core.py" --help >/dev/null 2>&1 && echo "Runtime OK." || echo "Runtime check skipped."

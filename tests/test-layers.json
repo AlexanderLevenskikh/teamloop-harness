@@ -1128,6 +1128,16 @@
       "runtime",
       "integration",
       "full"
+    ],
+    "test_267": [
+      "contract",
+      "smoke",
+      "full"
+    ],
+    "test_268": [
+      "runtime",
+      "integration",
+      "full"
     ]
   }
 }

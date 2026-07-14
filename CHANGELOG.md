@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Added unified cross-platform script validation for PowerShell, Bash, Python, and command shims.
+- Sentinel cache keys now include authoritative artifacts; cached non-PASS findings receive one automatic fresh retry with explicit cache diagnostics.
+
+### Fixed
+
+- Corrected PowerShell wrapper parameters to use `ValueFromRemainingArguments` instead of the invalid `ValueFromRemaining` attribute.
+- Added a PowerShell parser regression covering all shipped `.ps1` wrappers.
+
+
 ## 0.5.0-alpha.1
 
 - Added beginner-friendly English and Russian user guides covering ordinary, team-design, supervised, profile, boundary, resume, and troubleshooting workflows.

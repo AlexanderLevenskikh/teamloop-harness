@@ -185,3 +185,39 @@ python scripts/teamloop-core.py boundary-status --workspace .teamloop --boundary
 ```
 
 Verify that the HTML contains contextual hints and does not count draft coverage as accepted progress.
+
+## Unified script validation
+
+Validate every supported script surface in one pass:
+
+```bash
+python3 scripts/validate_scripts.py --root .
+bash scripts/validate-scripts.sh --root .
+```
+
+On Windows:
+
+```powershell
+.\scripts\validate-scripts.ps1 -Root .
+```
+
+The validator checks:
+
+- all `scripts/*.ps1` and `tests/run-tests.ps1` with the PowerShell parser when available;
+- invalid wrapper attributes such as `ValueFromRemaining=` even without PowerShell installed;
+- all shell scripts and extensionless shims with `bash -n`;
+- CRLF/shebang/executable contracts for Unix/WSL;
+- all Python runtime modules with `py_compile`;
+- delegated shim targets and known mojibake markers.
+
+`release-package.sh` runs this validator before packaging. `install.sh` runs it again after restoring executable bits.
+
+## Sentinel cache-preflight regression
+
+```bash
+python3 -m unittest tests.test_runtime_efficiency -v
+TEAMLOOP_TEST_FROM=267 TEAMLOOP_TEST_TO=268 PY=python3 bash tests/run-tests.sh
+```
+
+The regression proves that authoritative policy/state changes invalidate sentinel cache keys and that a cached non-PASS finding is rechecked fresh once. The runtime reports `STALE_ENTRY_RECOMPUTED` instead of forcing an agent to diagnose WSL paths or clear cache manually.
+

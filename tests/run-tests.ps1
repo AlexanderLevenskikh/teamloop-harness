@@ -1667,6 +1667,67 @@ Test-Run "OpenCode PS: FastExecutionAgentCopiesSynchronized" -Layers @("integrat
     return $true
 }
 
+Test-Run "PowerShell: WrapperSyntaxAndRemainingArguments" -Layers @("contract") {
+    $files = @(
+        Get-ChildItem -Path (Join-Path $projectRoot "scripts") -Filter "*.ps1" -File
+        Get-Item -Path $PSCommandPath
+    )
+
+    foreach ($file in $files) {
+        $content = Get-Content -Path $file.FullName -Raw -Encoding UTF8
+        if ($content -match 'ValueFromRemaining=') {
+            Write-Host "  FAIL: invalid Parameter attribute in $($file.FullName); use ValueFromRemainingArguments" -ForegroundColor Red
+            return $false
+        }
+
+        $tokens = $null
+        $errors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile(
+            $file.FullName,
+            [ref]$tokens,
+            [ref]$errors
+        ) | Out-Null
+
+        if ($errors.Count -gt 0) {
+            foreach ($error in $errors) {
+                Write-Host "  FAIL: PowerShell parser error in $($file.FullName): $($error.Message)" -ForegroundColor Red
+            }
+            return $false
+        }
+    }
+
+    return $true
+}
+
+Test-Run "Scripts: UnifiedCrossPlatformValidator" -Layers @("contract", "smoke") {
+    $output = & python "$scriptDir/validate_scripts.py" --root "$projectRoot" --json 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  FAIL: unified script validator failed: $output" -ForegroundColor Red
+        return $false
+    }
+    try {
+        $data = $output | ConvertFrom-Json
+    } catch {
+        Write-Host "  FAIL: validator did not return JSON: $output" -ForegroundColor Red
+        return $false
+    }
+    if ($data.status -ne "PASS") {
+        Write-Host "  FAIL: validator status is $($data.status)" -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+
+Test-Run "Sentinel: CachePreflightAndFreshRetry" -Layers @("runtime", "integration") {
+    Push-Location $projectRoot
+    try {
+        & python -m unittest tests.test_runtime_efficiency
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        Pop-Location
+    }
+}
+
 # ============================================================
 # SUMMARY
 # ============================================================

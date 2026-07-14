@@ -204,6 +204,73 @@
     "protectedPathsFingerprint": {
       "type": "string",
       "description": "SHA-256 fingerprint of protected-paths policy, or empty string"
+    },
+    "cacheSummary": {
+      "type": "object",
+      "description": "Observability for sentinel cache use; excluded from semantic acceptance fingerprint.",
+      "required": [
+        "enabled",
+        "state",
+        "hits",
+        "misses",
+        "freshRetries",
+        "staleEntriesBypassed",
+        "malformedEntriesBypassed",
+        "action",
+        "reason"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "EMPTY",
+            "DISABLED",
+            "CORRUPT",
+            "INVALID",
+            "LEGACY_UNTRUSTED"
+          ]
+        },
+        "hits": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "misses": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "freshRetries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "staleEntriesBypassed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "malformedEntriesBypassed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "CACHE_READY",
+            "CACHE_DISABLED",
+            "CACHE_EMPTY",
+            "CACHE_BYPASSED",
+            "LEGACY_ENTRIES_QUARANTINED",
+            "STALE_ENTRY_RECOMPUTED",
+            "MALFORMED_ENTRY_RECOMPUTED"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

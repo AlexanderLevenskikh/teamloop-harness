@@ -25,8 +25,9 @@ Run or continue exactly one bounded YourAITeam action. Runtime commands are the 
 7. Use `route-role --event <event>` for conditional reviewer/watchdog/sentinel decisions. Do not invoke every role unconditionally.
 8. Gatekeeper runs `run-gates`; no role writes `gate-result.json` manually.
 9. Record continuation decisions only through `write-continuation-decision` or existing runtime transitions.
-10. Before final handoff, route `final-handoff`, run the required sentinel, then run `bash scripts/final-gate.sh --workspace .teamloop` (or the matching PowerShell wrapper).
-11. Print `performance-report` in the checkpoint report when a trace exists.
+10. If `scripts/**` or `tests/run-tests.*` changed, run `bash scripts/validate-scripts.sh --root .` before final handoff.
+11. Before final handoff, route `final-handoff`, run the required sentinel, inspect its `cacheSummary`, then run `bash scripts/final-gate.sh --workspace .teamloop` (or the matching PowerShell wrapper). A fresh sentinel PASS after `STALE_ENTRY_RECOMPUTED` is authoritative; do not launch an environment-debugging detour merely because an older cache entry failed.
+12. Print `performance-report` in the checkpoint report when a trace exists.
 
 ## Execution profiles
 

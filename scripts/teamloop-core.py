@@ -4590,6 +4590,103 @@ def cmd_cache_validate(args):
         sys.exit(1)
 
 
+
+def _sentinel_cache_inputs(host, check_name, git_dependent=False):
+    """Return authoritative inputs for one sentinel cache key.
+
+    Sentinel findings are only reusable when every primary artifact read by the
+    check is unchanged.  Earlier versions keyed several checks only by the
+    runtime scripts, which allowed a fixed policy/state artifact to keep
+    returning an old cached finding.  The mapping below deliberately favors
+    correctness over maximum hit rate: small workspace files are cheap to hash.
+    """
+    workspace = host.workspace
+    project_root = host.project_root
+    paths = []
+    extra = {"sentinelCacheContract": 2, "check": check_name}
+
+    def workspace_path(*parts):
+        return os.path.join(workspace, *parts)
+
+    if check_name == "scope-policy-weakening":
+        paths.append(workspace_path("policies", "scope-policy.json"))
+    elif check_name == "gate-policy-weakening":
+        paths.append(workspace_path("policies", "gate-policy.json"))
+    elif check_name == "schema-integrity":
+        schema_files = sorted(globmod.glob(os.path.join(project_root, "schemas", "*.schema.json")))
+        extra["schemaFiles"] = [os.path.relpath(path, project_root).replace("\\", "/") for path in schema_files]
+        paths.extend(schema_files)
+    elif check_name == "test-suppression":
+        paths.extend([
+            os.path.join(project_root, "tests", "run-tests.sh"),
+            os.path.join(project_root, "tests", "run-tests.ps1"),
+        ])
+    elif check_name == "state-mutation":
+        paths.extend([
+            workspace_path("state", "team-state.json"),
+            workspace_path("state", "events.jsonl"),
+            workspace_path("state", "backlog.jsonl"),
+        ])
+    elif check_name == "protected-file-changes":
+        paths.append(workspace_path("policies", "protected-paths.json"))
+    elif check_name == "hidden-unresolved-work":
+        paths.append(workspace_path("state", "backlog.jsonl"))
+    elif check_name == "manual-state-mutation":
+        paths.append(workspace_path("state", "team-state.json"))
+    elif check_name == "evidence-manipulation":
+        decision_path = workspace_path("state", "continuation-decision.json")
+        paths.append(decision_path)
+        decision = read_json_file_safe(decision_path) if os.path.isfile(decision_path) else None
+        if isinstance(decision, dict):
+            refs = []
+            for field in ("evidence", "evidenceIds", "checkEvidence"):
+                value = decision.get(field)
+                if isinstance(value, list):
+                    refs.extend(str(item) for item in value)
+                elif isinstance(value, str) and value:
+                    refs.append(value)
+            for check in decision.get("checks", []) if isinstance(decision.get("checks", []), list) else []:
+                if not isinstance(check, dict):
+                    continue
+                for field in ("evidence", "evidencePath", "artifactPath"):
+                    value = check.get(field)
+                    if isinstance(value, list):
+                        refs.extend(str(item) for item in value)
+                    elif isinstance(value, str) and value:
+                        refs.append(value)
+            extra["evidenceReferences"] = sorted(set(refs))
+            repo_root = os.path.dirname(workspace)
+            for ref in refs:
+                candidate = ref if os.path.isabs(ref) else os.path.join(repo_root, ref)
+                if not os.path.exists(candidate) and not os.path.isabs(ref):
+                    candidate = os.path.join(workspace, ref)
+                paths.append(candidate)
+
+    if git_dependent:
+        status_entries = [(entry.get("status", ""), entry.get("path", "")) for entry in host.git_status_entries]
+        extra["gitStatus"] = status_entries
+        for _, rel_path in status_entries:
+            candidate = os.path.join(host.git_root, rel_path)
+            if os.path.isfile(candidate):
+                paths.append(candidate)
+
+    inputs = dict(extra)
+    # Absolute paths are content-hashed by ValidationCache.build_key.  Keep a
+    # stable logical name so machine-specific checkout paths never enter the key.
+    for index, path in enumerate(paths):
+        logical = "artifact:{:03d}:{}".format(index, os.path.basename(path) or "missing")
+        inputs[logical] = os.path.abspath(path)
+    return inputs
+
+
+def _sentinel_findings_equal(left, right):
+    return fast_execution.semantic_hash(
+        fast_execution.strip_volatile(left)
+    ) == fast_execution.semantic_hash(
+        fast_execution.strip_volatile(right)
+    )
+
+
 def cmd_run_sentinel(args):
     """READ-ONLY sentinel inspection command.
 
@@ -4603,9 +4700,34 @@ def cmd_run_sentinel(args):
     workspace = resolve_workspace(args.workspace)
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    # Determine whether to use cache.
+    # Determine whether to use cache.  Corrupt cache data is never trusted or
+    # silently deleted: sentinel bypasses it for this run and reports why.
     no_cache = getattr(args, "no_cache", False)
     cache = None if no_cache else _create_cache(workspace, project_root)
+    cache_summary = {
+        "enabled": cache is not None,
+        "state": "DISABLED" if cache is None else "EMPTY",
+        "hits": 0,
+        "misses": 0,
+        "freshRetries": 0,
+        "staleEntriesBypassed": 0,
+        "malformedEntriesBypassed": 0,
+        "action": "CACHE_DISABLED" if cache is None else "CACHE_READY",
+        "reason": "--no-cache or TEAMLOOP_NO_CACHE" if cache is None else "",
+    }
+    if cache is not None:
+        integrity = cache.integrity_check()
+        cache_state = _classify_cache_state(cache, integrity)
+        cache_summary["state"] = cache_state
+        if cache_state in ("CORRUPT", "INVALID"):
+            cache_summary["action"] = "CACHE_BYPASSED"
+            cache_summary["reason"] = "validation cache is {}; sentinel recomputed all checks fresh".format(cache_state)
+            cache = None
+        elif cache_state == "LEGACY_UNTRUSTED":
+            cache_summary["action"] = "LEGACY_ENTRIES_QUARANTINED"
+            cache_summary["reason"] = "legacy cache records are not reusable"
+        elif cache_state == "EMPTY":
+            cache_summary["action"] = "CACHE_EMPTY"
 
     # Create WorkspaceContext for all data access
     host = WorkspaceContext.__new__(WorkspaceContext)
@@ -4633,34 +4755,59 @@ def cmd_run_sentinel(args):
     # cache entry on disk but is not returned to the caller.
     def _run_sentinel_check(check_name, check_fn, git_dependent=False):
         if cache is None:
+            cache_summary["misses"] += 1
             return check_fn(host)
-        inputs = {}
-        schemas = {}
-        if git_dependent:
-            # Include git status in cache key for git-dependent checks.
-            inputs["git_status"] = json.dumps(
-                [(e["status"], e["path"]) for e in host.git_status_entries],
-                sort_keys=True,
-            )
+
+        inputs = _sentinel_cache_inputs(host, check_name, git_dependent=git_dependent)
         cache_key = cache.build_key(
             check="sentinel:" + check_name,
             inputs=inputs,
-            schemas=schemas,
+            schemas={},
         )
         cached = cache.get(cache_key)
         if cached is not None:
-            # cache.get() now returns the finding directly (not wrapped).
-            # Validate it has the expected sentinel finding shape.
-            if isinstance(cached, dict) and "severity" in cached:
+            if isinstance(cached, dict) and cached.get("severity") in ("CRITICAL", "WARNING", "INFO"):
+                cache_summary["hits"] += 1
+                # A cached non-PASS finding is always rechecked once.  This is
+                # deliberately cheap and prevents an old warning/failure from
+                # sending the agent into WSL/path/quoting investigations after
+                # the underlying artifact was already fixed.
+                if cached.get("severity") != "INFO":
+                    cache_summary["freshRetries"] += 1
+                    fresh = check_fn(host)
+                    if not _sentinel_findings_equal(cached, fresh):
+                        cache_summary["staleEntriesBypassed"] += 1
+                        cache_summary["action"] = "STALE_ENTRY_RECOMPUTED"
+                        cache_summary["reason"] = "cached non-PASS finding changed during authoritative fresh retry"
+                    cache.store(
+                        cache_key,
+                        fresh,
+                        check_id=check_name,
+                        semantic_context={
+                            "provenance": {
+                                "producer": "sentinel-fresh-retry",
+                                "checkId": check_name,
+                            },
+                            "reuseRestrictions": {"freshRetryOnNonPass": True},
+                        },
+                    )
+                    return fresh
                 return cached
-            # Malformed cached value — fall through to recompute.
-        try:
-            result = check_fn(host)
-        except Exception:
-            raise
-        # Store the finding directly. cache.store() binds the checkId
-        # separately in the entry metadata for integrity hashing.
-        cache.store(cache_key, result, check_id=check_name)
+            cache_summary["malformedEntriesBypassed"] += 1
+            cache_summary["action"] = "MALFORMED_ENTRY_RECOMPUTED"
+            cache_summary["reason"] = "cached sentinel result had an invalid semantic shape"
+
+        cache_summary["misses"] += 1
+        result = check_fn(host)
+        cache.store(
+            cache_key,
+            result,
+            check_id=check_name,
+            semantic_context={
+                "provenance": {"producer": "sentinel", "checkId": check_name},
+                "reuseRestrictions": {"freshRetryOnNonPass": True},
+            },
+        )
         return result
 
     # Run all 9 checks
@@ -4727,6 +4874,7 @@ def cmd_run_sentinel(args):
         "protectedPathsFingerprint": identity.get("protectedPathsFingerprint", ""),
         "findings": findings,
         "overallStatus": overall_status,
+        "cacheSummary": cache_summary,
         "summary": {
             "totalFindings": len(findings),
             "criticalCount": critical_count,
