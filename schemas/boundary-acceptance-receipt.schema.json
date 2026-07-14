@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BoundaryAcceptanceReceipt",
+  "type": "object",
+  "required": ["schemaVersion", "boundaryId", "decision", "packetFingerprint", "primaryArtifactFingerprint", "metricsFingerprint", "configFingerprint", "policyFingerprint", "toolCompatibilityFingerprint", "validationEvidenceFingerprint", "managerDecisionFingerprint", "managerRoleReceiptFingerprint", "recordedSoftDebtIds", "predecessorBoundaryId", "predecessorReceiptFingerprint", "acceptedAtUtc", "receiptFingerprint"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "boundaryId": {"type": "string"},
+    "taskId": {"type": "string"},
+    "runId": {"type": "string"},
+    "decision": {"type": "string", "enum": ["ACCEPT_BOUNDARY", "ACCEPT_WITH_RECORDED_SOFT_DEBT"]},
+    "packetFingerprint": {"type": "string", "minLength": 64},
+    "primaryArtifactFingerprint": {"type": "string", "minLength": 64},
+    "metricsFingerprint": {"type": "string", "minLength": 64},
+    "configFingerprint": {"type": "string", "minLength": 64},
+    "policyFingerprint": {"type": "string", "minLength": 64},
+    "toolCompatibilityFingerprint": {"type": "string", "minLength": 64},
+    "validationEvidenceFingerprint": {"type": "string", "minLength": 64},
+    "managerDecisionFingerprint": {"type": "string", "minLength": 64},
+    "managerRoleReceiptFingerprint": {"type": "string", "minLength": 64},
+    "recordedSoftDebtIds": {"type": "array", "items": {"type": "string"}},
+    "predecessorBoundaryId": {"type": "string"},
+    "predecessorReceiptFingerprint": {"type": "string"},
+    "acceptedAtUtc": {"type": "string", "format": "date-time"},
+    "receiptFingerprint": {"type": "string", "minLength": 64}
+  },
+  "additionalProperties": false
+}

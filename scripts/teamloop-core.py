@@ -20,6 +20,7 @@ import teamloop_cache as _cache_mod
 import teamloop_inbox as inbox_mod
 import teamloop_advisory as advisory_mod
 import your_ai_team as team_mod
+import quality_value_boundary as boundary_mod
 from teamloop_context import WorkspaceContext
 from version import YOUR_AI_TEAM_VERSION, YOUR_AI_TEAM_SCHEMA_VERSION
 
@@ -237,7 +238,7 @@ def cmd_init_workspace(args):
 
     now = utc_now_iso()
 
-    for subdir in ["state", "runs", "research", "policies", "profiles"]:
+    for subdir in ["state", "runs", "research", "policies", "profiles", "boundaries"]:
         os.makedirs(os.path.join(target_dir, subdir), exist_ok=True)
 
     # team-state.json
@@ -255,7 +256,7 @@ def cmd_init_workspace(args):
             pass
 
     # Policies
-    for name in ["gate-policy.json", "role-policy.json", "protected-paths.json"]:
+    for name in ["gate-policy.json", "role-policy.json", "protected-paths.json", "boundary-policy.json"]:
         src = os.path.join(template_dir, "policies", name)
         dst = os.path.join(target_dir, "policies", name)
         shutil.copy2(src, dst)
@@ -686,7 +687,7 @@ def cmd_validate_state(args):
     if state is not None:
         task_scoped_phases = frozenset([
             "EXECUTING_TASK", "NEEDS_CHANGE_REVIEW", "NEEDS_GATE",
-            "REVIEW_FAILED", "GATE_FAILED"
+            "NEEDS_BOUNDARY_DECISION", "REVIEW_FAILED", "GATE_FAILED"
         ])
         if phase in task_scoped_phases and task_id:
             ct = host.current_task
@@ -734,6 +735,9 @@ def cmd_validate_state(args):
         for w in sentinel_warnings:
             print(f"  WARNING: {w}", file=sys.stderr)
 
+    # --- Quality/value boundary integrity ---
+    errors.extend(boundary_mod.validate_workspace(workspace, project_root=host.git_root))
+
     if errors:
         print("VALIDATION FAILED:")
         for err in errors:
@@ -749,7 +753,7 @@ def _validate_phase_invariants(phase, state, workspace):
     task_id = state.get("currentTaskId", "")
     run_id = state.get("currentRunId", "")
 
-    if phase in ("EXECUTING_TASK", "NEEDS_CHANGE_REVIEW", "NEEDS_GATE"):
+    if phase in ("EXECUTING_TASK", "NEEDS_CHANGE_REVIEW", "NEEDS_GATE", "NEEDS_BOUNDARY_DECISION"):
         if not task_id:
             errors.append(f"team-state: phase '{phase}' requires currentTaskId")
         if not run_id:
@@ -2400,8 +2404,10 @@ def _compute_next_action(phase, status, human_required, workspace):
         "EXECUTING_TASK": ("RUN_EXECUTOR", "EXECUTING_TASK", ""),
         "NEEDS_CHANGE_REVIEW": ("RUN_CHANGE_REVIEWER", "NEEDS_CHANGE_REVIEW", ""),
         "NEEDS_GATE": ("RUN_GATEKEEPER", "NEEDS_GATE", ""),
+        "NEEDS_BOUNDARY_DECISION": ("RUN_QUALITY_VALUE_MANAGER", "NEEDS_BOUNDARY_DECISION", ""),
         "REVIEW_FAILED": ("RUN_EXECUTOR", "EXECUTING_TASK", ""),
         "HUMAN_DECISION_REQUIRED": ("STOP", "HUMAN_DECISION_REQUIRED", ""),
+        "BOUNDARY_STOPPED": ("STOP", "BOUNDARY_STOPPED", ""),
         "DONE": ("STOP", "DONE", ""),
     }
 
@@ -2446,7 +2452,7 @@ def _compute_next_action(phase, status, human_required, workspace):
     entry = dispatch.get(phase)
     if entry:
         action, new_phase, tid = entry
-        if phase in ("EXECUTING_TASK", "NEEDS_CHANGE_REVIEW", "NEEDS_GATE", "REVIEW_FAILED"):
+        if phase in ("EXECUTING_TASK", "NEEDS_CHANGE_REVIEW", "NEEDS_GATE", "NEEDS_BOUNDARY_DECISION", "REVIEW_FAILED"):
             state = read_json(os.path.join(workspace, "state", "team-state.json"))
             tid = state.get("currentTaskId", "")
         return {"nextAction": action, "phase": new_phase, "taskId": tid, "humanRequired": next_human}
@@ -2470,6 +2476,7 @@ _TRANSITIONS = {
     "RETRY_EXECUTOR": ("EXECUTING_TASK", False, False),
     "RUN_CHANGE_REVIEWER": ("NEEDS_CHANGE_REVIEW", False, False),
     "RUN_GATEKEEPER": ("NEEDS_GATE", False, False),
+    "RUN_QUALITY_VALUE_MANAGER": ("NEEDS_BOUNDARY_DECISION", False, False),
     "RUN_WATCHDOG": ("EXECUTING_TASK", False, False),
     "CONTINUE_LOOP": ("READY_FOR_NEXT_TASK", False, False),
     "SET_SAFE_CHECKPOINT": ("SAFE_CHECKPOINT", False, False),
@@ -2484,6 +2491,7 @@ _TRANSITIONS = {
 _TRANSITIONS_PRESERVE_IDENTITY = frozenset([
     "RUN_CHANGE_REVIEWER",
     "RUN_GATEKEEPER",
+    "RUN_QUALITY_VALUE_MANAGER",
     "GATE_FAILED",
     "REQUEST_CHANGES",
     "RUN_WATCHDOG",
@@ -2608,6 +2616,12 @@ def cmd_apply_transition(args):
         sys.exit(1)
 
     state = read_json(os.path.join(workspace, "state", "team-state.json"))
+    if action in ("CONTINUE_LOOP", "SET_SAFE_CHECKPOINT", "SET_DONE"):
+        lock = boundary_mod.advancement_lock_status(workspace)
+        if lock.get("status") != "PASS":
+            reasons = "; ".join(x.get("reason", "boundary acceptance missing") for x in lock.get("blockingBoundaries", [])[:5])
+            print(f"Error: advancement locked by quality/value boundary: {reasons}", file=sys.stderr)
+            sys.exit(1)
     previous_phase = state.get("currentPhase", "")
     now = utc_now_iso()
     run_id = ""
@@ -2843,7 +2857,7 @@ def cmd_check_scope(args):
         state_task_id = state.get("currentTaskId", "")
         task_scoped_phases = frozenset([
             "EXECUTING_TASK", "NEEDS_CHANGE_REVIEW", "NEEDS_GATE",
-            "REVIEW_FAILED", "GATE_FAILED"
+            "NEEDS_BOUNDARY_DECISION", "REVIEW_FAILED", "GATE_FAILED"
         ])
         task_is_active = (
             state_task_id
@@ -3148,6 +3162,10 @@ def cmd_run_gates(args):
         overall = "FAIL"
         next_action = "FIX_GATE_FAILURE"
 
+    boundary_id = boundary_mod.find_applicable_boundary(workspace, run_id=run_id, task_id=task_id) if overall == "PASS" else None
+    if boundary_id:
+        next_action = "RUN_QUALITY_VALUE_MANAGER"
+
     gate_result = {
         "schemaVersion": 1,
         "runId": run_id,
@@ -3157,8 +3175,55 @@ def cmd_run_gates(args):
         "nextAction": next_action,
         "humanRequired": False
     }
+    if boundary_id:
+        gate_result["boundaryId"] = boundary_id
 
     write_json(os.path.join(run_dir, "gate-result.json"), gate_result)
+
+    # A configured boundary physically blocks task completion after deterministic gates.
+    if overall == "PASS" and boundary_id:
+        try:
+            _write_review_evidence(
+                workspace, task_id, reviewer="gatekeeper", gate_result="PASS",
+                run_id=run_id, preserve_existing=True,
+            )
+            packet = boundary_mod.measure_boundary(workspace, boundary_id, project_root=os.path.dirname(os.path.abspath(workspace)))
+        except Exception as exc:
+            print(f"Error: boundary measurement failed after gate PASS: {exc}", file=sys.stderr)
+            sys.exit(1)
+        state["currentPhase"] = "NEEDS_BOUNDARY_DECISION"
+        state["status"] = "IN_PROGRESS"
+        state["lastGateStatus"] = "PASS"
+        state["currentTaskId"] = task_id
+        state["currentRunId"] = run_id
+        state["updatedAtUtc"] = utc_now_iso()
+        write_json(state_path, state)
+        append_jsonl(os.path.join(workspace, "state", "events.jsonl"), {
+            "schemaVersion": 1,
+            "eventId": f"evt-gate-pass-{os.getpid()}-{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}",
+            "type": "GATE_PASSED",
+            "actor": "gatekeeper",
+            "timestampUtc": utc_now_iso(),
+            "summary": f"Deterministic gates passed for run {run_id}; boundary acceptance still required",
+            "taskId": task_id,
+            "runId": run_id,
+            "data": {"boundaryId": boundary_id, "advancementLocked": True},
+        })
+        append_jsonl(os.path.join(workspace, "state", "events.jsonl"), {
+            "schemaVersion": 1,
+            "eventId": f"evt-boundary-measure-{os.getpid()}-{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}",
+            "type": "BOUNDARY_MEASURED",
+            "actor": "runtime",
+            "timestampUtc": utc_now_iso(),
+            "summary": f"Deterministic boundary packet created for {boundary_id}; advancement locked",
+            "taskId": task_id,
+            "runId": run_id,
+            "data": {"boundaryId": boundary_id, "packetFingerprint": packet.get("packetFingerprint", "")},
+        })
+        gate_result["boundaryPacketFingerprint"] = packet.get("packetFingerprint", "")
+        write_json(os.path.join(run_dir, "gate-result.json"), gate_result)
+        print(json.dumps(gate_result, ensure_ascii=False))
+        return
 
     # Update team-state based on gate outcome
     if overall == "PASS":
@@ -5960,6 +6025,11 @@ def cmd_final_gate(args):
             break
 
     # ------------------------------------------------------------------
+    # Check 15: quality/value boundary acceptance chain
+    # ------------------------------------------------------------------
+    checks.append(boundary_mod.final_gate_check(workspace, project_root=host.git_root))
+
+    # ------------------------------------------------------------------
     # Compute overall status
     # ------------------------------------------------------------------
     # Component-specific evidence states MISSING/STALE/INVALID are all
@@ -7355,6 +7425,8 @@ def cmd_adapter_verify(args):
             "release-info", "compat-check", "schema-lint", "dogfood",
             "inbox-send", "inbox-receive", "inbox-stats", "advisory-check",
             "team-propose", "team-negotiate", "team-accept", "team-materialize",
+            "boundary-create", "boundary-measure", "boundary-status", "boundary-decide",
+            "boundary-complete-improvement", "boundary-verify", "boundary-lock-status",
             "adapter-verify",
         }
 
@@ -7491,6 +7563,236 @@ def cmd_adapter_verify(args):
 
     sys.exit(0 if not violations else 1)
 
+
+
+# ---------------------------------------------------------------------------
+# Quality/value boundary commands
+# ---------------------------------------------------------------------------
+
+def _boundary_project_root(args, workspace):
+    return getattr(args, "project_root", "") or os.path.dirname(os.path.abspath(workspace))
+
+
+def cmd_boundary_create(args):
+    workspace = resolve_workspace(args.workspace)
+    contract = read_json(args.contract)
+    state = read_json(os.path.join(workspace, "state", "team-state.json"))
+    active_task_id = state.get("currentTaskId", "")
+    active_run_id = state.get("currentRunId", "")
+    contract_task_id = contract.get("taskId", "")
+    contract_run_id = contract.get("runId", "")
+    if active_task_id and contract_task_id != active_task_id:
+        raise boundary_mod.BoundaryError(
+            f"boundary taskId {contract_task_id!r} does not match active task {active_task_id!r}"
+        )
+    if active_run_id and contract_run_id != active_run_id:
+        raise boundary_mod.BoundaryError(
+            f"boundary runId {contract_run_id!r} does not match active run {active_run_id!r}"
+        )
+    if contract_run_id:
+        ledger = read_jsonl(os.path.join(workspace, "state", "run-ledger.jsonl"))
+        run = next((item for item in ledger if item.get("runId") == contract_run_id), None)
+        if run is None:
+            raise boundary_mod.BoundaryError(f"boundary runId is absent from run ledger: {contract_run_id}")
+        if contract_task_id and run.get("taskId") != contract_task_id:
+            raise boundary_mod.BoundaryError("boundary task/run identity contradicts the run ledger")
+        policy_path = os.path.join(workspace, "runs", contract_run_id, "execution-policy.json")
+        if os.path.isfile(policy_path):
+            execution_policy = read_json(policy_path)
+            selected_profile = execution_policy.get("selectedProfile", "")
+            if selected_profile and contract.get("profile", selected_profile) != selected_profile:
+                raise boundary_mod.BoundaryError(
+                    f"boundary profile {contract.get('profile')!r} does not match frozen execution profile {selected_profile!r}"
+                )
+            contract["profile"] = selected_profile or contract.get("profile", "standard")
+    result = boundary_mod.create_contract(
+        workspace, contract, project_root=_boundary_project_root(args, workspace)
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_boundary_measure(args):
+    workspace = resolve_workspace(args.workspace)
+    result = boundary_mod.measure_boundary(
+        workspace, args.boundary_id, project_root=_boundary_project_root(args, workspace)
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def _finalize_boundary_acceptance(workspace, boundary_id, acceptance):
+    state_path = os.path.join(workspace, "state", "team-state.json")
+    state = read_json(state_path)
+    task_id = acceptance.get("taskId", "")
+    run_id = acceptance.get("runId", "")
+    backlog_path = os.path.join(workspace, "state", "backlog.jsonl")
+    backlog = read_jsonl(backlog_path)
+    for task in backlog:
+        if task.get("taskId") == task_id:
+            task["status"] = "DONE"
+    with open(backlog_path, "w", encoding="utf-8") as f:
+        for task in backlog:
+            f.write(json.dumps(task, ensure_ascii=False) + "\n")
+    ledger_path = os.path.join(workspace, "state", "run-ledger.jsonl")
+    ledger = read_jsonl(ledger_path)
+    for entry in ledger:
+        if entry.get("runId") == run_id:
+            entry["status"] = "COMPLETED"
+            entry["result"] = "BOUNDARY_ACCEPTED"
+            entry["boundaryId"] = boundary_id
+    with open(ledger_path, "w", encoding="utf-8") as f:
+        for entry in ledger:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    state["currentPhase"] = "SAFE_CHECKPOINT"
+    state["status"] = "IN_PROGRESS"
+    state["currentTaskId"] = ""
+    state["currentRunId"] = ""
+    state["lastDecisionId"] = acceptance.get("managerDecisionFingerprint", "")
+    state["updatedAtUtc"] = utc_now_iso()
+    write_json(state_path, state)
+    ct_path = os.path.join(workspace, "state", "current-task.json")
+    if os.path.exists(ct_path):
+        os.remove(ct_path)
+    _write_continuation_decision(
+        workspace=workspace,
+        decision="SAFE_CHECKPOINT",
+        phase="SAFE_CHECKPOINT",
+        task_id=task_id,
+        run_id=run_id,
+        justification=f"Quality/value boundary {boundary_id} accepted with a current receipt",
+    )
+    append_jsonl(os.path.join(workspace, "state", "events.jsonl"), {
+        "schemaVersion": 1,
+        "eventId": f"evt-boundary-{os.getpid()}-{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}",
+        "type": "BOUNDARY_ACCEPTED",
+        "actor": "quality-value-manager",
+        "timestampUtc": utc_now_iso(),
+        "summary": f"Boundary {boundary_id} accepted and advancement unlocked",
+        "taskId": task_id,
+        "runId": run_id,
+        "data": {"boundaryId": boundary_id, "receiptFingerprint": acceptance.get("receiptFingerprint", "")},
+    })
+
+
+def cmd_boundary_decide(args):
+    workspace = resolve_workspace(args.workspace)
+    result = boundary_mod.record_decision(
+        workspace,
+        args.boundary_id,
+        args.decision,
+        actor=args.actor,
+        selected_candidate_id=args.candidate_id,
+        soft_debt_ids=args.soft_debt,
+        reason=args.reason,
+        project_root=_boundary_project_root(args, workspace),
+    )
+    decision = result["decision"]
+    state_path = os.path.join(workspace, "state", "team-state.json")
+    state = read_json(state_path)
+    if decision in ("ACCEPT_BOUNDARY", "ACCEPT_WITH_RECORDED_SOFT_DEBT"):
+        acceptance = boundary_mod.verify_acceptance(
+            workspace, args.boundary_id, project_root=_boundary_project_root(args, workspace)
+        )
+        _finalize_boundary_acceptance(workspace, args.boundary_id, acceptance)
+    elif decision == "IMPROVE_CURRENT_BOUNDARY":
+        state["currentPhase"] = "EXECUTING_TASK"
+        state["status"] = "IN_PROGRESS"
+        state["updatedAtUtc"] = utc_now_iso()
+        write_json(state_path, state)
+    elif decision == "SPLIT_CURRENT_BOUNDARY":
+        state["currentPhase"] = "NEEDS_TASK_SLICING"
+        state["status"] = "IN_PROGRESS"
+        state["updatedAtUtc"] = utc_now_iso()
+        write_json(state_path, state)
+    elif decision == "STOP_BUDGET_EXHAUSTED":
+        state["currentPhase"] = "BOUNDARY_STOPPED"
+        state["status"] = "BLOCKED"
+        state["updatedAtUtc"] = utc_now_iso()
+        write_json(state_path, state)
+    elif decision == "REQUEST_HUMAN_DECISION":
+        state["currentPhase"] = "HUMAN_DECISION_REQUIRED"
+        state["status"] = "HUMAN_DECISION_REQUIRED"
+        state["humanRequired"] = True
+        state["updatedAtUtc"] = utc_now_iso()
+        write_json(state_path, state)
+        blocker_id = "blocker-boundary-" + args.boundary_id.replace("_", "-")
+        append_jsonl(os.path.join(workspace, "state", "blockers.jsonl"), {
+            "schemaVersion": 1,
+            "blockerId": blocker_id,
+            "runId": state.get("currentRunId", ""),
+            "taskId": state.get("currentTaskId", ""),
+            "type": "HUMAN_DECISION_REQUIRED",
+            "category": "PRODUCT_BEHAVIOR_AMBIGUITY",
+            "summary": args.reason or f"Boundary {args.boundary_id} requires a human decision",
+            "evidence": [f"boundaries/{args.boundary_id}/boundary-packet.json", f"boundaries/{args.boundary_id}/boundary-decision.json"],
+            "questionsForHuman": ["Choose the acceptable quality/value trade-off or authorize a policy change outside the manager's permissions."],
+        })
+    append_jsonl(os.path.join(workspace, "state", "events.jsonl"), {
+        "schemaVersion": 1,
+        "eventId": f"evt-boundary-decision-{os.getpid()}-{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}",
+        "type": "BOUNDARY_DECISION_RECORDED",
+        "actor": args.actor,
+        "timestampUtc": utc_now_iso(),
+        "summary": f"Boundary {args.boundary_id} decision: {decision}",
+        "taskId": state.get("currentTaskId", ""),
+        "runId": state.get("currentRunId", ""),
+        "data": {"boundaryId": args.boundary_id, "decisionFingerprint": result.get("decisionFingerprint", "")},
+    })
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_boundary_complete_improvement(args):
+    workspace = resolve_workspace(args.workspace)
+    result = boundary_mod.complete_improvement(
+        workspace, args.boundary_id, project_root=_boundary_project_root(args, workspace)
+    )
+    state_path = os.path.join(workspace, "state", "team-state.json")
+    state = read_json(state_path)
+    state["currentPhase"] = "NEEDS_BOUNDARY_DECISION"
+    state["status"] = "IN_PROGRESS"
+    state["updatedAtUtc"] = utc_now_iso()
+    write_json(state_path, state)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_boundary_status(args):
+    workspace = resolve_workspace(args.workspace)
+    result = boundary_mod.dashboard_status(
+        workspace, args.boundary_id, project_root=_boundary_project_root(args, workspace)
+    )
+    if getattr(args, "format", "json") == "html":
+        rendered = boundary_mod.render_dashboard_html(result)
+    else:
+        rendered = json.dumps(result, ensure_ascii=False, indent=2)
+    output = getattr(args, "output", "")
+    if output:
+        os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
+        with open(output, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(rendered)
+            if not rendered.endswith("\n"):
+                handle.write("\n")
+    else:
+        print(rendered)
+
+
+def cmd_boundary_verify(args):
+    workspace = resolve_workspace(args.workspace)
+    try:
+        result = boundary_mod.verify_acceptance(
+            workspace, args.boundary_id, project_root=_boundary_project_root(args, workspace)
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    except boundary_mod.BoundaryError as exc:
+        print(json.dumps({"status": "FAIL", "boundaryId": args.boundary_id, "reason": str(exc)}, ensure_ascii=False, indent=2))
+        sys.exit(1)
+
+
+def cmd_boundary_lock_status(args):
+    workspace = resolve_workspace(args.workspace)
+    result = boundary_mod.advancement_lock_status(
+        workspace, project_root=_boundary_project_root(args, workspace)
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    sys.exit(0 if result.get("status") == "PASS" else 1)
 
 # ---------------------------------------------------------------------------
 # Main
@@ -7757,6 +8059,45 @@ def main():
     p_team_materialize.add_argument("--backend", choices=["codex", "opencode"], required=True)
     p_team_materialize.add_argument("--output-dir", required=True)
 
+    # quality/value boundary manager
+    def add_boundary_common(parser_obj):
+        parser_obj.add_argument("--workspace", "-w", default=".teamloop")
+        parser_obj.add_argument("--project-root", default="")
+
+    p_boundary_create = subparsers.add_parser("boundary-create", help="Create an immutable quality/value boundary contract")
+    add_boundary_common(p_boundary_create)
+    p_boundary_create.add_argument("--contract", required=True)
+
+    p_boundary_measure = subparsers.add_parser("boundary-measure", help="Recompute the authoritative boundary packet")
+    add_boundary_common(p_boundary_measure)
+    p_boundary_measure.add_argument("--boundary-id", required=True)
+
+    p_boundary_decide = subparsers.add_parser("boundary-decide", help="Record one runtime-validated quality/value decision")
+    add_boundary_common(p_boundary_decide)
+    p_boundary_decide.add_argument("--boundary-id", required=True)
+    p_boundary_decide.add_argument("--decision", required=True, choices=list(boundary_mod.DECISIONS))
+    p_boundary_decide.add_argument("--actor", default="quality-value-manager")
+    p_boundary_decide.add_argument("--candidate-id", default="")
+    p_boundary_decide.add_argument("--soft-debt", action="append", default=[])
+    p_boundary_decide.add_argument("--reason", default="")
+
+    p_boundary_complete = subparsers.add_parser("boundary-complete-improvement", help="Remeasure exactly one bounded improvement")
+    add_boundary_common(p_boundary_complete)
+    p_boundary_complete.add_argument("--boundary-id", required=True)
+
+    p_boundary_status = subparsers.add_parser("boundary-status", help="Show the quality/value boundary dashboard packet")
+    add_boundary_common(p_boundary_status)
+    p_boundary_status.add_argument("--boundary-id", required=True)
+    p_boundary_status.add_argument("--format", choices=["json", "html"], default="json")
+    p_boundary_status.add_argument("--output", "-o", default="")
+
+    p_boundary_verify = subparsers.add_parser("boundary-verify", help="Verify a current acceptance receipt and predecessor chain")
+    add_boundary_common(p_boundary_verify)
+    p_boundary_verify.add_argument("--boundary-id", required=True)
+
+    p_boundary_lock = subparsers.add_parser("boundary-lock-status", help="Verify that every active boundary permits advancement")
+    add_boundary_common(p_boundary_lock)
+
     # adapter-verify
     p_adapter_verify = subparsers.add_parser("adapter-verify", help="Verify adapter contract against runtime")
     p_adapter_verify.add_argument("--workspace", "-w", default=".teamloop")
@@ -7809,10 +8150,21 @@ def main():
         "team-negotiate": cmd_team_negotiate,
         "team-accept": cmd_team_accept,
         "team-materialize": cmd_team_materialize,
+        "boundary-create": cmd_boundary_create,
+        "boundary-measure": cmd_boundary_measure,
+        "boundary-decide": cmd_boundary_decide,
+        "boundary-complete-improvement": cmd_boundary_complete_improvement,
+        "boundary-status": cmd_boundary_status,
+        "boundary-verify": cmd_boundary_verify,
+        "boundary-lock-status": cmd_boundary_lock_status,
         "adapter-verify": cmd_adapter_verify,
     }
 
-    commands[args.command](args)
+    try:
+        commands[args.command](args)
+    except boundary_mod.BoundaryError as exc:
+        print(json.dumps({"status": "FAIL", "command": args.command, "reason": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

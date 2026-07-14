@@ -54,6 +54,7 @@ PowerShell coverage mirrors the critical profile, manifest, no-progress, fake-cl
 | Routing | runtime-owned decisions, watchdog recovery, audit watchdog → project gates, no watchdog self-loop, mandatory final sentinel/final gate |
 | Performance | fake clock, trace schema, deterministic role-invocation comparison |
 | OpenCode | runtime command order, no direct runtime-owned state mutation |
+| Quality/value boundary | hard-gate non-waiver, explicit soft debt, payoff ordering, measured progress, finite budgets, advancement lock, drift/replay/tamper rejection, restart safety, dashboard semantics |
 
 ## Fresh-workspace smoke
 
@@ -155,3 +156,32 @@ For an optimized run, a missing final sentinel is a blocking final-gate failure.
 ```
 
 A report is not proof by itself. Verify that the claimed content exists in the checked-out Git `HEAD` and that current hashes still match reviewed evidence.
+
+
+## Quality/value boundary focused tests
+
+```bash
+python3 -m unittest tests.test_quality_value_boundary -v
+TEAMLOOP_TEST_FROM=265 TEAMLOOP_TEST_TO=266 PY=python3 bash tests/run-tests.sh
+```
+
+The adversarial suite proves that manager prose or decision JSON alone cannot grant acceptance; current primary artifacts, validation evidence, trusted history, role receipt, policy/runtime fingerprints, and predecessor receipts must all verify.
+
+A manual smoke should observe:
+
+```text
+gates PASS -> NEEDS_BOUNDARY_DECISION
+advance before receipt -> blocked
+ACCEPT_BOUNDARY with current packet -> SAFE_CHECKPOINT
+artifact drift -> boundary-verify FAIL and advancement locked
+```
+
+### Boundary dashboard smoke
+
+After creating and measuring a boundary:
+
+```bash
+python scripts/teamloop-core.py boundary-status --workspace .teamloop --boundary-id <id> --format html --output boundary-dashboard.html
+```
+
+Verify that the HTML contains contextual hints and does not count draft coverage as accepted progress.

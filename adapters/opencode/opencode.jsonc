@@ -22,6 +22,9 @@
     },
     "gatekeeper": {
       "file": "adapters/opencode/agents/gatekeeper.md"
+    },
+    "quality-value-manager": {
+      "file": "adapters/opencode/agents/quality-value-manager.md"
     }
   },
   "commands": {

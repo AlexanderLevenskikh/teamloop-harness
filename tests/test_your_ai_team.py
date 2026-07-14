@@ -50,6 +50,56 @@ class YourAITeamTests(unittest.TestCase):
         self.assertEqual("BUDGET_UNSATISFIED", p["status"])
         self.assertTrue(p["unmetConstraints"])
 
+    def test_mutating_task_has_required_quality_value_manager(self):
+        p = team.propose("Почини баг в production")
+        role = next(r for r in p["team"] if r["roleId"] == "quality-value-manager")
+        self.assertTrue(role["required"])
+        self.assertEqual("final-only", role["engagement"])
+        self.assertFalse(role["mutatesWorkspace"])
+
+    def test_quality_value_manager_cannot_be_removed(self):
+        p = team.propose("Почини баг в production")
+        n = team.negotiate(p, request="Убери boundary manager")
+        self.assertIn("quality-value-manager", [r["roleId"] for r in n["team"]])
+        self.assertTrue(any(t["action"] == "refused" for t in n["tradeoffs"]))
+
+    def test_materialized_quality_value_manager_is_narrow_and_read_only(self):
+        p = team.accept(team.propose("Почини баг в production", backend="opencode"))
+        with tempfile.TemporaryDirectory() as td:
+            team.materialize(p, "opencode", td)
+            config = json.loads((Path(td) / "opencode.json").read_text())
+            permission = config["agent"]["quality-value-manager"]["permission"]
+            self.assertEqual("deny", permission["edit"])
+            self.assertEqual("deny", permission["task"]["*"])
+            self.assertEqual("allow", permission["bash"]["scripts/boundary-status.sh *"])
+            self.assertEqual("allow", permission["bash"]["scripts/boundary-decide.sh *"])
+            self.assertEqual("deny", permission["bash"]["*"])
+
+    def test_mutating_task_has_required_quality_value_manager(self):
+        p = team.propose("Почини баг в production")
+        role = next(r for r in p["team"] if r["roleId"] == "quality-value-manager")
+        self.assertTrue(role["required"])
+        self.assertEqual("final-only", role["engagement"])
+        self.assertFalse(role["mutatesWorkspace"])
+
+    def test_quality_value_manager_cannot_be_removed(self):
+        p = team.propose("Почини баг в production")
+        n = team.negotiate(p, request="Убери boundary manager")
+        self.assertIn("quality-value-manager", [r["roleId"] for r in n["team"]])
+        self.assertTrue(any(t["action"] == "refused" for t in n["tradeoffs"]))
+
+    def test_materialized_quality_value_manager_is_narrow_and_read_only(self):
+        p = team.accept(team.propose("Почини баг в production", backend="opencode"))
+        with tempfile.TemporaryDirectory() as td:
+            team.materialize(p, "opencode", td)
+            config = json.loads((Path(td) / "opencode.json").read_text())
+            permission = config["agent"]["quality-value-manager"]["permission"]
+            self.assertEqual("deny", permission["edit"])
+            self.assertEqual("deny", permission["task"]["*"])
+            self.assertEqual("allow", permission["bash"]["scripts/boundary-status.sh *"])
+            self.assertEqual("allow", permission["bash"]["scripts/boundary-decide.sh *"])
+            self.assertEqual("deny", permission["bash"]["*"])
+
     def test_manager_cannot_be_removed(self):
         p = team.propose("Сделай простой лендинг")
         n = team.negotiate(p, request="Убери менеджера")

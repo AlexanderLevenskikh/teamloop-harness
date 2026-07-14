@@ -3,21 +3,62 @@
   "title": "RunLedger",
   "description": "Run ledger entry",
   "type": "object",
-  "required": ["schemaVersion", "runId", "status", "startedAtUtc", "phase", "result"],
+  "required": [
+    "schemaVersion",
+    "runId",
+    "status",
+    "startedAtUtc",
+    "phase",
+    "result"
+  ],
   "properties": {
-    "schemaVersion": { "type": "integer", "const": 1 },
-    "runId": { "type": "string", "pattern": "^run-" },
-    "status": { "type": "string", "enum": ["IN_PROGRESS", "COMPLETED", "FAILED"] },
-    "startedAtUtc": { "type": "string", "format": "date-time" },
-    "finishedAtUtc": { "type": "string", "format": "date-time" },
-    "taskId": { "type": "string" },
-    "phase": { "type": "string" },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^run-"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "IN_PROGRESS",
+        "COMPLETED",
+        "FAILED"
+      ]
+    },
+    "startedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finishedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "taskId": {
+      "type": "string"
+    },
+    "phase": {
+      "type": "string"
+    },
     "result": {
       "type": "string",
       "enum": [
-        "NEEDS_RESEARCH", "NEEDS_TASK_SLICING", "NEEDS_CHANGE_REVIEW", "NEEDS_GATE",
-        "READY_FOR_NEXT_TASK", "SAFE_CHECKPOINT", "HUMAN_DECISION_REQUIRED", "DONE", "FAILED"
+        "NEEDS_RESEARCH",
+        "NEEDS_TASK_SLICING",
+        "NEEDS_CHANGE_REVIEW",
+        "NEEDS_GATE",
+        "READY_FOR_NEXT_TASK",
+        "SAFE_CHECKPOINT",
+        "HUMAN_DECISION_REQUIRED",
+        "DONE",
+        "FAILED",
+        "BOUNDARY_ACCEPTED"
       ]
+    },
+    "boundaryId": {
+      "type": "string"
     }
   },
   "additionalProperties": false

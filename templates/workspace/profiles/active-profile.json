@@ -25,5 +25,15 @@
   "taskSlicing": {
     "defaultMaxFilesPerTask": 5,
     "defaultMaxRisk": "medium"
+  },
+  "boundaryManagement": {
+    "enabled": true,
+    "invocationBoundary": "after-required-gates-before-task-completion",
+    "profiles": {
+      "fast": 2,
+      "standard": 4,
+      "audit": 6
+    },
+    "hardQualityThresholdsProfileIndependent": true
   }
 }

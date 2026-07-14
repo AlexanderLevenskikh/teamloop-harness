@@ -25,7 +25,7 @@ All scripts have `.sh` and `.ps1` variants. See [RUNTIME.md](RUNTIME.md) for ful
 
 ## YourAITeam — task-specific team composition
 
-YourAITeam 0.4.1 provides a front door that proposes the **minimum sufficient AI team** for a task before subagents start spending tokens. The user can negotiate the token ceiling, role grades, engagement, and removed coverage; the accepted contract can then be materialized for Codex or OpenCode.
+YourAITeam 0.5.0-alpha.1 provides a front door that proposes the **minimum sufficient AI team** for a task before subagents start spending tokens. The user can negotiate the token ceiling, role grades, engagement, and removed coverage; the accepted contract can then be materialized for Codex or OpenCode.
 
 ```bash
 bash scripts/your-ai-team.sh propose --backend codex \
@@ -72,6 +72,7 @@ See [YOUR_AI_TEAM.md](YOUR_AI_TEAM.md), the [worked examples](examples/your-ai-t
 | gatekeeper | Runs formal gates |
 | watchdog | Diagnoses deterministic no-progress and contradictory runtime behavior |
 | sentinel | Performs policy-required read-only integrity inspection |
+| quality-value-manager | Selects a bounded accept/improve/split/stop/human decision from authoritative facts; cannot edit implementation or evidence |
 
 ## Scripts
 
@@ -96,7 +97,10 @@ See [YOUR_AI_TEAM.md](YOUR_AI_TEAM.md), the [worked examples](examples/your-ai-t
 | `route-role` | Persist deterministic event-driven role routing decisions |
 | `record-performance` | Record best-effort runtime performance phases |
 | `performance-report` | Print trace totals and deterministic routing comparison |
-| `final-gate` | Aggregate state, memory, continuation, scope, gates, sentinel, guard, review, contract, and no-progress checks |
+| `final-gate` | Aggregate state, memory, continuation, scope, gates, sentinel, guard, review, contract, no-progress, and boundary acceptance checks |
+| `boundary-create` / `boundary-measure` | Create an opt-in boundary contract and recompute authoritative facts |
+| `boundary-decide` | Record one runtime-validated quality/value decision |
+| `boundary-verify` / `boundary-lock-status` | Verify the current receipt chain and physical advancement lock |
 
 ## Fast Execution Contract
 
@@ -106,7 +110,7 @@ See [YOUR_AI_TEAM.md](YOUR_AI_TEAM.md), the [worked examples](examples/your-ai-t
 - `standard`: executor + reviewer; watchdog is trigger-driven;
 - `audit`: executor + reviewer + watchdog + sentinel.
 
-Profiles never disable scope, evidence, required project gates, final sentinel, final gate, or runtime-state integrity. Each run freezes an immutable execution policy/manifest, records semantic progress, blocks identical retries, and emits a best-effort performance trace. See [docs/FAST_EXECUTION.md](docs/FAST_EXECUTION.md).
+Profiles never disable scope, evidence, required project gates, final sentinel, final gate, runtime-state integrity, or boundary hard invariants. Boundary profiles only change the finite improvement budget: fast=2, standard=4, audit=6. Each run freezes an immutable execution policy/manifest, records semantic progress, blocks identical retries, and emits a best-effort performance trace. See [docs/FAST_EXECUTION.md](docs/FAST_EXECUTION.md).
 
 ## Memory
 
@@ -132,7 +136,7 @@ bash scripts/memory-doctor.sh --workspace .teamloop
 bash scripts/final-gate.sh --workspace .teamloop
 ```
 
-`final-gate` writes `.teamloop/state/final-gate-result.json` and fails on blocking state, scope, gate, sentinel, reviewed-content, immutable-contract, or unresolved no-progress defects. A missing final sentinel is blocking for optimized runs.
+`final-gate` writes `.teamloop/state/final-gate-result.json` and fails on blocking state, scope, gate, sentinel, reviewed-content, immutable-contract, or unresolved no-progress defects. A missing final sentinel is blocking for optimized runs. For tasks with a boundary contract, gate PASS enters `NEEDS_BOUNDARY_DECISION`; task/run completion remains locked until a current acceptance receipt passes full-chain verification. See [Quality/Value Boundary Management](docs/QUALITY_VALUE_BOUNDARY.md) ([RU](docs/QUALITY_VALUE_BOUNDARY.ru.md)).
 
 ## The Team Loop
 
@@ -146,3 +150,11 @@ See [TESTING.md](TESTING.md) for validation checklist and maturity ladder.
 ## OpenCode Integration
 
 `adapters/opencode/` contains source templates (agents, commands, config). When a project is initialized, these are copied to `.opencode/` as active project-local configuration. Use `/supervised-task` to start a supervised delivery run. See [RUNTIME.md](RUNTIME.md) for full details.
+
+### Quality/value dashboard
+
+```bash
+python scripts/teamloop-core.py boundary-status --workspace .teamloop --boundary-id <id> --format html --output boundary-dashboard.html
+```
+
+The report separates draft coverage from receipt-verified accepted progress.

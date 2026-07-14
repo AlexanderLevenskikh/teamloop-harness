@@ -34,6 +34,14 @@ ROLE_CATALOG: Dict[str, Dict[str, Any]] = {
         "sandbox": "workspace-write",
         "summary": "Owns the goal, budget, stopping decision, trade-offs, and final acceptance.",
     },
+    "quality-value-manager": {
+        "title": "Quality/Value Boundary Manager",
+        "baseTokens": 3200,
+        "mandatory": True,
+        "mutates": False,
+        "sandbox": "read-only",
+        "summary": "Chooses accept, improve, split, stop, or human escalation from a deterministic boundary packet.",
+    },
     "explorer": {
         "title": "Code Explorer",
         "baseTokens": 4200,
@@ -122,6 +130,7 @@ ROLE_CATALOG: Dict[str, Dict[str, Any]] = {
 
 ALIASES = {
     "manager": "delivery-manager", "менеджер": "delivery-manager",
+    "quality-manager": "quality-value-manager", "quality manager": "quality-value-manager", "quality value manager": "quality-value-manager", "boundary-manager": "quality-value-manager", "boundary manager": "quality-value-manager", "менеджер-границы": "quality-value-manager",
     "researcher": "researcher", "исследователь": "researcher",
     "reviewer": "reviewer", "ревьюер": "reviewer", "ревью": "reviewer",
     "developer": "implementer", "разработчик": "implementer", "executor": "implementer",
@@ -266,6 +275,14 @@ def _initial_team(analysis: Dict[str, Any], preference: str) -> List[Dict[str, A
             team.extend([_role("implementer", "economy" if preference == "cost" and risk == "low" else "balanced"), _role("verifier", "economy" if risk == "low" else "balanced", engagement="final-only")])
             if risk != "low" or preference == "quality":
                 team.append(_role("reviewer", "balanced", required=False, engagement="final-only"))
+    if analysis.get("mutating"):
+        team.append(_role(
+            "quality-value-manager",
+            "economy" if risk == "low" else "balanced",
+            required=True,
+            engagement="final-only",
+            reason="Runs once per authoritative metrics fingerprint and cannot waive hard gates.",
+        ))
     return team
 
 
@@ -317,7 +334,7 @@ def _optimize(team: List[Dict[str, Any]], max_tokens: Optional[int], max_roles: 
         for role in sorted(team, key=lambda r: r["expectedTokens"], reverse=True):
             if _budget(team)["expectedTokens"] <= max_tokens:
                 break
-            if role["roleId"] == "delivery-manager" or role["grade"] == "economy":
+            if role["roleId"] in ("delivery-manager", "quality-value-manager") or role["grade"] == "economy":
                 continue
             old = role["grade"]
             new = "balanced" if old == "premium" else "economy"
@@ -429,8 +446,8 @@ def negotiate(proposal: Dict[str, Any], request: str = "", **explicit: Any) -> D
         role = _find_role(team, role_id)
         if not role:
             continue
-        if role_id == "delivery-manager":
-            manual_tradeoffs.append({"action": "refused", "roleId": role_id, "risk": "The manager is the owner of the global result and cannot be removed in MVP."})
+        if role_id in ("delivery-manager", "quality-value-manager"):
+            manual_tradeoffs.append({"action": "refused", "roleId": role_id, "risk": "The delivery and quality/value managers are runtime boundary owners and cannot be removed."})
             continue
         if role["required"] and not constraints.get("acceptRisk"):
             manual_tradeoffs.append({"action": "refused", "roleId": role_id, "risk": "Required coverage can only be removed with explicit acceptRisk."})
@@ -472,7 +489,34 @@ def accept(proposal: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _role_prompt(role: Dict[str, Any], proposal: Dict[str, Any]) -> str:
-    return f"""# {role['title']}\n\nYou are hired for one bounded engagement in {PRODUCT}.\n\nTask: {proposal['task']['description']}\n\nYour responsibility: {role['reason']}\n\nContract:\n- Stay inside this responsibility; do not invent adjacent work.\n- Expected engagement: {role['engagement']}.\n- Stop after at most {role['maxSteps']} agentic steps and return a concise evidence summary.\n- The Delivery Manager owns trade-offs and final acceptance.\n- A local metric is evidence, not the goal. Do not hide, suppress, or relabel problems merely to improve a score.\n- State residual uncertainty and unfinished work explicitly.\n"""
+    common = f"""# {role['title']}
+
+You are hired for one bounded engagement in {PRODUCT}.
+
+Task: {proposal['task']['description']}
+
+Your responsibility: {role['reason']}
+
+Contract:
+- Stay inside this responsibility; do not invent adjacent work.
+- Expected engagement: {role['engagement']}.
+- Stop after at most {role['maxSteps']} agentic steps and return a concise evidence summary.
+- The Delivery Manager owns trade-offs and final acceptance.
+- A local metric is evidence, not the goal. Do not hide, suppress, or relabel problems merely to improve a score.
+- State residual uncertainty and unfinished work explicitly.
+"""
+    if role["roleId"] == "quality-value-manager":
+        common += """
+Boundary constraints:
+- Read only the current deterministic packet through boundary-status.
+- Hard invariant failures can never be accepted or reclassified as soft debt.
+- Choose exactly one closed runtime decision.
+- Prefer the highest-payoff reusable root fix over leaf symptoms.
+- Invoke only boundary-status and boundary-decide; never edit code, metrics, evidence, policy, budget, history, or receipts.
+- Your decision is not acceptance. The runtime must validate it and write the receipt.
+- Never launch subagents.
+"""
+    return common
 
 
 def _toml_quote(value: str) -> str:
@@ -527,6 +571,13 @@ def materialize_opencode(proposal: Dict[str, Any], output: str) -> Dict[str, Any
             "edit": "allow" if role["mutatesWorkspace"] else "deny",
             "bash": "allow" if role["sandbox"] == "workspace-write" else "ask",
         }
+        if role["roleId"] == "quality-value-manager":
+            permission["bash"] = {
+                "scripts/boundary-status.sh *": "allow",
+                "scripts/boundary-decide.sh *": "allow",
+                "*": "deny",
+            }
+            permission["task"] = {"*": "deny"}
         if role["roleId"] == "delivery-manager":
             permission["task"] = allowed_tasks
         agents[role["roleId"]] = {
@@ -534,7 +585,18 @@ def materialize_opencode(proposal: Dict[str, Any], output: str) -> Dict[str, Any
             "prompt": f"{{file:./.opencode/agents/{role['roleId']}.md}}",
             "steps": role["maxSteps"], "permission": permission,
         }
-        front = ["---", f"description: {role['reason']}", f"mode: {mode}", f"steps: {role['maxSteps']}", "permission:", f"  edit: {'allow' if role['mutatesWorkspace'] else 'deny'}", f"  bash: {'allow' if role['sandbox'] == 'workspace-write' else 'ask'}"]
+        front = ["---", f"description: {role['reason']}", f"mode: {mode}", f"steps: {role['maxSteps']}", "permission:", f"  edit: {'allow' if role['mutatesWorkspace'] else 'deny'}"]
+        if role["roleId"] == "quality-value-manager":
+            front.extend([
+                "  bash:",
+                '    "scripts/boundary-status.sh *": allow',
+                '    "scripts/boundary-decide.sh *": allow',
+                '    "*": deny',
+                "  task:",
+                '    "*": deny',
+            ])
+        else:
+            front.append(f"  bash: {'allow' if role['sandbox'] == 'workspace-write' else 'ask'}")
         if role["roleId"] == "delivery-manager":
             front.extend(["  task:", '    "*": deny'] + [f"    {r['roleId']}: allow" for r in worker_roles])
         front.extend(["---", "", _role_prompt(role, proposal)])

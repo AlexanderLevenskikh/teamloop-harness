@@ -3,35 +3,89 @@
   "title": "GateResult",
   "description": "Gatekeeper gate execution result",
   "type": "object",
-  "required": ["schemaVersion", "runId", "taskId", "status", "checks"],
+  "required": [
+    "schemaVersion",
+    "runId",
+    "taskId",
+    "status",
+    "checks"
+  ],
   "properties": {
-    "schemaVersion": { "type": "integer", "const": 1 },
-    "runId": { "type": "string", "pattern": "^run-" },
-    "taskId": { "type": "string", "pattern": "^task-" },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^run-"
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^task-"
+    },
     "status": {
       "type": "string",
-      "enum": ["PASS", "FAIL", "SKIPPED", "ERROR"]
+      "enum": [
+        "PASS",
+        "FAIL",
+        "SKIPPED",
+        "ERROR"
+      ]
     },
     "checks": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "status"],
+        "required": [
+          "name",
+          "status"
+        ],
         "properties": {
-          "name": { "type": "string" },
-          "status": { "type": "string", "enum": ["PASS", "FAIL", "SKIPPED", "ERROR"] },
-          "command": { "type": "string" },
-          "exitCode": { "type": "integer" },
-          "stdout": { "type": "string" },
-          "stderr": { "type": "string" },
-          "summary": { "type": "string" }
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PASS",
+              "FAIL",
+              "SKIPPED",
+              "ERROR"
+            ]
+          },
+          "command": {
+            "type": "string"
+          },
+          "exitCode": {
+            "type": "integer"
+          },
+          "stdout": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       },
       "minItems": 1
     },
-    "nextAction": { "type": "string" },
-    "humanRequired": { "type": "boolean", "default": false }
+    "nextAction": {
+      "type": "string"
+    },
+    "humanRequired": {
+      "type": "boolean",
+      "default": false
+    },
+    "boundaryId": {
+      "type": "string"
+    },
+    "boundaryPacketFingerprint": {
+      "type": "string"
+    }
   },
   "additionalProperties": false
 }

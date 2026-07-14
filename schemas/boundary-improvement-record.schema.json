@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BoundaryImprovementRecord",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "boundaryId",
+    "beforePacketFingerprint",
+    "afterPacketFingerprint",
+    "beforeMetricsFingerprint",
+    "afterMetricsFingerprint",
+    "measuredDelta",
+    "outcome",
+    "sequence",
+    "previousRecordHash",
+    "recordedAtUtc",
+    "recordHash",
+    "primaryArtifactChanged",
+    "outcomeReason"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "boundaryId": {
+      "type": "string"
+    },
+    "candidateId": {
+      "type": "string"
+    },
+    "rootPatternId": {
+      "type": "string"
+    },
+    "beforePacketFingerprint": {
+      "type": "string",
+      "minLength": 64
+    },
+    "afterPacketFingerprint": {
+      "type": "string",
+      "minLength": 64
+    },
+    "beforeMetricsFingerprint": {
+      "type": "string",
+      "minLength": 64
+    },
+    "afterMetricsFingerprint": {
+      "type": "string",
+      "minLength": 64
+    },
+    "beforeProgressScore": {
+      "type": "number"
+    },
+    "afterProgressScore": {
+      "type": "number"
+    },
+    "measuredDelta": {
+      "type": "number"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "COMPLETED",
+        "NO_PROGRESS",
+        "FAILED"
+      ]
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "previousRecordHash": {
+      "type": "string"
+    },
+    "recordedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "recordHash": {
+      "type": "string",
+      "minLength": 64
+    },
+    "primaryArtifactChanged": {
+      "type": "boolean"
+    },
+    "outcomeReason": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

@@ -58,7 +58,7 @@ The MVP uses estimated model tokens, steps, role count, and coordination overhea
 
 Different roles can have different grades in the same team.
 
-## Manager invariant
+## Manager invariants
 
 `delivery-manager` cannot be removed. It owns:
 
@@ -67,6 +67,10 @@ Different roles can have different grades in the same team.
 - acceptance of the wave/stage;
 - disclosure of residual risks;
 - the right to reject a green metric when the product result is not acceptable.
+
+
+
+For mutating delivery tasks, `quality-value-manager` is also required at the final boundary. It is read-only and may only select among runtime-permitted actions after authoritative measurement. It cannot waive hard gates, edit implementation/evidence, alter its budget, or issue its own acceptance receipt.
 
 ## Composition is not gate intensity
 
@@ -91,6 +95,8 @@ Not yet implemented:
 - hot-reload of teams inside an already running session;
 - learning role estimates from historical runs;
 - full replacement of the legacy fixed lifecycle.
+
+Implemented as an alpha vertical slice: opt-in boundary contracts, deterministic packets, finite improvement cycles, trusted receipts, and advancement locks. See [docs/QUALITY_VALUE_BOUNDARY.md](docs/QUALITY_VALUE_BOUNDARY.md).
 
 ## Worked examples
 

@@ -9,7 +9,8 @@
     "change-reviewer",
     "gatekeeper",
     "watchdog",
-    "sentinel"
+    "sentinel",
+    "quality-value-manager"
   ],
   "maxConcurrentRuns": 1
 }

@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BoundaryContract",
+  "type": "object",
+  "required": ["schemaVersion", "boundaryId", "profile", "adapterId", "expectedDeliverables", "validationEvidence", "findingSources", "improvementCandidates", "projectRootIdentity", "policyFingerprint", "contractFingerprint", "createdAtUtc"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "boundaryId": {"type": "string", "pattern": "^[A-Za-z0-9._-]{3,120}$"},
+    "taskId": {"type": "string"},
+    "runId": {"type": "string"},
+    "profile": {"type": "string", "enum": ["fast", "standard", "audit"]},
+    "adapterId": {"type": "string", "minLength": 1},
+    "expectedDeliverables": {"type": "array", "items": {"type": "object"}},
+    "validationEvidence": {"type": "array", "items": {"type": "object"}},
+    "findingSources": {"type": "array", "items": {"type": "object"}},
+    "improvementCandidates": {"type": "array", "items": {"type": "object"}},
+    "predecessorBoundaryId": {"type": "string"},
+    "projectRootIdentity": {"type": "string", "minLength": 64},
+    "policyFingerprint": {"type": "string", "minLength": 64},
+    "contractFingerprint": {"type": "string", "minLength": 64},
+    "createdAtUtc": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

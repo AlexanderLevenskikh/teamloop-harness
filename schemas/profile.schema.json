@@ -3,23 +3,59 @@
   "title": "Profile",
   "description": "Domain-specific behavior profile",
   "type": "object",
-  "required": ["schemaVersion", "profileId", "displayName"],
+  "required": [
+    "schemaVersion",
+    "profileId",
+    "displayName"
+  ],
   "properties": {
-    "schemaVersion": { "type": "integer", "const": 1 },
-    "profileId": { "type": "string", "minLength": 1 },
-    "displayName": { "type": "string", "minLength": 1 },
-    "workspace": { "type": "string", "default": ".teamloop" },
-    "defaultAllowedWrites": { "type": "array", "items": { "type": "string" } },
-    "defaultForbiddenWrites": { "type": "array", "items": { "type": "string" } },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "profileId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace": {
+      "type": "string",
+      "default": ".teamloop"
+    },
+    "defaultAllowedWrites": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "defaultForbiddenWrites": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "discoveryQuestions": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "question"],
+        "required": [
+          "id",
+          "question"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "question": { "type": "string" },
-          "required": { "type": "boolean", "default": false }
+          "id": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean",
+            "default": false
+          }
         },
         "additionalProperties": false
       }
@@ -28,27 +64,105 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "type"],
+        "required": [
+          "name",
+          "type"
+        ],
         "properties": {
-          "name": { "type": "string" },
-          "type": { "type": "string", "enum": ["built-in", "shell"] },
-          "command": { "type": "string" },
-          "required": { "type": "boolean", "default": true },
-          "timeoutSeconds": { "type": "integer" }
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "built-in",
+              "shell"
+            ]
+          },
+          "command": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean",
+            "default": true
+          },
+          "timeoutSeconds": {
+            "type": "integer"
+          }
         },
         "additionalProperties": false
       }
     },
-    "roleOverrides": { "type": "object" },
+    "roleOverrides": {
+      "type": "object"
+    },
     "taskSlicing": {
       "type": "object",
       "properties": {
-        "defaultMaxFilesPerTask": { "type": "integer" },
-        "defaultMaxRisk": { "type": "string", "enum": ["low", "medium", "high"] }
+        "defaultMaxFilesPerTask": {
+          "type": "integer"
+        },
+        "defaultMaxRisk": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        }
       },
       "additionalProperties": false
     },
-    "completionCriteria": { "type": "array", "items": { "type": "string" } }
+    "completionCriteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "boundaryManagement": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "invocationBoundary",
+        "profiles",
+        "hardQualityThresholdsProfileIndependent"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "invocationBoundary": {
+          "type": "string"
+        },
+        "profiles": {
+          "type": "object",
+          "required": [
+            "fast",
+            "standard",
+            "audit"
+          ],
+          "properties": {
+            "fast": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "standard": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "audit": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "hardQualityThresholdsProfileIndependent": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

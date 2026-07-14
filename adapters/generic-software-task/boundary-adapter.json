@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "generic-software-task",
+  "displayName": "Generic Software Task Boundary Adapter",
+  "primaryArtifactMeasurement": {
+    "supportedKinds": [
+      "file",
+      "directory"
+    ],
+    "statuses": [
+      "READY",
+      "EMPTY",
+      "PLACEHOLDER",
+      "MISSING"
+    ]
+  },
+  "hardInvariantPolicy": {
+    "requiredMissing": "MISSING_REQUIRED_DELIVERABLE",
+    "requiredEmpty": "EMPTY_REQUIRED_DELIVERABLE",
+    "placeholder": "PLACEHOLDER_IMPLEMENTATION",
+    "requiredValidationNonPass": "REQUIRED_VALIDATION_FAILED"
+  },
+  "rootPatternExtraction": "finding.rootPatternId or deterministic issue type",
+  "costValueWeighting": "affectedItems * repetitionOrReuse * severityWeight * confidenceOfSafeFix / estimatedCost",
+  "acceptanceRequirements": [
+    "zero hard invariants",
+    "current validation evidence",
+    "current manager role receipt",
+    "current artifact and policy fingerprints",
+    "valid predecessor acceptance chain"
+  ],
+  "dashboardFields": [
+    "acceptedProgress",
+    "draftCoverage",
+    "hardBlockers",
+    "rootIssues",
+    "remainingImprovementBudget"
+  ],
+  "validationEvidenceBinding": {
+    "recommended": true,
+    "contractField": "bindToPrimaryArtifacts",
+    "resultField": "inputFingerprint",
+    "rule": "A copied PASS result is stale when the current primary-artifact fingerprint differs."
+  },
+  "progressAuthority": "A cycle is COMPLETED only when primary artifacts change and authoritative progress score improves; evidence-only changes fail."
+}

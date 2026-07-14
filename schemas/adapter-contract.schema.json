@@ -141,6 +141,14 @@
         "budgetNegotiation": {
           "type": "boolean",
           "description": "Adapter exposes explicit token-budget bargaining before execution"
+        },
+        "qualityValueBoundaryManagement": {
+          "type": "boolean",
+          "description": "Adapter can route and record runtime-validated quality/value boundary decisions"
+        },
+        "advancementReceiptLock": {
+          "type": "boolean",
+          "description": "Adapter respects fingerprint-bound acceptance receipts before advancement"
         }
       },
       "additionalProperties": false

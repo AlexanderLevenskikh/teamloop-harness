@@ -6104,6 +6104,92 @@ PYCODE
 test_run "Package: ActualZipInstallSmoke" test_264
 
 # ============================================================
+# TEST 265: Quality/value boundary adversarial unit suite
+# ============================================================
+test_265() {
+    (cd "$PROJECT_ROOT" && "$PY" -m unittest tests.test_quality_value_boundary) || return 1
+}
+
+test_run "BoundaryManager: AdversarialUnitSuite" test_265
+
+# ============================================================
+# TEST 266: Gate PASS is physically locked until boundary acceptance
+# ============================================================
+test_266() {
+    init_test_workspace
+    local contract_file bad_contract
+    contract_file=$(mktemp)
+    bad_contract=$(mktemp)
+    start_fast_execution_task task-boundary-lock P2 "**" "**"
+    mkdir -p "$TEST_REPO_DIR/src" "$TEST_REPO_DIR/evidence"
+    echo "real implementation" > "$TEST_REPO_DIR/src/result.txt"
+    echo '{"status":"PASS"}' > "$TEST_REPO_DIR/evidence/validation.json"
+    "$PY" - "$contract_file" "$FAST_RUN_ID" <<'PYCODE'
+import json,sys
+path,run_id=sys.argv[1:]
+json.dump({
+  "boundaryId":"boundary-runtime-lock",
+  "taskId":"task-boundary-lock",
+  "runId":run_id,
+  "profile":"fast",
+  "adapterId":"generic-software-task",
+  "expectedDeliverables":[{"id":"result","path":"src/result.txt","required":True}],
+  "validationEvidence":[{"id":"tests","path":"evidence/validation.json","required":True,"statusField":"status","passValues":["PASS"]}],
+  "findingSources":[],
+  "improvementCandidates":[]
+},open(path,"w",encoding="utf-8"))
+PYCODE
+    "$PY" - "$contract_file" "$bad_contract" <<'PYCODE'
+import json,sys
+good,bad=sys.argv[1:]
+data=json.load(open(good,encoding="utf-8"))
+data["boundaryId"]="boundary-runtime-wrong-task"
+data["taskId"]="other-task"
+json.dump(data,open(bad,"w",encoding="utf-8"))
+PYCODE
+    set +e
+    run_core boundary-create --contract "$bad_contract" >/dev/null 2>&1
+    local bad_identity_rc=$?
+    set -e
+    [[ $bad_identity_rc -ne 0 ]] || { rm -f "$contract_file" "$bad_contract"; echo "mismatched task boundary was accepted"; return 1; }
+    run_core boundary-create --contract "$contract_file" >/dev/null
+    local gate
+    gate=$(run_core run-gates) || { rm -f "$contract_file"; echo "$gate"; return 1; }
+    [[ "$(json_str "$gate" nextAction)" == "RUN_QUALITY_VALUE_MANAGER" ]] || { rm -f "$contract_file"; echo "gate did not route boundary manager: $gate"; return 1; }
+    "$PY" - "$WORKSPACE_ABS/state/team-state.json" "$WORKSPACE_ABS/state/backlog.jsonl" "$WORKSPACE_ABS/state/run-ledger.jsonl" <<'PYCODE'
+import json,sys
+state=json.load(open(sys.argv[1]))
+backlog=[json.loads(x) for x in open(sys.argv[2]) if x.strip()]
+ledger=[json.loads(x) for x in open(sys.argv[3]) if x.strip()]
+assert state["currentPhase"]=="NEEDS_BOUNDARY_DECISION",state
+assert state["currentTaskId"]=="task-boundary-lock",state
+assert next(x for x in backlog if x["taskId"]=="task-boundary-lock")["status"]=="IN_PROGRESS"
+assert next(x for x in ledger if x["runId"]==state["currentRunId"])["status"]=="IN_PROGRESS"
+PYCODE
+    set +e
+    run_core apply-transition --action SET_SAFE_CHECKPOINT >/dev/null 2>&1
+    local lock_rc=$?
+    set -e
+    [[ $lock_rc -ne 0 ]] || { rm -f "$contract_file"; echo "advance unexpectedly bypassed boundary lock"; return 1; }
+    run_core boundary-decide --boundary-id boundary-runtime-lock --decision ACCEPT_BOUNDARY --reason "all authoritative checks pass" >/dev/null
+    run_core boundary-verify --boundary-id boundary-runtime-lock >/dev/null
+    "$PY" - "$WORKSPACE_ABS/state/team-state.json" "$WORKSPACE_ABS/state/backlog.jsonl" "$WORKSPACE_ABS/state/run-ledger.jsonl" <<'PYCODE'
+import json,sys
+state=json.load(open(sys.argv[1]))
+backlog=[json.loads(x) for x in open(sys.argv[2]) if x.strip()]
+ledger=[json.loads(x) for x in open(sys.argv[3]) if x.strip()]
+assert state["currentPhase"]=="SAFE_CHECKPOINT",state
+assert next(x for x in backlog if x["taskId"]=="task-boundary-lock")["status"]=="DONE"
+run=next(x for x in ledger if x.get("taskId")=="task-boundary-lock")
+assert run["status"]=="COMPLETED" and run["result"]=="BOUNDARY_ACCEPTED",run
+PYCODE
+    rm -f "$contract_file" "$bad_contract"
+    cleanup_workspace
+}
+
+test_run "BoundaryManager: GateAdvancementLock" test_266
+
+# ============================================================
 # SUMMARY
 # ============================================================
 echo ""

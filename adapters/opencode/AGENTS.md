@@ -8,3 +8,5 @@ Place this adapter's files into your OpenCode project:
 4. Copy `adapters/opencode/commands/` to `.opencode/commands/`
 
 Then use `/supervised-task` to start a supervised delivery run.
+
+- `quality-value-manager`: read-only, fingerprint-bound accept/improve/split/stop/human arbitration after deterministic gates.

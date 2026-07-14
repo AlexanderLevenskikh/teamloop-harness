@@ -8,6 +8,7 @@ Reusable delivery harness for supervised agent teams.
 MANUAL_REVIEW ≠ HUMAN_REQUIRED
 SAFE_CHECKPOINT ≠ DONE
 RESEARCH_COMPLETE ≠ DONE
+GATE_PASS ≠ BOUNDARY_ACCEPTED
 ```
 
 An agent team must not hand unfinished work back to the user just because a subagent says "developer action" or "manual review". The supervisor must route uncertainty back into research, review, task slicing, execution, or gate repair. Human handoff is allowed only when there is an explicit classified blocker with evidence and concrete questions.
@@ -17,7 +18,7 @@ An agent team must not hand unfinished work back to the user just because a suba
 Complete lifecycle — from discovery through final gate to either continuation or handoff:
 
 ```
-discover → plan → execute → review → gate → sentinel → guard → memory → validate
+discover → plan → execute → review → gate → quality/value boundary → sentinel → guard → memory → validate
    |          |         |          |         |          |          |         |        |
    ▼          ▼         ▼          ▼         ▼          ▼          ▼         ▼        ▼
  DISCOVERY  PLANNING  EXECUTING  REVIEWING  NEEDS_GATE  SENTINEL  GUARD     MEMORY   VALIDATED
@@ -33,12 +34,13 @@ Each phase has a dedicated role and a set of checks:
 | EXECUTING | executor | implement within scope | `check-scope` |
 | REVIEWING | change-reviewer | verify against criteria | — |
 | NEEDS_GATE | gatekeeper | run gate-policy | `run-gates` |
+| NEEDS_BOUNDARY_DECISION | quality-value-manager | accept, improve, split, stop, or request human within runtime constraints | `boundary-decide` + receipt verification |
 | SENTINEL CHECK | sentinel | 9 safety inspections | `run-sentinel` |
 | GUARD CHECK | guard | protected-path integrity | `check-guard-integrity` |
 | MEMORY CHECK | memory-doctor | lessons/evidence integrity | `memory-doctor` |
 | VALIDATED | — | full state validation | `validate-state` |
 
-After gates pass, the loop returns to `next-action` which routes to either:
+After gates pass, tasks with an applicable boundary contract route to `RUN_QUALITY_VALUE_MANAGER` and remain locked. Tasks without a contract retain the compatibility path. After valid boundary acceptance, the loop returns to `next-action`, which routes to either:
 - `RUN_EXECUTOR` — next READY task exists;
 - `CONTINUE` — backlog consumed, safe checkpoint;
 - `HUMAN_DECISION_REQUIRED` — classified blocker with evidence and questions.
@@ -78,6 +80,14 @@ A safe checkpoint means the state is honest and verified, not that all work is c
 ### 5. Research must pass review
 
 A research report is not accepted until research-lead verifies counts, evidence, contradictions, actionability, human/agent classification, and recommended bounded tasks.
+
+## Quality/Value Boundary
+
+The optional boundary controller separates deterministic facts, read-only managerial judgment, and runtime enforcement. Hard invariant failures forbid acceptance. Soft debt may be recorded explicitly. Improvement executes one selected candidate, remeasures primary artifacts, and derives progress from the before/after delta.
+
+The runtime persists contract, packet, decision history, improvement history, role receipt, acceptance receipt, budget, no-progress streak, and next permitted action under `.teamloop/boundaries/<boundary-id>/`. Artifact, evidence, policy, runtime, or predecessor drift invalidates the receipt and re-locks advancement.
+
+See [docs/QUALITY_VALUE_BOUNDARY.md](docs/QUALITY_VALUE_BOUNDARY.md) and [docs/QUALITY_VALUE_BOUNDARY.ru.md](docs/QUALITY_VALUE_BOUNDARY.ru.md).
 
 ## Memory Subsystem
 
@@ -313,7 +323,13 @@ RESEARCH_COMPLETE is not DONE.
 | `write-event` | Append event to `events.jsonl` |
 | `next-action` | Determine next action from state |
 | `check-scope` | Validate file changes against scope policy |
-| `run-gates` | Execute gate checks from policy |
+| `run-gates` | Execute deterministic gate checks; with a boundary contract, route to `NEEDS_BOUNDARY_DECISION` rather than completing the task |
+| `boundary-create` | Register an authoritative bounded-work contract |
+| `boundary-measure` | Recompute the deterministic boundary packet |
+| `boundary-decide` | Record a closed runtime-validated manager decision |
+| `boundary-complete-improvement` | Remeasure exactly one bounded improvement and derive progress |
+| `boundary-verify` | Verify current acceptance and predecessor chain |
+| `boundary-lock-status` | Return the physical advancement lock state |
 | `validate-state` | Validate all state files |
 | `run-sentinel` | Run sentinel inspection (9 safety checks) |
 | `check-guard-integrity` | Check for unauthorized changes to protected files |

@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BoundaryDecision",
+  "type": "object",
+  "required": ["schemaVersion", "boundaryId", "decision", "packetFingerprint", "metricsFingerprint", "selectedCandidateId", "recordedSoftDebtIds", "decisionFingerprint"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "boundaryId": {"type": "string"},
+    "decision": {"type": "string", "enum": ["ACCEPT_BOUNDARY", "ACCEPT_WITH_RECORDED_SOFT_DEBT", "IMPROVE_CURRENT_BOUNDARY", "SPLIT_CURRENT_BOUNDARY", "STOP_BUDGET_EXHAUSTED", "REQUEST_HUMAN_DECISION"]},
+    "reason": {"type": "string"},
+    "packetFingerprint": {"type": "string", "minLength": 64},
+    "metricsFingerprint": {"type": "string", "minLength": 64},
+    "selectedCandidateId": {"type": "string"},
+    "recordedSoftDebtIds": {"type": "array", "items": {"type": "string"}},
+    "decisionFingerprint": {"type": "string", "minLength": 64}
+  },
+  "additionalProperties": false
+}

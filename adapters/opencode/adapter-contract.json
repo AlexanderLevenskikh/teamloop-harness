@@ -19,7 +19,14 @@
     "prepare-execution",
     "validate-execution-contract",
     "record-progress",
-    "route-role"
+    "route-role",
+    "boundary-create",
+    "boundary-measure",
+    "boundary-status",
+    "boundary-decide",
+    "boundary-complete-improvement",
+    "boundary-verify",
+    "boundary-lock-status"
   ],
   "optionalCommands": [
     "cache-inspect",
@@ -89,6 +96,10 @@
     {
       "name": "team-manager",
       "file": "adapters/opencode/agents/team-manager.md"
+    },
+    {
+      "name": "quality-value-manager",
+      "file": "adapters/opencode/agents/quality-value-manager.md"
     }
   ],
   "providedCommands": [
@@ -119,7 +130,8 @@
     "SET_HUMAN_REQUIRED",
     "GATE_FAILED",
     "REQUEST_CHANGES",
-    "SET_DONE"
+    "SET_DONE",
+    "RUN_QUALITY_VALUE_MANAGER"
   ],
   "capabilities": {
     "roleDispatch": true,
@@ -128,7 +140,9 @@
     "researchSupport": true,
     "memorySupport": false,
     "dynamicTeamComposition": true,
-    "budgetNegotiation": true
+    "budgetNegotiation": true,
+    "qualityValueBoundaryManagement": true,
+    "advancementReceiptLock": true
   },
   "outputFormat": {
     "commandOutput": "both",

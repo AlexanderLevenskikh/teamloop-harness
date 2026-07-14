@@ -25,3 +25,5 @@ description: Propose, negotiate, accept, and materialize the minimum sufficient 
    `bash scripts/your-ai-team.sh materialize --backend codex --proposal ... --output-dir .teamloop/generated/codex`
 7. Use only roles listed in the accepted contract. Keep subagent depth at 1.
 8. The delivery manager owns the global result, stopping decision, and the right to reject misleading local metrics.
+
+9. For mutating delivery, keep the required `quality-value-manager` final-only role. It reads the deterministic boundary packet and cannot waive hard gates or write its own receipt.

@@ -1,0 +1,112 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BoundaryPolicy",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "enabled",
+    "requiredForAdvancementWhenContractExists",
+    "historyMode",
+    "requireManagerRoleReceipt",
+    "managerMayWriteReceipts",
+    "trustedWriterCommand",
+    "profiles",
+    "hardInvariantTypes",
+    "placeholderPatterns",
+    "severityWeights",
+    "minimumProgressScoreDelta"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "requiredForAdvancementWhenContractExists": {
+      "type": "boolean"
+    },
+    "profiles": {
+      "type": "object",
+      "required": [
+        "fast",
+        "standard",
+        "audit"
+      ],
+      "properties": {
+        "fast": {
+          "$ref": "#/definitions/profile"
+        },
+        "standard": {
+          "$ref": "#/definitions/profile"
+        },
+        "audit": {
+          "$ref": "#/definitions/profile"
+        }
+      },
+      "additionalProperties": false
+    },
+    "hardInvariantTypes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "placeholderPatterns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "severityWeights": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "minimumProgressScoreDelta": {
+      "type": "number",
+      "minimum": 0
+    },
+    "trustedWriterCommand": {
+      "type": "string",
+      "const": "teamloop-core"
+    },
+    "managerMayWriteReceipts": {
+      "type": "boolean",
+      "const": false
+    },
+    "requireManagerRoleReceipt": {
+      "type": "boolean",
+      "const": true
+    },
+    "historyMode": {
+      "type": "string",
+      "const": "append-only-hash-chain"
+    }
+  },
+  "definitions": {
+    "profile": {
+      "type": "object",
+      "required": [
+        "maxImprovementCycles",
+        "maxConsecutiveNoProgress"
+      ],
+      "properties": {
+        "maxImprovementCycles": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxConsecutiveNoProgress": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

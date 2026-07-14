@@ -47,5 +47,15 @@
     "All tasks in backlog are DONE or CANCELLED",
     "All required gates pass",
     "No unresolved blockers"
-  ]
+  ],
+  "boundaryManagement": {
+    "enabled": true,
+    "invocationBoundary": "after-required-gates-before-task-completion",
+    "profiles": {
+      "fast": 2,
+      "standard": 4,
+      "audit": 6
+    },
+    "hardQualityThresholdsProfileIndependent": true
+  }
 }

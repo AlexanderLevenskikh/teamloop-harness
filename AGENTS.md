@@ -81,3 +81,5 @@ This repository may use YourAITeam to improve YourAITeam itself.
 - Treat changes to `scripts/`, `schemas/`, `templates/`, `profiles/`, and agent prompts as high-risk.
 - Do not complete a multi-iteration campaign in one unreviewed pass.
 - Stop at a truthful checkpoint when the current bounded iteration is green.
+
+- `quality-value-manager`: read-only, fingerprint-bound accept/improve/split/stop/human arbitration after deterministic gates.

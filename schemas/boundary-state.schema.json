@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BoundaryState",
+  "type": "object",
+  "required": ["schemaVersion", "boundaryId", "mode", "profile", "maxImprovementCycles", "usedImprovementCycles", "remainingImprovementCycles", "maxConsecutiveNoProgress", "noProgressStreak", "nextPermittedAction", "decisionHistoryHead", "decisionHistoryCount", "improvementHistoryHead", "improvementHistoryCount", "createdAtUtc", "updatedAtUtc"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "boundaryId": {"type": "string"},
+    "mode": {"type": "string", "enum": ["NEEDS_MEASUREMENT", "NEEDS_DECISION", "IMPROVING", "SPLIT_REQUIRED", "STOPPED_BUDGET_EXHAUSTED", "HUMAN_REQUIRED", "ACCEPTED", "ARCHIVED"]},
+    "profile": {"type": "string", "enum": ["fast", "standard", "audit"]},
+    "maxImprovementCycles": {"type": "integer", "minimum": 0},
+    "usedImprovementCycles": {"type": "integer", "minimum": 0},
+    "remainingImprovementCycles": {"type": "integer", "minimum": 0},
+    "maxConsecutiveNoProgress": {"type": "integer", "minimum": 1},
+    "noProgressStreak": {"type": "integer", "minimum": 0},
+    "currentPacketFingerprint": {"type": "string"},
+    "currentDecisionFingerprint": {"type": "string"},
+    "selectedImprovementPatternId": {"type": "string"},
+    "selectedCandidateId": {"type": "string"},
+    "improvementBaselinePacketFingerprint": {"type": "string"},
+    "nextPermittedAction": {"type": "string"},
+    "decisionHistoryHead": {"type": "string"},
+    "decisionHistoryCount": {"type": "integer", "minimum": 0},
+    "improvementHistoryHead": {"type": "string"},
+    "improvementHistoryCount": {"type": "integer", "minimum": 0},
+    "acceptanceReceiptFingerprint": {"type": "string"},
+    "createdAtUtc": {"type": "string", "format": "date-time"},
+    "updatedAtUtc": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

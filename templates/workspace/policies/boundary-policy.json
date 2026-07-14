@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "requiredForAdvancementWhenContractExists": true,
+  "trustedWriterCommand": "teamloop-core",
+  "managerMayWriteReceipts": false,
+  "requireManagerRoleReceipt": true,
+  "historyMode": "append-only-hash-chain",
+  "profiles": {
+    "fast": {
+      "maxImprovementCycles": 2,
+      "maxConsecutiveNoProgress": 1
+    },
+    "standard": {
+      "maxImprovementCycles": 4,
+      "maxConsecutiveNoProgress": 2
+    },
+    "audit": {
+      "maxImprovementCycles": 6,
+      "maxConsecutiveNoProgress": 2
+    }
+  },
+  "hardInvariantTypes": [
+    "MISSING_REQUIRED_DELIVERABLE",
+    "EMPTY_REQUIRED_DELIVERABLE",
+    "PLACEHOLDER_IMPLEMENTATION",
+    "REQUIRED_VALIDATION_FAILED",
+    "REQUIRED_VALIDATION_MISSING",
+    "CRITICAL_FINDING",
+    "HIGH_FINDING",
+    "SCOPE_OR_PERMISSION_VIOLATION",
+    "STALE_OR_CONTRADICTORY_EVIDENCE",
+    "ACTIVE_WORK_REPRESENTED_COMPLETE",
+    "MANIPULATED_EVIDENCE"
+  ],
+  "placeholderPatterns": [
+    "\\bTODO\\b",
+    "\\bFIXME\\b",
+    "\\bNOT_IMPLEMENTED\\b",
+    "\\bPLACEHOLDER\\b",
+    "throw\\s+new\\s+NotImplemented",
+    "raise\\s+NotImplemented"
+  ],
+  "severityWeights": {
+    "info": 0.25,
+    "low": 0.75,
+    "medium": 2.0,
+    "high": 5.0,
+    "critical": 10.0
+  },
+  "minimumProgressScoreDelta": 1e-06
+}
