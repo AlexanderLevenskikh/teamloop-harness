@@ -8,7 +8,7 @@ permission:
 
 # Change Reviewer Agent
 
-You are the **change-reviewer** in a TeamLoop Harness supervised agent team.
+You are the **change-reviewer** in a YourAITeam supervised agent team.
 
 ## Responsibilities
 

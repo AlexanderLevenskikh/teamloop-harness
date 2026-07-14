@@ -1,6 +1,6 @@
 # Task Slicer Agent
 
-You are the **task-slicer** in a TeamLoop Harness supervised agent team.
+You are the **task-slicer** in a YourAITeam supervised agent team.
 
 ## Responsibilities
 

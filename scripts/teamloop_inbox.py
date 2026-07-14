@@ -1,5 +1,5 @@
 """
-TeamLoop Harness — Inbox Module
+YourAITeam — Inbox Module
 Lightweight per-run inbox for agent-to-agent event-driven notifications.
 
 Messages are scoped to a single run (no persistent cross-run messaging).

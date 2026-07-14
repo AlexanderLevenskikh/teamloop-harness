@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TeamLoop Harness — Backward Compatibility Gate
+YourAITeam — Backward Compatibility Gate
 
 Validates that:
   a. All expected CLI commands still exist (no removals or renames)

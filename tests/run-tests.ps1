@@ -183,7 +183,7 @@ function Init-TestWorkspace {
     $script:workspaceAbs = Join-Path $tempRepo ".teamloop"
     Set-Location $tempRepo
     & git init 2>$null
-    & git config user.email "test@teamloop.local" 2>$null
+    & git config user.email "test@your-ai-team.local" 2>$null
     & git config user.name "Test" 2>$null
     & python "$scriptDir/teamloop-core.py" init-workspace --workspace "$script:workspaceAbs" --profile "generic-software-task" 2>$null | Out-Null
     & git add . 2>$null
@@ -1267,18 +1267,18 @@ Test-Run "Campaign: OrphanedInProgressDetected" -Layers @("integration") {
 }
 
 Test-Run "Campaign: MojibakeDetection" -Layers @("contract") {
-    $teamloopFile = Join-Path $projectRoot "TEAMLOOP.md"
+    $teamloopFile = Join-Path $projectRoot "RUNTIME.md"
     if (-not (Test-Path $teamloopFile)) {
-        Write-Host "  FAIL: TEAMLOOP.md should exist" -ForegroundColor Red
+        Write-Host "  FAIL: RUNTIME.md should exist" -ForegroundColor Red
         return $false
     }
     $content = Get-Content $teamloopFile -Raw -Encoding UTF8
     if ($content -notmatch '\u2260') {
-        Write-Host "  FAIL: TEAMLOOP.md should contain the U+2260 NOT EQUAL TO symbol" -ForegroundColor Red
+        Write-Host "  FAIL: RUNTIME.md should contain the U+2260 NOT EQUAL TO symbol" -ForegroundColor Red
         return $false
     }
     if ($content -match '(?:\u0442\u0419\u0430|\u0442\u0410\u0424|\u0442\u0416\u0422|\u0442\u0426\u255D)') {
-        Write-Host "  FAIL: TEAMLOOP.md contains known encoding corruption" -ForegroundColor Red
+        Write-Host "  FAIL: RUNTIME.md contains known encoding corruption" -ForegroundColor Red
         return $false
     }
     Cleanup-Workspace
@@ -1287,9 +1287,9 @@ Test-Run "Campaign: MojibakeDetection" -Layers @("contract") {
 
 Test-Run "Campaign: CrossTaskCleanup_Preserved" -Layers @("integration") {
     Init-TestWorkspace
-    # Use TEAMLOOP.md with a wrong hash to simulate tampered cross-task content
+    # Use RUNTIME.md with a wrong hash to simulate tampered cross-task content
     $wrongHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    $evidence = '{"schemaVersion":1,"taskId":"task-cross","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"TEAMLOOP.md","hash":"' + $wrongHash + '","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    $evidence = '{"schemaVersion":1,"taskId":"task-cross","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"RUNTIME.md","hash":"' + $wrongHash + '","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
     Write-JsonFile -Path (Join-Path $script:workspaceAbs "state\review-evidence.json") -Content $evidence
     $result = Invoke-PythonScriptWithExit "validate-state"
     if (-not (Assert-True ($result.exitCode -ne 0) ("validate-state should FAIL when reviewed content was tampered, exit=" + $result.exitCode))) { return $false }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TeamLoop Harness — StateStore abstraction layer.
+"""YourAITeam — StateStore abstraction layer.
 
 Provides an abstract `StateStore` interface and a `FileSystemStateStore`
 implementation.  Enables deterministic content-addressed state loading
@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 
 class StateStore(ABC):
-    """Abstract state store for TeamLoop workspace data."""
+    """Abstract state store for YourAITeam workspace data."""
 
     @abstractmethod
     def load(self, path: str) -> Dict[str, Any]:

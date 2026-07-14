@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "product": "YourAITeam",
+  "createdAtUtc": "2026-07-14T10:18:17Z",
+  "status": "ACCEPTED",
+  "task": {
+    "description": "Почини flaky Playwright тест в CI, который иногда не дожидается загрузки таблицы",
+    "fingerprint": "dc51303670cb35a44a8f27c3797dfd9e6a04faba77348901d3c508ff80238f1f"
+  },
+  "analysis": {
+    "kind": "bugfix",
+    "risk": "medium",
+    "complexity": "low",
+    "uncertainty": "low",
+    "mutating": true,
+    "matchedSignals": [
+      "flaky",
+      "почин"
+    ]
+  },
+  "constraints": {
+    "backend": "portable",
+    "maxTokens": 25000,
+    "maxRoleCount": null,
+    "preference": "balanced",
+    "riskTolerance": "medium",
+    "acceptRisk": false
+  },
+  "team": [
+    {
+      "roleId": "delivery-manager",
+      "title": "Delivery Manager",
+      "grade": "balanced",
+      "engagement": "full",
+      "required": true,
+      "reason": "Owns the global result and may reject misleading local metrics.",
+      "expectedTokens": 4200,
+      "reasoningEffort": "medium",
+      "maxSteps": 9,
+      "sandbox": "workspace-write",
+      "mutatesWorkspace": false
+    },
+    {
+      "roleId": "explorer",
+      "title": "Code Explorer",
+      "grade": "economy",
+      "engagement": "full",
+      "required": false,
+      "reason": "Finds the real execution path without polluting the main context.",
+      "expectedTokens": 2900,
+      "reasoningEffort": "low",
+      "maxSteps": 5,
+      "sandbox": "read-only",
+      "mutatesWorkspace": false
+    },
+    {
+      "roleId": "implementer",
+      "title": "Implementer",
+      "grade": "economy",
+      "engagement": "full",
+      "required": true,
+      "reason": "Implements a bounded change and supplies execution evidence.",
+      "expectedTokens": 7600,
+      "reasoningEffort": "low",
+      "maxSteps": 5,
+      "sandbox": "workspace-write",
+      "mutatesWorkspace": true
+    },
+    {
+      "roleId": "verifier",
+      "title": "Verifier",
+      "grade": "economy",
+      "engagement": "final-only",
+      "required": true,
+      "reason": "Runs targeted gates and reports what they actually prove.",
+      "expectedTokens": 2000,
+      "reasoningEffort": "low",
+      "maxSteps": 3,
+      "sandbox": "workspace-write",
+      "mutatesWorkspace": false
+    }
+  ],
+  "budget": {
+    "directRoleTokens": 16700,
+    "coordinationOverheadTokens": 4200,
+    "coordinationOverheadRate": 0.25,
+    "expectedTokens": 20900,
+    "rangeTokens": {
+      "min": 15048,
+      "max": 30305
+    },
+    "roleCount": 4,
+    "maxConcurrentWorkers": 3,
+    "currency": "estimated-model-tokens",
+    "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+  },
+  "tradeoffs": [
+    {
+      "action": "downgrade",
+      "roleId": "implementer",
+      "from": "balanced",
+      "to": "economy",
+      "risk": "Less depth and fewer edge cases."
+    },
+    {
+      "action": "downgrade",
+      "roleId": "reviewer",
+      "from": "balanced",
+      "to": "economy",
+      "risk": "Less depth and fewer edge cases."
+    },
+    {
+      "action": "downgrade",
+      "roleId": "verifier",
+      "from": "balanced",
+      "to": "economy",
+      "risk": "Less depth and fewer edge cases."
+    },
+    {
+      "action": "remove",
+      "roleId": "reviewer",
+      "risk": "Coverage of 'Change Reviewer' is merged into the manager or left residual."
+    }
+  ],
+  "unmetConstraints": [],
+  "residualRisks": [
+    "Less depth and fewer edge cases.",
+    "Less depth and fewer edge cases.",
+    "Less depth and fewer edge cases.",
+    "Coverage of 'Change Reviewer' is merged into the manager or left residual."
+  ],
+  "acceptance": {
+    "accepted": true,
+    "acceptedAtUtc": "2026-07-14T10:18:19Z",
+    "acceptedFingerprint": "8332ad143a3d4d3d2c5a1cf43d3f06706c4b129fce27ce6f524c64d8e657879e"
+  },
+  "negotiationHistory": [
+    {
+      "atUtc": "2026-07-14T10:18:17Z",
+      "request": "Влезь в максимум 25к токенов, ревьюер только в конце",
+      "changes": {
+        "remove": [],
+        "downgrade": [],
+        "upgrade": [],
+        "maxTokens": 25000,
+        "finalOnlyReviewer": true,
+        "acceptRisk": false
+      },
+      "previousProposalId": "team-1df115db3a01"
+    }
+  ],
+  "proposalId": "team-9cdbdeda3557",
+  "fingerprint": "f428ba93a0e990a94be353faf70df4933e30a7862f1be1992a3011e37791d38f"
+}

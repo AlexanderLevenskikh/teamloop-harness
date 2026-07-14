@@ -1,6 +1,6 @@
-# TeamLoopHarness Project Instructions
+# YourAITeam Project Instructions
 
-TeamLoopHarness is a file-based runtime for bounded, reviewable AI-agent delivery loops.
+YourAITeam is a file-based runtime for bounded, reviewable AI-agent delivery loops.
 
 ## Project structure
 
@@ -72,7 +72,7 @@ Backlog, research, review, and result artifacts may only be written by the role 
 
 ## Self-hosting safety
 
-This repository may use TeamLoopHarness to improve TeamLoopHarness itself.
+This repository may use YourAITeam to improve YourAITeam itself.
 
 - Work on a dedicated Git branch.
 - Execute only one bounded iteration at a time.

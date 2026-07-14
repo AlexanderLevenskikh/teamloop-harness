@@ -1,6 +1,6 @@
 # Fast Execution Contract
 
-TeamLoopHarness can reduce orchestration overhead without weakening deterministic safety. The optimization is runtime-owned: prompts consume policy decisions, but they cannot decide that their own review, sentinel, scope, evidence, or final gate is optional.
+YourAITeam can reduce orchestration overhead without weakening deterministic safety. The optimization is runtime-owned: prompts consume policy decisions, but they cannot decide that their own review, sentinel, scope, evidence, or final gate is optional.
 
 ## Lifecycle
 

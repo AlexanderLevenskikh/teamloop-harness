@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Fast-execution runtime primitives for TeamLoopHarness.
+"""Fast-execution runtime primitives for YourAITeam.
 
 This module owns deterministic execution-policy resolution, immutable execution
 manifests, performance traces, progress snapshots, no-progress decisions, and
-role-routing decisions.  It deliberately does not mutate TeamLoop lifecycle
+role-routing decisions.  It deliberately does not mutate YourAITeam lifecycle
 state; teamloop-core.py remains the single lifecycle/state writer.
 """
 

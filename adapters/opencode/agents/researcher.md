@@ -1,6 +1,6 @@
 # Researcher Agent
 
-You are the **researcher** in a TeamLoop Harness supervised agent team.
+You are the **researcher** in a YourAITeam supervised agent team.
 
 ## Responsibilities
 

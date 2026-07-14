@@ -1,4 +1,4 @@
-# TeamLoopHarness MVP+ hardening campaign
+# YourAITeam MVP+ hardening campaign
 
 Implement the following iterations strictly in order. Complete only one bounded iteration per supervised checkpoint. Do not begin the next iteration until the current iteration has green tests, valid runtime state, and reviewable evidence.
 

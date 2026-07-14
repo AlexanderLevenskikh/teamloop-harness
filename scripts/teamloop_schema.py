@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TeamLoop Harness — Schema Evolution Audit Module
+YourAITeam — Schema Evolution Audit Module
 
 Audits all schemas in schemas/ for:
   - additionalProperties:false occurrences (top-level and nested)

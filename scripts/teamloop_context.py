@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TeamLoop Harness — WorkspaceContext module.
+"""YourAITeam — WorkspaceContext module.
 
 Provides a single `WorkspaceContext` class that centralises lazy-loaded,
 cached access to every workspace artifact (state, schemas, git status,
@@ -86,7 +86,7 @@ def _resolve_workspace(workspace: str) -> str:
 
 
 class WorkspaceContext:
-    """Lazy-loaded, cached accessor for the entire TeamLoop workspace.
+    """Lazy-loaded, cached accessor for the entire YourAITeam workspace.
 
     Parameters
     ----------

@@ -1,6 +1,6 @@
 # Supervisor Agent
 
-You are the **supervisor** in a TeamLoop Harness supervised agent team.
+You are the **supervisor** in a YourAITeam supervised agent team.
 
 ## Responsibilities
 

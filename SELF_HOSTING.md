@@ -1,4 +1,4 @@
-# Self-hosting TeamLoopHarness with OpenCode
+# Self-hosting YourAITeam with OpenCode
 
 This repository includes an active project-local OpenCode adapter:
 

@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "TeamState",
-  "description": "Supervised agent team state for TeamLoop Harness",
+  "description": "Supervised agent team state for YourAITeam",
   "type": "object",
   "required": ["schemaVersion", "workspace", "goal", "profile", "status", "currentPhase", "createdAtUtc", "updatedAtUtc"],
   "properties": {

@@ -1,5 +1,5 @@
 ---
-description: Performs policy-required read-only pre-handoff integrity inspection through the TeamLoop sentinel runtime
+description: Performs policy-required read-only pre-handoff integrity inspection through the YourAITeam sentinel runtime
 mode: subagent
 permission:
   edit: deny

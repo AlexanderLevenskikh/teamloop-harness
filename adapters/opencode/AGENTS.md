@@ -1,4 +1,4 @@
-# TeamLoop Harness - OpenCode Adapter
+# YourAITeam - OpenCode Adapter
 
 Place this adapter's files into your OpenCode project:
 

@@ -19,7 +19,7 @@ if command -v git &>/dev/null; then
   COMMIT_SHA=$(git -C "$HARNESS_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
 fi
 
-ARCHIVE_NAME="teamloop-harness-${VERSION}.zip"
+ARCHIVE_NAME="your-ai-team-${VERSION}.zip"
 ARCHIVE_PATH="$OUTPUT_DIR/$ARCHIVE_NAME"
 MANIFEST_PATH="$OUTPUT_DIR/package-manifest.json"
 
@@ -101,7 +101,7 @@ def is_excluded(relpath):
     # Exclude diagnostic bundles and release archives
     if basename.startswith('diagnostic-') and basename.endswith('.zip'):
         return True
-    if basename.startswith('teamloop-harness-') and basename.endswith('.zip'):
+    if (basename.startswith('your-ai-team-') or basename.startswith('teamloop-harness-')) and basename.endswith('.zip'):
         return True
     
     return False

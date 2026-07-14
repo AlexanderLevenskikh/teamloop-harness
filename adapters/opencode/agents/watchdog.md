@@ -1,5 +1,5 @@
 ---
-description: Diagnoses deterministic no-progress, repeated failures, scope violations, and contradictory TeamLoop runtime state
+description: Diagnoses deterministic no-progress, repeated failures, scope violations, and contradictory YourAITeam runtime state
 mode: subagent
 permission:
   edit: deny

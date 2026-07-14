@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TeamLoop Harness — Core Runtime
+YourAITeam — Core Runtime
 Shared Python implementation for all runtime operations.
 Called by .sh and .ps1 wrappers.
 """
@@ -19,7 +19,13 @@ import teamloop_fast_execution as fast_execution
 import teamloop_cache as _cache_mod
 import teamloop_inbox as inbox_mod
 import teamloop_advisory as advisory_mod
+import your_ai_team as team_mod
 from teamloop_context import WorkspaceContext
+from version import YOUR_AI_TEAM_VERSION, YOUR_AI_TEAM_SCHEMA_VERSION
+
+# Temporary source compatibility aliases used by the v0.4 runtime internals.
+TEAMLOOP_VERSION = YOUR_AI_TEAM_VERSION
+TEAMLOOP_SCHEMA_VERSION = YOUR_AI_TEAM_SCHEMA_VERSION
 
 
 def _create_cache(workspace, project_root, read_only=False):
@@ -310,7 +316,7 @@ def cmd_init_workspace(args):
                 if name.endswith(".md"):
                     f.write("# Memory Summary\n\nNo lessons, antipatterns, or decisions recorded yet.\n")
 
-    print(f"TeamLoop workspace initialized at {target_dir} with profile '{profile}'.")
+    print(f"YourAITeam workspace initialized at {target_dir} with profile '{profile}'.")
 
 
 # ---------------------------------------------------------------------------
@@ -7012,10 +7018,6 @@ def cmd_schema_lint(args):
 
 def cmd_release_info(args):
     """Print current version and release metadata."""
-    import version as _version_mod
-    TEAMLOOP_VERSION = _version_mod.TEAMLOOP_VERSION
-    TEAMLOOP_SCHEMA_VERSION = _version_mod.TEAMLOOP_SCHEMA_VERSION
-
     metadata = {
         "schemaVersion": TEAMLOOP_SCHEMA_VERSION,
         "version": TEAMLOOP_VERSION,
@@ -7058,7 +7060,7 @@ def cmd_release_info(args):
     if args.json:
         print(json.dumps(metadata, ensure_ascii=False, indent=2))
     else:
-        print(f"TeamLoop Harness {TEAMLOOP_VERSION}")
+        print(f"YourAITeam {TEAMLOOP_VERSION}")
         print(f"Schema version: {TEAMLOOP_SCHEMA_VERSION}")
         print(f"Release date: {metadata['releaseDate']}")
         print(f"Summary: {metadata['summary']}")
@@ -7210,6 +7212,67 @@ def cmd_advisory_check(args):
 
 
 # ---------------------------------------------------------------------------
+# Commands: YourAITeam composition economics
+# ---------------------------------------------------------------------------
+
+def _team_task_text(args):
+    if getattr(args, "task_file", ""):
+        with open(args.task_file, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return (getattr(args, "task", "") or "").strip()
+
+def _team_write_or_print(data, output=""):
+    if output:
+        team_mod.save(output, data)
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+def cmd_team_propose(args):
+    task = _team_task_text(args)
+    try:
+        data = team_mod.propose(
+            task, backend=args.backend, max_tokens=args.max_tokens,
+            max_roles=args.max_roles, preference=args.preference,
+            risk_tolerance=args.risk_tolerance, accept_risk=args.accept_risk,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    _team_write_or_print(data, args.output)
+
+def cmd_team_negotiate(args):
+    try:
+        proposal = team_mod.load(args.proposal)
+        data = team_mod.negotiate(
+            proposal, request=args.request, maxTokens=args.max_tokens,
+            maxRoleCount=args.max_roles, preference=args.preference,
+            riskTolerance=args.risk_tolerance, acceptRisk=args.accept_risk,
+            remove=args.remove_role, downgrade=args.downgrade_role, upgrade=args.upgrade_role,
+        )
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    _team_write_or_print(data, args.output)
+
+def cmd_team_accept(args):
+    try:
+        proposal = team_mod.load(args.proposal)
+        data = team_mod.accept(proposal)
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    _team_write_or_print(data, args.output)
+
+def cmd_team_materialize(args):
+    try:
+        proposal = team_mod.load(args.proposal)
+        data = team_mod.materialize(proposal, args.backend, args.output_dir)
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+# ---------------------------------------------------------------------------
 # Command: adapter-verify
 # ---------------------------------------------------------------------------
 
@@ -7291,6 +7354,7 @@ def cmd_adapter_verify(args):
             "route-role", "record-performance", "performance-report", "test-select",
             "release-info", "compat-check", "schema-lint", "dogfood",
             "inbox-send", "inbox-receive", "inbox-stats", "advisory-check",
+            "team-propose", "team-negotiate", "team-accept", "team-materialize",
             "adapter-verify",
         }
 
@@ -7433,9 +7497,9 @@ def cmd_adapter_verify(args):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="TeamLoop Harness Core")
+    parser = argparse.ArgumentParser(description="YourAITeam Core")
     parser.add_argument(
-        "--version", action="version", version="%(prog)s 0.3.0"
+        "--version", action="version", version=f"%(prog)s {TEAMLOOP_VERSION}"
     )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
@@ -7659,6 +7723,40 @@ def main():
     p_advisory.add_argument("--workspace", "-w", default=".teamloop")
     p_advisory.add_argument("--json", action="store_true", help="Output as JSON (default: pretty-printed JSON)")
 
+    # YourAITeam
+    p_team_propose = subparsers.add_parser("team-propose", help="Propose the minimum sufficient AI team and token budget")
+    p_team_propose.add_argument("--task", default="", help="Natural-language task description")
+    p_team_propose.add_argument("--task-file", default="", help="Read task description from UTF-8 file")
+    p_team_propose.add_argument("--backend", choices=["portable", "codex", "opencode"], default="portable")
+    p_team_propose.add_argument("--max-tokens", type=int, default=None)
+    p_team_propose.add_argument("--max-roles", type=int, default=None)
+    p_team_propose.add_argument("--preference", choices=["cost", "balanced", "quality", "speed"], default="balanced")
+    p_team_propose.add_argument("--risk-tolerance", choices=["low", "medium", "high"], default="medium")
+    p_team_propose.add_argument("--accept-risk", action="store_true")
+    p_team_propose.add_argument("--output", "-o", default="")
+
+    p_team_negotiate = subparsers.add_parser("team-negotiate", help="Bargain with a proposed team and expose the resulting trade-offs")
+    p_team_negotiate.add_argument("--proposal", required=True)
+    p_team_negotiate.add_argument("--request", default="", help="Natural-language bargain request")
+    p_team_negotiate.add_argument("--max-tokens", type=int, default=None)
+    p_team_negotiate.add_argument("--max-roles", type=int, default=None)
+    p_team_negotiate.add_argument("--preference", choices=["cost", "balanced", "quality", "speed"], default="")
+    p_team_negotiate.add_argument("--risk-tolerance", choices=["low", "medium", "high"], default="")
+    p_team_negotiate.add_argument("--accept-risk", action="store_true")
+    p_team_negotiate.add_argument("--remove-role", action="append", default=[])
+    p_team_negotiate.add_argument("--downgrade-role", action="append", default=[])
+    p_team_negotiate.add_argument("--upgrade-role", action="append", default=[])
+    p_team_negotiate.add_argument("--output", "-o", default="")
+
+    p_team_accept = subparsers.add_parser("team-accept", help="Accept a team proposal and freeze its contract")
+    p_team_accept.add_argument("--proposal", required=True)
+    p_team_accept.add_argument("--output", "-o", required=True)
+
+    p_team_materialize = subparsers.add_parser("team-materialize", help="Generate Codex or OpenCode agent files from an accepted contract")
+    p_team_materialize.add_argument("--proposal", required=True)
+    p_team_materialize.add_argument("--backend", choices=["codex", "opencode"], required=True)
+    p_team_materialize.add_argument("--output-dir", required=True)
+
     # adapter-verify
     p_adapter_verify = subparsers.add_parser("adapter-verify", help="Verify adapter contract against runtime")
     p_adapter_verify.add_argument("--workspace", "-w", default=".teamloop")
@@ -7707,6 +7805,10 @@ def main():
         "inbox-receive": cmd_inbox_receive,
         "inbox-stats": cmd_inbox_stats,
         "advisory-check": cmd_advisory_check,
+        "team-propose": cmd_team_propose,
+        "team-negotiate": cmd_team_negotiate,
+        "team-accept": cmd_team_accept,
+        "team-materialize": cmd_team_materialize,
         "adapter-verify": cmd_adapter_verify,
     }
 

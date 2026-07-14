@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TeamLoop Harness — Dogfood module.
+"""YourAITeam — Dogfood module.
 
 Runs the full gate chain on a workspace via subprocess invocations and
 produces a structured JSON report matching schemas/dogfood-report.schema.json.

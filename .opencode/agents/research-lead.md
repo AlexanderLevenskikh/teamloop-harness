@@ -8,7 +8,7 @@ permission:
 
 # Research Lead Agent
 
-You are the **research-lead** in a TeamLoop Harness supervised agent team.
+You are the **research-lead** in a YourAITeam supervised agent team.
 
 ## Responsibilities
 

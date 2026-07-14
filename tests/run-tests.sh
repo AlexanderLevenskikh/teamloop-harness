@@ -267,7 +267,7 @@ init_test_workspace() {
     TEST_REPO_DIR=$(mktemp -d)
     WORKSPACE_ABS="${TEST_REPO_DIR}/.teamloop"
     git init "$TEST_REPO_DIR" >/dev/null 2>&1
-    git -C "$TEST_REPO_DIR" config user.email "test@teamloop.local" >/dev/null 2>&1
+    git -C "$TEST_REPO_DIR" config user.email "test@your-ai-team.local" >/dev/null 2>&1
     git -C "$TEST_REPO_DIR" config user.name "Test" >/dev/null 2>&1
     "$PY" "$CORE" init-workspace --workspace "$WORKSPACE_ABS" --profile "generic-software-task" >/dev/null 2>&1
     git -C "$TEST_REPO_DIR" add . >/dev/null 2>&1
@@ -2937,12 +2937,12 @@ test_142() {
 # Test 143: ReviewEvidence_ContentChanged
 test_143() {
     init_test_workspace
-    # Use a tracked file that exists: TEAMLOOP.md
+    # Use a tracked file that exists: RUNTIME.md
     local hash
-    hash=$(sha256sum "$PROJECT_ROOT/TEAMLOOP.md" | cut -d' ' -f1)
+    hash=$(sha256sum "$PROJECT_ROOT/RUNTIME.md" | cut -d' ' -f1)
     # Write review evidence with a WRONG hash to simulate changed content
     local wrong_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    local evidence='{"schemaVersion":1,"taskId":"task-changed","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"TEAMLOOP.md","hash":"'${wrong_hash}'","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    local evidence='{"schemaVersion":1,"taskId":"task-changed","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"RUNTIME.md","hash":"'${wrong_hash}'","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
     echo "$evidence" > "$WORKSPACE_ABS/state/review-evidence.json"
     set +e
     local out rc
@@ -2958,10 +2958,10 @@ test_143() {
 # Test 144: ReviewEvidence_ValidContent
 test_144() {
     init_test_workspace
-    # Use TEAMLOOP.md with its correct hash
+    # Use RUNTIME.md with its correct hash
     local hash
-    hash=$(sha256sum "$PROJECT_ROOT/TEAMLOOP.md" | cut -d' ' -f1)
-    local evidence='{"schemaVersion":1,"taskId":"task-valid","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"TEAMLOOP.md","hash":"'${hash}'","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    hash=$(sha256sum "$PROJECT_ROOT/RUNTIME.md" | cut -d' ' -f1)
+    local evidence='{"schemaVersion":1,"taskId":"task-valid","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"RUNTIME.md","hash":"'${hash}'","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
     echo "$evidence" > "$WORKSPACE_ABS/state/review-evidence.json"
     set +e
     local out rc
@@ -3008,17 +3008,17 @@ test_146() {
 
 # Test 147: MojibakeDetection
 test_147() {
-    # Verify TEAMLOOP.md does not contain the mojibake sequence
-    local teamloop_file="$PROJECT_ROOT/TEAMLOOP.md"
-    [[ -f "$teamloop_file" ]] || { echo "TEAMLOOP.md should exist"; return 1; }
+    # Verify RUNTIME.md does not contain the mojibake sequence
+    local teamloop_file="$PROJECT_ROOT/RUNTIME.md"
+    [[ -f "$teamloop_file" ]] || { echo "RUNTIME.md should exist"; return 1; }
     # The known mojibake bytes (UTF-8 reinterpreted as CP1251) for the "≠" symbol
     # Check for the literal mojibake text
     local content
     content=$(cat "$teamloop_file")
     # Check that the correct symbols exist and known CP866 mojibake tokens do not.
-    echo "$content" | grep -q '≠' || { echo "TEAMLOOP.md should contain the ≠ symbol"; return 1; }
+    echo "$content" | grep -q '≠' || { echo "RUNTIME.md should contain the ≠ symbol"; return 1; }
     if grep -Eq 'тЙа|тАФ|тЖТ|тЦ╝' "$teamloop_file"; then
-        echo "TEAMLOOP.md contains known encoding corruption"
+        echo "RUNTIME.md contains known encoding corruption"
         return 1
     fi
     cleanup_workspace
@@ -3028,9 +3028,9 @@ test_147() {
 # Test 148: CrossTaskCleanup_Preserved
 test_148() {
     init_test_workspace
-    # Use TEAMLOOP.md with a wrong hash to simulate tampered cross-task content
+    # Use RUNTIME.md with a wrong hash to simulate tampered cross-task content
     local wrong_hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    local evidence='{"schemaVersion":1,"taskId":"task-cross","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"TEAMLOOP.md","hash":"'${wrong_hash}'","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
+    local evidence='{"schemaVersion":1,"taskId":"task-cross","reviewedAtUtc":"2024-01-01T00:00:00Z","reviewedFiles":[{"path":"RUNTIME.md","hash":"'${wrong_hash}'","status":"TRACKED"}],"reviewResult":"PASS","reviewer":"change-reviewer"}'
     echo "$evidence" > "$WORKSPACE_ABS/state/review-evidence.json"
     set +e
     local out rc
@@ -5667,7 +5667,7 @@ expected = [
     "Honest Content-Addressed Validation Cache",
     "Public Release and Compatibility Hardening",
     "Structured Dogfood and Old/New Runtime Guard",
-    "Minimal TeamLoop Inbox Contract and Read-Only Prototype",
+    "Minimal YourAITeam Inbox Contract and Read-Only Prototype",
     "Product Director L0 Advisory Mode",
     "StateStore Abstraction Preparation",
     "Adapter Contract Foundation",
@@ -6095,7 +6095,7 @@ PYCODE
 
     [[ ! -e "$extractdir/.teamloop" ]] || { echo "active .teamloop shipped"; rm -rf "$tmpdir"; return 1; }
     if find "$extractdir" -maxdepth 1 -name '.teamloop-*' | grep -q .; then
-        echo "archived TeamLoop state shipped"; rm -rf "$tmpdir"; return 1
+        echo "archived YourAITeam state shipped"; rm -rf "$tmpdir"; return 1
     fi
 
     rm -rf "$tmpdir"

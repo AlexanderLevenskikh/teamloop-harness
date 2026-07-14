@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "description": "Test layer classification for TeamLoop Harness. Each test belongs to one primary layer and always to full.",
+  "description": "Test layer classification for YourAITeam. Each test belongs to one primary layer and always to full.",
   "layers": {
     "smoke": "Basic workspace operations \u2014 init, validate-state basics, next-action basics, write-event, golden doc checks",
     "contract": "Schema validation, JSONL parsing, schema conformance, adapter prompt integrity",

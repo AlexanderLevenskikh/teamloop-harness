@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TeamLoop Harness — Product Director L0 Advisory Checks.
+"""YourAITeam — Product Director L0 Advisory Checks.
 
 Advisory checks flag risky task patterns as WARNING only.
 They never block execution (exit 0 always, severity is WARNING never CRITICAL).

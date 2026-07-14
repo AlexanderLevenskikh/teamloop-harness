@@ -1,6 +1,8 @@
-# TeamLoop Harness
+# YourAITeam
 
-Reusable delivery harness for supervised agent teams.
+A budget-aware AI-team composer and bounded delivery runtime for Codex and OpenCode.
+
+Canonical public names: **YourAITeam** for the product and `your-ai-team` for repositories, packages, commands, skills, and generated adapter artifacts. See [the 0.4.1 migration note](docs/MIGRATION-0.4.0-TO-0.4.1.md) for the intentionally preserved legacy workspace namespace.
 
 ## Core Invariants
 
@@ -19,7 +21,24 @@ An agent team must not hand unfinished work back to the user just because a suba
 .\scripts\next-action.ps1 -Workspace ".teamloop"
 ```
 
-All scripts have `.sh` and `.ps1` variants. See [TEAMLOOP.md](TEAMLOOP.md) for full workflow.
+All scripts have `.sh` and `.ps1` variants. See [RUNTIME.md](RUNTIME.md) for full workflow.
+
+## YourAITeam — task-specific team composition
+
+YourAITeam 0.4.1 provides a front door that proposes the **minimum sufficient AI team** for a task before subagents start spending tokens. The user can negotiate the token ceiling, role grades, engagement, and removed coverage; the accepted contract can then be materialized for Codex or OpenCode.
+
+```bash
+bash scripts/your-ai-team.sh propose --backend codex \
+  --task "Почини flaky Playwright тест" \
+  --output .teamloop/team/proposal.json
+
+bash scripts/your-ai-team.sh negotiate \
+  --proposal .teamloop/team/proposal.json \
+  --request "Влезь в 25000 токенов, ревьюер только в конце" \
+  --output .teamloop/team/proposal-2.json
+```
+
+See [YOUR_AI_TEAM.md](YOUR_AI_TEAM.md), the [worked examples](examples/your-ai-team/), and the chapter [«Когда метрикам понадобился менеджер»](docs/book/when-metrics-needed-a-manager.ru.md). Team composition is independent from the existing `fast / standard / audit` safety profiles.
 
 ## Workspace Structure
 
@@ -91,7 +110,7 @@ Profiles never disable scope, evidence, required project gates, final sentinel, 
 
 ## Memory
 
-Structured lessons stored under `.teamloop/memory/`. Categories: lessons, antipatterns, decisions, evidence. Use `memory-doctor` to validate. See [TEAMLOOP.md](TEAMLOOP.md) for details.
+Structured lessons stored under `.teamloop/memory/`. Categories: lessons, antipatterns, decisions, evidence. Use `memory-doctor` to validate. See [RUNTIME.md](RUNTIME.md) for details.
 
 ## Continuation Decisions
 
@@ -126,4 +145,4 @@ See [TESTING.md](TESTING.md) for validation checklist and maturity ladder.
 
 ## OpenCode Integration
 
-`adapters/opencode/` contains source templates (agents, commands, config). When a project is initialized, these are copied to `.opencode/` as active project-local configuration. Use `/supervised-task` to start a supervised delivery run. See [TEAMLOOP.md](TEAMLOOP.md) for full details.
+`adapters/opencode/` contains source templates (agents, commands, config). When a project is initialized, these are copied to `.opencode/` as active project-local configuration. Use `/supervised-task` to start a supervised delivery run. See [RUNTIME.md](RUNTIME.md) for full details.

@@ -1,6 +1,6 @@
 # Adapter Contract
 
-The adapter contract defines the interface between a TeamLoop Harness adapter (e.g. OpenCode) and the Harness runtime. It specifies what commands an adapter must be able to invoke, what agents it provides, and what capabilities it supports.
+The adapter contract defines the interface between a YourAITeam adapter (e.g. OpenCode) and the Harness runtime. It specifies what commands an adapter must be able to invoke, what agents it provides, and what capabilities it supports.
 
 ## Schema
 
@@ -87,7 +87,7 @@ The command checks:
   "schemaVersion": 1,
   "adapterId": "opencode",
   "version": "1.0.0",
-  "description": "OpenCode adapter for TeamLoop Harness",
+  "description": "OpenCode adapter for YourAITeam",
   "requiredCommands": [
     "next-action", "apply-transition", "write-event",
     "check-scope", "run-gates", "validate-state",

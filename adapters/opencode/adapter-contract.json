@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "adapterId": "opencode",
   "version": "1.0.0",
-  "description": "OpenCode adapter for TeamLoop Harness",
+  "description": "OpenCode adapter for YourAITeam",
   "requiredCommands": [
     "next-action",
     "apply-transition",
@@ -35,25 +35,75 @@
     "inbox-stats",
     "advisory-check",
     "performance-report",
-    "record-performance"
+    "record-performance",
+    "team-propose",
+    "team-negotiate",
+    "team-accept",
+    "team-materialize"
   ],
   "providedAgents": [
-    {"name": "supervisor", "file": "adapters/opencode/agents/supervisor.md"},
-    {"name": "discovery", "file": "adapters/opencode/agents/discovery.md"},
-    {"name": "researcher", "file": "adapters/opencode/agents/researcher.md"},
-    {"name": "research-lead", "file": "adapters/opencode/agents/research-lead.md"},
-    {"name": "task-slicer", "file": "adapters/opencode/agents/task-slicer.md"},
-    {"name": "executor", "file": "adapters/opencode/agents/executor.md"},
-    {"name": "change-reviewer", "file": "adapters/opencode/agents/change-reviewer.md"},
-    {"name": "gatekeeper", "file": "adapters/opencode/agents/gatekeeper.md"},
-    {"name": "orchestrator", "file": "adapters/opencode/agents/orchestrator.md"},
-    {"name": "sentinel", "file": "adapters/opencode/agents/sentinel.md"},
-    {"name": "watchdog", "file": "adapters/opencode/agents/watchdog.md"}
+    {
+      "name": "supervisor",
+      "file": "adapters/opencode/agents/supervisor.md"
+    },
+    {
+      "name": "discovery",
+      "file": "adapters/opencode/agents/discovery.md"
+    },
+    {
+      "name": "researcher",
+      "file": "adapters/opencode/agents/researcher.md"
+    },
+    {
+      "name": "research-lead",
+      "file": "adapters/opencode/agents/research-lead.md"
+    },
+    {
+      "name": "task-slicer",
+      "file": "adapters/opencode/agents/task-slicer.md"
+    },
+    {
+      "name": "executor",
+      "file": "adapters/opencode/agents/executor.md"
+    },
+    {
+      "name": "change-reviewer",
+      "file": "adapters/opencode/agents/change-reviewer.md"
+    },
+    {
+      "name": "gatekeeper",
+      "file": "adapters/opencode/agents/gatekeeper.md"
+    },
+    {
+      "name": "orchestrator",
+      "file": "adapters/opencode/agents/orchestrator.md"
+    },
+    {
+      "name": "sentinel",
+      "file": "adapters/opencode/agents/sentinel.md"
+    },
+    {
+      "name": "watchdog",
+      "file": "adapters/opencode/agents/watchdog.md"
+    },
+    {
+      "name": "team-manager",
+      "file": "adapters/opencode/agents/team-manager.md"
+    }
   ],
   "providedCommands": [
-    {"name": "supervised-task", "file": "adapters/opencode/commands/supervised-task.md"}
+    {
+      "name": "supervised-task",
+      "file": "adapters/opencode/commands/supervised-task.md"
+    },
+    {
+      "name": "your-ai-team",
+      "file": "adapters/opencode/commands/your-ai-team.md"
+    }
   ],
-  "supportedProfiles": ["generic-software-task"],
+  "supportedProfiles": [
+    "generic-software-task"
+  ],
   "supportedTransitions": [
     "RUN_DISCOVERY",
     "RUN_RESEARCHER",
@@ -76,7 +126,9 @@
     "transitionEngine": true,
     "gateRunner": true,
     "researchSupport": true,
-    "memorySupport": false
+    "memorySupport": false,
+    "dynamicTeamComposition": true,
+    "budgetNegotiation": true
   },
   "outputFormat": {
     "commandOutput": "both",

@@ -1,4 +1,4 @@
-# TeamLoop Harness
+# YourAITeam Runtime Guide
 
 Reusable delivery harness for supervised agent teams.
 

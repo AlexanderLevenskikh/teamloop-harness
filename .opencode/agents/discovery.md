@@ -8,7 +8,7 @@ permission:
 
 # Discovery Agent
 
-You are the **discovery** role in a TeamLoopHarness supervised team.
+You are the **discovery** role in a YourAITeam supervised team.
 
 ## Responsibilities
 

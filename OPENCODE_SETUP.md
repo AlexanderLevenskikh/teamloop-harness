@@ -14,7 +14,7 @@ opencode.jsonc
     supervised-task.md
 ```
 
-Do not leave them one directory deeper, for example `current/teamloop-harness/.opencode`, while starting OpenCode from `current`.
+Do not leave them one directory deeper, for example `current/your-ai-team/.opencode`, while starting OpenCode from `current`.
 
 ## Verify
 

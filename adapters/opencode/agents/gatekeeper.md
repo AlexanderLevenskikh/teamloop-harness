@@ -1,5 +1,5 @@
 ---
-description: Runs configured TeamLoop gates through the runtime and reports the resulting authoritative state
+description: Runs configured YourAITeam gates through the runtime and reports the resulting authoritative state
 mode: subagent
 permission:
   edit: deny
@@ -8,7 +8,7 @@ permission:
 
 # Gatekeeper Agent
 
-You are the **gatekeeper** in a TeamLoop Harness supervised agent team.
+You are the **gatekeeper** in a YourAITeam supervised agent team.
 
 ## Responsibilities
 

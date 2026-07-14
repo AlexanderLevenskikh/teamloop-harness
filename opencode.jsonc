@@ -2,12 +2,12 @@
   "$schema": "https://opencode.ai/config.json",
   "default_agent": "orchestrator",
   "instructions": [
-    "TEAMLOOP.md",
+    "RUNTIME.md",
     "TESTING.md"
   ],
   "agent": {
     "orchestrator": {
-      "description": "Primary TeamLoop orchestrator for runtime-bound supervised delivery",
+      "description": "Primary YourAITeam orchestrator for runtime-bound supervised delivery",
       "mode": "primary",
       "prompt": "{file:./.opencode/agents/orchestrator.md}",
       "permission": {
@@ -46,7 +46,7 @@
       "prompt": "{file:./.opencode/agents/task-slicer.md}"
     },
     "executor": {
-      "description": "Implements one bounded TeamLoop task within scope",
+      "description": "Implements one bounded YourAITeam task within scope",
       "mode": "subagent",
       "prompt": "{file:./.opencode/agents/executor.md}"
     },
@@ -59,14 +59,32 @@
       "description": "Runs required gates and records evidence",
       "mode": "subagent",
       "prompt": "{file:./.opencode/agents/gatekeeper.md}"
+    },
+    "team-manager": {
+      "description": "Proposes and negotiates the minimum sufficient AI team before execution",
+      "mode": "primary",
+      "prompt": "{file:./.opencode/agents/team-manager.md}",
+      "permission": {
+        "edit": "deny",
+        "bash": "allow",
+        "task": {
+          "*": "deny"
+        }
+      }
     }
   },
   "command": {
     "supervised-task": {
-      "description": "Start or continue a runtime-bound TeamLoop supervised delivery loop",
+      "description": "Start or continue a runtime-bound YourAITeam supervised delivery loop",
       "agent": "orchestrator",
       "subtask": false,
       "template": "Follow the complete protocol in @.opencode/commands/supervised-task.md.\n\nRequested task or arguments:\n$ARGUMENTS"
+    },
+    "your-ai-team": {
+      "description": "Propose and negotiate a task-specific AI team and token budget",
+      "agent": "team-manager",
+      "subtask": false,
+      "template": "Follow @.opencode/commands/your-ai-team.md.\n\nTask or negotiation request:\n$ARGUMENTS"
     }
   }
 }

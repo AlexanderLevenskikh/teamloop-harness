@@ -1,5 +1,5 @@
 ---
-description: Start or continue a runtime-bound TeamLoop supervised delivery loop
+description: Start or continue a runtime-bound YourAITeam supervised delivery loop
 agent: orchestrator
 subtask: false
 ---
@@ -10,7 +10,7 @@ Requested task or command arguments:
 
 $ARGUMENTS
 
-Run or continue exactly one bounded TeamLoop action. Runtime commands are the source of truth; prompts consume routing decisions and never make their own verification optional.
+Run or continue exactly one bounded YourAITeam action. Runtime commands are the source of truth; prompts consume routing decisions and never make their own verification optional.
 
 ## Runtime order
 

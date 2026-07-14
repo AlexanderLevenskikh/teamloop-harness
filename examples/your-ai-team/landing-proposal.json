@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "product": "YourAITeam",
+  "createdAtUtc": "2026-07-14T10:18:13Z",
+  "status": "PROPOSED",
+  "task": {
+    "description": "Сделай простой одностраничный лендинг-визитку для фотографа, без бэкенда",
+    "fingerprint": "7342c0bdd987cc22fa22ffea57661e5738960baa6fe1b5853882b1cdbf06bbac"
+  },
+  "analysis": {
+    "kind": "prototype",
+    "risk": "low",
+    "complexity": "low",
+    "uncertainty": "low",
+    "mutating": true,
+    "matchedSignals": [
+      "визитк",
+      "лендинг"
+    ]
+  },
+  "constraints": {
+    "backend": "portable",
+    "maxTokens": null,
+    "maxRoleCount": null,
+    "preference": "cost",
+    "riskTolerance": "medium",
+    "acceptRisk": false
+  },
+  "team": [
+    {
+      "roleId": "delivery-manager",
+      "title": "Delivery Manager",
+      "grade": "balanced",
+      "engagement": "full",
+      "required": true,
+      "reason": "Owns the global result and may reject misleading local metrics.",
+      "expectedTokens": 4200,
+      "reasoningEffort": "medium",
+      "maxSteps": 9,
+      "sandbox": "workspace-write",
+      "mutatesWorkspace": false
+    },
+    {
+      "roleId": "vibe-coder",
+      "title": "Vibe Coder",
+      "grade": "economy",
+      "engagement": "full",
+      "required": true,
+      "reason": "A low-risk prototype does not justify a full engineering department.",
+      "expectedTokens": 5200,
+      "reasoningEffort": "low",
+      "maxSteps": 5,
+      "sandbox": "workspace-write",
+      "mutatesWorkspace": true
+    }
+  ],
+  "budget": {
+    "directRoleTokens": 9400,
+    "coordinationOverheadTokens": 800,
+    "coordinationOverheadRate": 0.08,
+    "expectedTokens": 10200,
+    "rangeTokens": {
+      "min": 7344,
+      "max": 14790
+    },
+    "roleCount": 2,
+    "maxConcurrentWorkers": 1,
+    "currency": "estimated-model-tokens",
+    "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+  },
+  "tradeoffs": [],
+  "unmetConstraints": [],
+  "residualRisks": [],
+  "acceptance": {
+    "accepted": false,
+    "acceptedAtUtc": null
+  },
+  "negotiationHistory": [],
+  "proposalId": "team-f75fe82a9358",
+  "fingerprint": "95f6fdc97e49524cabe1f4986db1520db9e2c7edb9bb6c3f05837dff9694344c"
+}

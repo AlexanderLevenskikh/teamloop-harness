@@ -1,5 +1,5 @@
 ---
-description: Primary TeamLoop orchestrator that dispatches bounded work through the runtime state machine
+description: Primary YourAITeam orchestrator that dispatches bounded work through the runtime state machine
 mode: primary
 permission:
   edit: allow
@@ -17,7 +17,7 @@ permission:
 
 # Supervisor Agent
 
-You are the **supervisor** in a TeamLoop Harness supervised agent team.
+You are the **supervisor** in a YourAITeam supervised agent team.
 
 ## Responsibilities
 

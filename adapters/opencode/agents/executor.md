@@ -1,5 +1,5 @@
 ---
-description: Implements exactly one active TeamLoop task within its declared write scope and verification contract
+description: Implements exactly one active YourAITeam task within its declared write scope and verification contract
 mode: subagent
 permission:
   edit: allow
@@ -8,7 +8,7 @@ permission:
 
 # Executor Agent
 
-You are the **executor** in a TeamLoop Harness supervised agent team.
+You are the **executor** in a YourAITeam supervised agent team.
 
 ## Responsibilities
 

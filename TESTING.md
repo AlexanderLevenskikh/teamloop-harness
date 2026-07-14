@@ -1,4 +1,4 @@
-# Testing TeamLoop Harness
+# Testing YourAITeam
 
 This checklist validates both the MVP+ hardening runtime and the Fast Execution Contract.
 
@@ -58,11 +58,11 @@ PowerShell coverage mirrors the critical profile, manifest, no-progress, fake-cl
 ## Fresh-workspace smoke
 
 ```bash
-HARNESS=/absolute/path/to/teamloop-harness
+HARNESS=/absolute/path/to/your-ai-team
 TMP=$(mktemp -d)
 cd "$TMP"
 git init -q
-git config user.email test@teamloop.local
+git config user.email test@your-ai-team.local
 git config user.name Test
 
 bash "$HARNESS/scripts/init-workspace.sh" --workspace .teamloop --profile generic-software-task

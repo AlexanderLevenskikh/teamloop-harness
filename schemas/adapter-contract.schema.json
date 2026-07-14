@@ -1,9 +1,14 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Adapter Contract",
-  "description": "Contract for adapter registration: defines what an adapter provides and what it requires from the TeamLoop Harness runtime.",
+  "description": "Contract for adapter registration: defines what an adapter provides and what it requires from the YourAITeam runtime.",
   "type": "object",
-  "required": ["schemaVersion", "adapterId", "version", "requiredCommands"],
+  "required": [
+    "schemaVersion",
+    "adapterId",
+    "version",
+    "requiredCommands"
+  ],
   "properties": {
     "schemaVersion": {
       "type": "integer",
@@ -46,7 +51,10 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "file"],
+        "required": [
+          "name",
+          "file"
+        ],
         "properties": {
           "name": {
             "type": "string",
@@ -67,7 +75,10 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "file"],
+        "required": [
+          "name",
+          "file"
+        ],
         "properties": {
           "name": {
             "type": "string",
@@ -122,6 +133,14 @@
         "memorySupport": {
           "type": "boolean",
           "description": "Adapter supports memory subsystem operations"
+        },
+        "dynamicTeamComposition": {
+          "type": "boolean",
+          "description": "Adapter can materialize a task-specific accepted team contract"
+        },
+        "budgetNegotiation": {
+          "type": "boolean",
+          "description": "Adapter exposes explicit token-budget bargaining before execution"
         }
       },
       "additionalProperties": false
@@ -131,12 +150,20 @@
       "properties": {
         "commandOutput": {
           "type": "string",
-          "enum": ["text", "json", "both"],
+          "enum": [
+            "text",
+            "json",
+            "both"
+          ],
           "description": "Expected output format from runtime commands"
         },
         "errorHandling": {
           "type": "string",
-          "enum": ["exit-code", "stderr", "structured"],
+          "enum": [
+            "exit-code",
+            "stderr",
+            "structured"
+          ],
           "description": "How the adapter expects errors to be reported"
         }
       },

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TeamLoop Harness — content-addressed validation cache.
+"""YourAITeam — content-addressed validation cache.
 
 Stores deterministic validation results keyed by SHA-256 fingerprints of
 their material inputs (files, schemas, and supporting scripts).  Identical

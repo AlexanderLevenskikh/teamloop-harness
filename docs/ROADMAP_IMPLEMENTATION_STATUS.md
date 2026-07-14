@@ -149,7 +149,7 @@ This document honestly classifies the previously claimed Iterations 1–9 from t
 
 ---
 
-## Iteration 6 — Minimal TeamLoop Inbox Contract and Read-Only Prototype
+## Iteration 6 — Minimal YourAITeam Inbox Contract and Read-Only Prototype
 
 **Original goal:** Build a read-only control-plane view over repositories and workspaces exposing: active runs/tasks; next action; blockers; HUMAN_REQUIRED status; reviewer/watchdog/sentinel findings; execution profile; no-progress state; final-gate results; reviewed evidence and diffs. The implemented JSONL agent mailbox is a separate scaffold, not the original Minimal Inbox.
 
@@ -271,7 +271,7 @@ This document honestly classifies the previously claimed Iterations 1–9 from t
 | I3: Honest Validation Cache | Content-addressed cache | **PARTIAL** | 20+ |
 | I4: Public Release and Compatibility Hardening | Versioning, migration, doctor, compatibility | **SCAFFOLD_ONLY** | 2 |
 | I5: Dogfood Guard | Full gate chain, old/new guard | **PARTIAL** | 8 |
-| I6: Minimal TeamLoop Inbox Contract and Read-Only Prototype | Read-only control-plane inbox | **SCAFFOLD_ONLY** | 0 |
+| I6: Minimal YourAITeam Inbox Contract and Read-Only Prototype | Read-only control-plane inbox | **SCAFFOLD_ONLY** | 0 |
 | I7: Product Director L0 Advisory Mode | Bounded-task recommendation with risk/profile advice | **SCAFFOLD_ONLY** | 0 |
 | I8: StateStore ABC | Pluggable storage prep | **SCAFFOLD_ONLY** | 0 |
 | I9: Adapter Contract | Adapter schema and verify | **SCAFFOLD_ONLY** | 0 |
