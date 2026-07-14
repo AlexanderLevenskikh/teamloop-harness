@@ -1,8 +1,9 @@
-# TeamLoop test workspaces
+# YourAITeam workspaces and archives
 tests/.git/
 tests/.teamloop-test/
 tests/.tl-scope-test/
 .teamloop/
+.teamloop-failed-campaign-archive/
 
 # Python
 __pycache__/

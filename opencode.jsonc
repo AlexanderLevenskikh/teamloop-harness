@@ -1,0 +1,90 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "orchestrator",
+  "instructions": [
+    "RUNTIME.md",
+    "TESTING.md"
+  ],
+  "agent": {
+    "orchestrator": {
+      "description": "Primary YourAITeam orchestrator for runtime-bound supervised delivery",
+      "mode": "primary",
+      "prompt": "{file:./.opencode/agents/orchestrator.md}",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "task": {
+          "*": "deny",
+          "discovery": "allow",
+          "researcher": "allow",
+          "research-lead": "allow",
+          "task-slicer": "allow",
+          "executor": "allow",
+          "change-reviewer": "allow",
+          "gatekeeper": "allow"
+        }
+      }
+    },
+    "discovery": {
+      "description": "Discovers project facts and requirements before planning",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/discovery.md}"
+    },
+    "researcher": {
+      "description": "Investigates technical unknowns and records evidence",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/researcher.md}"
+    },
+    "research-lead": {
+      "description": "Reviews research quality and evidence",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/research-lead.md}"
+    },
+    "task-slicer": {
+      "description": "Turns approved findings into bounded executable tasks",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/task-slicer.md}"
+    },
+    "executor": {
+      "description": "Implements one bounded YourAITeam task within scope",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/executor.md}"
+    },
+    "change-reviewer": {
+      "description": "Reviews changes for correctness, scope and contract violations",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/change-reviewer.md}"
+    },
+    "gatekeeper": {
+      "description": "Runs required gates and records evidence",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/gatekeeper.md}"
+    },
+    "team-manager": {
+      "description": "Proposes and negotiates the minimum sufficient AI team before execution",
+      "mode": "primary",
+      "prompt": "{file:./.opencode/agents/team-manager.md}",
+      "permission": {
+        "edit": "deny",
+        "bash": "allow",
+        "task": {
+          "*": "deny"
+        }
+      }
+    }
+  },
+  "command": {
+    "supervised-task": {
+      "description": "Start or continue a runtime-bound YourAITeam supervised delivery loop",
+      "agent": "orchestrator",
+      "subtask": false,
+      "template": "Follow the complete protocol in @.opencode/commands/supervised-task.md.\n\nRequested task or arguments:\n$ARGUMENTS"
+    },
+    "your-ai-team": {
+      "description": "Propose and negotiate a task-specific AI team and token budget",
+      "agent": "team-manager",
+      "subtask": false,
+      "template": "Follow @.opencode/commands/your-ai-team.md.\n\nTask or negotiation request:\n$ARGUMENTS"
+    }
+  }
+}

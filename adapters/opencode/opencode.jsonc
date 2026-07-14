@@ -1,6 +1,6 @@
 {
-  "name": "teamloop-harness",
-  "description": "TeamLoop Harness - supervised agent delivery harness",
+  "name": "your-ai-team",
+  "description": "YourAITeam - supervised agent delivery harness",
   "agents": {
     "supervisor": {
       "file": "adapters/opencode/agents/supervisor.md"
@@ -27,6 +27,9 @@
   "commands": {
     "supervised-task": {
       "file": "adapters/opencode/commands/supervised-task.md"
+    },
+    "your-ai-team": {
+      "file": "adapters/opencode/commands/your-ai-team.md"
     }
   }
 }

@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "product": "YourAITeam",
+  "version": "0.4.1",
+  "decision": "YOUR_AI_TEAM_CANONICAL_NAME_PASS",
+  "canonical": {
+    "product": "YourAITeam",
+    "slug": "your-ai-team",
+    "cli": "scripts/your-ai-team.sh",
+    "opencodeCommand": "/your-ai-team",
+    "codexSkill": "$your-ai-team",
+    "runtimeGuide": "RUNTIME.md",
+    "composerModule": "scripts/your_ai_team.py"
+  },
+  "renamedSurfaces": [
+    {
+      "from": "repository root",
+      "to": "your-ai-team/"
+    },
+    {
+      "from": "former public CLI",
+      "to": "scripts/your-ai-team[.sh|.ps1]"
+    },
+    {
+      "from": "former OpenCode command",
+      "to": "/your-ai-team"
+    },
+    {
+      "from": "former runtime guide filename",
+      "to": "RUNTIME.md"
+    },
+    {
+      "from": "former composer module",
+      "to": "scripts/your_ai_team.py"
+    },
+    {
+      "from": "former package prefix",
+      "to": "your-ai-team-<version>.zip"
+    },
+    {
+      "from": "former public schema host",
+      "to": "your-ai-team.dev"
+    }
+  ],
+  "legacyTechnicalNamespace": {
+    "status": "PRESERVED_FOR_V0_4_COMPATIBILITY",
+    "identifiers": [
+      ".teamloop/",
+      "TEAMLOOP_*",
+      "teamloop-core.py",
+      "teamloop_* modules",
+      "teamloop-validation-cache/v2"
+    ],
+    "reason": "Persisted workspace and cache identifiers require a separately versioned state migration."
+  },
+  "validation": {
+    "brandingScan": "PASS",
+    "yourAITeamTests": 15,
+    "brandingTests": 3,
+    "legacySmokeTests": 48,
+    "cliProposalSmoke": "PASS",
+    "opencodeMaterializationSmoke": "PASS",
+    "releasePackageSmoke": "PASS"
+  },
+  "importantFileSha256": {
+    "README.md": "25cbdd107a179182f4270d23bc4eb5aee48311e3250d175fd9d0c768427ebc12",
+    "RUNTIME.md": "e8c249e737a40be8432204a03efa1790bb3e0721be5775f702318f3337baf118",
+    "YOUR_AI_TEAM.md": "27248f403e9210bbcaee75aab84e3806368077d7faca0bd491dcc2496eadbb48",
+    "docs/MIGRATION-0.4.0-TO-0.4.1.md": "32de44a75294ff3e85bb66a05cf5fcad0afdbb7c0afb574e2c2dc082e1592fe9",
+    "scripts/your-ai-team": "8dbb04c9cb86b17e5057473b9e17bb69d4cd6058773a1ea248955c498ef88420",
+    "scripts/your-ai-team.sh": "cc00449f1159862c1a9b14d785ab16082c44e0239c4a1bef9330c8ac58a7aa72",
+    "scripts/your-ai-team.ps1": "9af4899ada9ff2c35c5f101bb09ced8ab95bcdf05c66f9b4d7f2ef45b6a345e4",
+    "scripts/your_ai_team.py": "b57169bd721f51559c241aa7270468bebfa85436e06cc7a19c31eb8d524c8734",
+    ".opencode/commands/your-ai-team.md": "34a5e7501529fae281935c867aa438ae8154d6013e4356a2d17526c730e48ed1",
+    "adapters/opencode/commands/your-ai-team.md": "34a5e7501529fae281935c867aa438ae8154d6013e4356a2d17526c730e48ed1",
+    "schemas/team-proposal.schema.json": "c611dd85566bf0d39872488f17612cf76f3f54d591daa42c3e2bc709940e0b94",
+    "docs/releases/0.4.1-your-ai-team-rename.md": "7f08b0690e14d5bec5838abd2f80f39e93d97d5125805f170effd10f73c6274d"
+  }
+}

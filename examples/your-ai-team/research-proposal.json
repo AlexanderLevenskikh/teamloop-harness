@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "product": "YourAITeam",
+  "createdAtUtc": "2026-07-14T10:18:15Z",
+  "status": "PROPOSED",
+  "task": {
+    "description": "Исследуй, стоит ли использовать WebAssembly для тяжёлых вычислений в браузере, и дай решение с источниками",
+    "fingerprint": "274ff78868e82db51430f782118428f2d6475db1c6ba9c9e2527b4a08cac012f"
+  },
+  "analysis": {
+    "kind": "research",
+    "risk": "low",
+    "complexity": "low",
+    "uncertainty": "high",
+    "mutating": false,
+    "matchedSignals": [
+      "исслед"
+    ]
+  },
+  "constraints": {
+    "backend": "portable",
+    "maxTokens": null,
+    "maxRoleCount": null,
+    "preference": "balanced",
+    "riskTolerance": "medium",
+    "acceptRisk": false
+  },
+  "team": [
+    {
+      "roleId": "delivery-manager",
+      "title": "Delivery Manager",
+      "grade": "balanced",
+      "engagement": "full",
+      "required": true,
+      "reason": "Owns the global result and may reject misleading local metrics.",
+      "expectedTokens": 4200,
+      "reasoningEffort": "medium",
+      "maxSteps": 9,
+      "sandbox": "workspace-write",
+      "mutatesWorkspace": false
+    },
+    {
+      "roleId": "researcher",
+      "title": "Researcher",
+      "grade": "balanced",
+      "engagement": "full",
+      "required": true,
+      "reason": "The deliverable is knowledge, so no developer is hired.",
+      "expectedTokens": 7200,
+      "reasoningEffort": "medium",
+      "maxSteps": 9,
+      "sandbox": "read-only",
+      "mutatesWorkspace": false
+    },
+    {
+      "roleId": "research-reviewer",
+      "title": "Research Reviewer",
+      "grade": "balanced",
+      "engagement": "final-only",
+      "required": false,
+      "reason": "Challenges evidence quality and unsupported conclusions.",
+      "expectedTokens": 2900,
+      "reasoningEffort": "medium",
+      "maxSteps": 6,
+      "sandbox": "read-only",
+      "mutatesWorkspace": false
+    }
+  ],
+  "budget": {
+    "directRoleTokens": 14300,
+    "coordinationOverheadTokens": 2300,
+    "coordinationOverheadRate": 0.16,
+    "expectedTokens": 16600,
+    "rangeTokens": {
+      "min": 11952,
+      "max": 24070
+    },
+    "roleCount": 3,
+    "maxConcurrentWorkers": 2,
+    "currency": "estimated-model-tokens",
+    "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+  },
+  "tradeoffs": [],
+  "unmetConstraints": [],
+  "residualRisks": [],
+  "acceptance": {
+    "accepted": false,
+    "acceptedAtUtc": null
+  },
+  "negotiationHistory": [],
+  "proposalId": "team-b4a53ebcd451",
+  "fingerprint": "8ea9ed92fb7ff1da4f3ccf185dfa0f5827bc674ff71e401a2aed5e2e8df8b0c1"
+}

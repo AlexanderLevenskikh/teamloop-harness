@@ -1,0 +1,240 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FinalGateResult",
+  "description": "Aggregated final gate check result for pre-handoff validation",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "checkedAtUtc",
+    "currentBranch",
+    "currentHead",
+    "overallStatus",
+    "checks",
+    "executionMode",
+    "summary"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "checkedAtUtc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-"
+    },
+    "currentBranch": {
+      "type": "string"
+    },
+    "currentHead": {
+      "type": "string",
+      "pattern": "^(|[0-9a-f]{40})$"
+    },
+    "overallStatus": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "FAIL",
+        "DISABLED",
+        "NOT_CONFIGURED"
+      ]
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "status",
+          "description",
+          "blocking"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PASS",
+              "FAIL",
+              "SKIP",
+              "NOT_REQUIRED",
+              "NOT_CONFIGURED",
+              "UNAVAILABLE",
+              "MISSING",
+              "STALE",
+              "INVALID"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "blocking": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "evidenceArtifact": {
+            "type": "string"
+          },
+          "cacheState": {
+            "type": "string",
+            "enum": [
+              "PASS",
+              "EMPTY",
+              "DISABLED",
+              "CORRUPT",
+              "INVALID",
+              "LEGACY_UNTRUSTED"
+            ]
+          },
+          "cachePath": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "totalRecords": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "validRecords": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "malformedLines": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "invalidIntegrity": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "legacyUntrusted": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "quarantinedRecords": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "advisoryFindings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "executionMode": {
+      "type": "string",
+      "enum": [
+        "repository-baseline",
+        "active-run",
+        "final-handoff"
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total",
+        "pass",
+        "fail",
+        "skip",
+        "notRequired",
+        "unavailable",
+        "notConfigured",
+        "stateBreakdown"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pass": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fail": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skip": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "notRequired": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unavailable": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "notConfigured": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stateBreakdown": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "PASS",
+            "FAIL",
+            "SKIP",
+            "NOT_REQUIRED",
+            "UNAVAILABLE",
+            "NOT_CONFIGURED",
+            "MISSING",
+            "STALE",
+            "INVALID"
+          ],
+          "properties": {
+            "PASS": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "FAIL": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "SKIP": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "NOT_REQUIRED": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "UNAVAILABLE": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "NOT_CONFIGURED": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "MISSING": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "STALE": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "INVALID": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}

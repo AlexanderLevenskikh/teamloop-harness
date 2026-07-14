@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ProgressSnapshot",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "schemaId",
+    "runId",
+    "taskId",
+    "signature",
+    "rawSignature",
+    "components",
+    "qualitySignals",
+    "behaviorEvidenceFingerprint",
+    "progressClassification",
+    "unresolvedExecutableWork",
+    "createdAtUtc"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "schemaId": {
+      "type": "string",
+      "const": "teamloop-progress-snapshot/v1"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^run-"
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^task-"
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 64
+    },
+    "components": {
+      "type": "object"
+    },
+    "unresolvedExecutableWork": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "createdAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "rawSignature": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "qualitySignals": {
+      "type": "object",
+      "required": [
+        "todoMarkers",
+        "warningMarkers",
+        "openFindingCount"
+      ],
+      "properties": {
+        "todoMarkers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warningMarkers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "openFindingCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "behaviorEvidenceFingerprint": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "progressClassification": {
+      "type": "string",
+      "enum": [
+        "INITIAL_OR_MATERIAL",
+        "MATERIAL_CHANGE",
+        "SEMANTICALLY_UNCHANGED",
+        "SUPPRESSION_ONLY_NOT_PROGRESS"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

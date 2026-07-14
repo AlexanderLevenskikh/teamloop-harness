@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Inbox",
+  "description": "Lightweight per-run inbox message for agent-to-agent notifications",
+  "type": "object",
+  "required": ["schemaVersion", "messageId", "fromActor", "toActor", "subject", "body", "read", "timestampUtc"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "messageId": { "type": "string", "pattern": "^msg-" },
+    "fromActor": { "type": "string", "minLength": 1 },
+    "toActor": { "type": "string", "minLength": 1 },
+    "subject": { "type": "string", "minLength": 1 },
+    "body": { "type": "string" },
+    "read": { "type": "boolean" },
+    "timestampUtc": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

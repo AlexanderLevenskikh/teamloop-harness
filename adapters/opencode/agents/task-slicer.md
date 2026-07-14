@@ -1,6 +1,6 @@
 # Task Slicer Agent
 
-You are the **task-slicer** in a TeamLoop Harness supervised agent team.
+You are the **task-slicer** in a YourAITeam supervised agent team.
 
 ## Responsibilities
 
@@ -48,6 +48,8 @@ Do NOT manually edit `team-state.json`, `current-task.json`, or other state file
 - `forbiddenActions` should list common anti-patterns for the task.
 
 ## Validation
+
+Use `bash scripts/check-guard-integrity.sh --workspace .teamloop` to verify no generated tasks target protected paths.
 
 Reject tasks that:
 - Lack `scope` (must have at least one pattern).

@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Evidence",
+  "description": "An evidence record that supports lessons, antipatterns, or decisions",
+  "type": "object",
+  "required": ["schemaVersion", "evidenceId", "type", "reference", "createdAtUtc"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "evidenceId": { "type": "string", "pattern": "^evidence-[a-zA-Z0-9-]+$" },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "type": {
+      "type": "string",
+      "enum": ["FILE_CHANGE", "TEST_RESULT", "RUN_LOG", "EXTERNAL_REFERENCE", "MANUAL_VERIFICATION"]
+    },
+    "reference": { "type": "string", "minLength": 1 },
+    "references": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "createdAtUtc": { "type": "string", "format": "date-time" },
+    "status": {
+      "type": "string",
+      "enum": ["VERIFIED", "UNVERIFIED"]
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,1122 @@
+{
+  "schemaVersion": 1,
+  "description": "Test layer classification for YourAITeam. Each test belongs to one primary layer and always to full.",
+  "layers": {
+    "smoke": "Basic workspace operations \u2014 init, validate-state basics, next-action basics, write-event, golden doc checks",
+    "contract": "Schema validation, JSONL parsing, schema conformance, adapter prompt integrity",
+    "runtime": "Core command behavior \u2014 transitions, events, scope, gates, memory, continuation, guard, sentinel, fast-execution",
+    "integration": "E2E scenarios, campaign tests, review evidence, multi-command chains",
+    "full": "All tests belong to this layer"
+  },
+  "tests": {
+    "test_01": [
+      "smoke",
+      "full"
+    ],
+    "test_02": [
+      "smoke",
+      "full"
+    ],
+    "test_03": [
+      "smoke",
+      "full"
+    ],
+    "test_04": [
+      "smoke",
+      "full"
+    ],
+    "test_05": [
+      "smoke",
+      "full"
+    ],
+    "test_06": [
+      "smoke",
+      "full"
+    ],
+    "test_07": [
+      "smoke",
+      "full"
+    ],
+    "test_08": [
+      "smoke",
+      "full"
+    ],
+    "test_09": [
+      "smoke",
+      "full"
+    ],
+    "test_10": [
+      "smoke",
+      "full"
+    ],
+    "test_11": [
+      "smoke",
+      "full"
+    ],
+    "test_12": [
+      "smoke",
+      "full"
+    ],
+    "test_13": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_14": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_15": [
+      "smoke",
+      "full"
+    ],
+    "test_16": [
+      "smoke",
+      "full"
+    ],
+    "test_17": [
+      "smoke",
+      "full"
+    ],
+    "test_18": [
+      "smoke",
+      "full"
+    ],
+    "test_19": [
+      "smoke",
+      "full"
+    ],
+    "test_20": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_21": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_22": [
+      "smoke",
+      "full"
+    ],
+    "test_23": [
+      "smoke",
+      "full"
+    ],
+    "test_24": [
+      "smoke",
+      "full"
+    ],
+    "test_25": [
+      "smoke",
+      "full"
+    ],
+    "test_26": [
+      "smoke",
+      "full"
+    ],
+    "test_27": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_28": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_29": [
+      "smoke",
+      "full"
+    ],
+    "test_30": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_31": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_32": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_33": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_34": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_35": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_36": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_37": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_38": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_39": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_40": [
+      "contract",
+      "runtime",
+      "integration",
+      "full"
+    ],
+    "test_41": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_42": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_43": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_44": [
+      "runtime",
+      "full"
+    ],
+    "test_45": [
+      "runtime",
+      "full"
+    ],
+    "test_46": [
+      "runtime",
+      "full"
+    ],
+    "test_47": [
+      "runtime",
+      "full"
+    ],
+    "test_48": [
+      "runtime",
+      "full"
+    ],
+    "test_49": [
+      "runtime",
+      "full"
+    ],
+    "test_50": [
+      "runtime",
+      "full"
+    ],
+    "test_51": [
+      "runtime",
+      "full"
+    ],
+    "test_52": [
+      "runtime",
+      "full"
+    ],
+    "test_53": [
+      "runtime",
+      "full"
+    ],
+    "test_54": [
+      "runtime",
+      "full"
+    ],
+    "test_55": [
+      "runtime",
+      "full"
+    ],
+    "test_56": [
+      "runtime",
+      "full"
+    ],
+    "test_57": [
+      "runtime",
+      "full"
+    ],
+    "test_58": [
+      "runtime",
+      "full"
+    ],
+    "test_59": [
+      "runtime",
+      "full"
+    ],
+    "test_60": [
+      "runtime",
+      "full"
+    ],
+    "test_61": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_62": [
+      "runtime",
+      "full"
+    ],
+    "test_63": [
+      "runtime",
+      "full"
+    ],
+    "test_64": [
+      "runtime",
+      "full"
+    ],
+    "test_65": [
+      "runtime",
+      "full"
+    ],
+    "test_66": [
+      "runtime",
+      "full"
+    ],
+    "test_67": [
+      "runtime",
+      "full"
+    ],
+    "test_68": [
+      "runtime",
+      "full"
+    ],
+    "test_69": [
+      "runtime",
+      "full"
+    ],
+    "test_70": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_71": [
+      "runtime",
+      "full"
+    ],
+    "test_72": [
+      "runtime",
+      "full"
+    ],
+    "test_73": [
+      "runtime",
+      "full"
+    ],
+    "test_74": [
+      "runtime",
+      "full"
+    ],
+    "test_75": [
+      "runtime",
+      "full"
+    ],
+    "test_76": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_77": [
+      "runtime",
+      "full"
+    ],
+    "test_78": [
+      "runtime",
+      "full"
+    ],
+    "test_79": [
+      "runtime",
+      "full"
+    ],
+    "test_80": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_81": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_82": [
+      "runtime",
+      "full"
+    ],
+    "test_83": [
+      "runtime",
+      "full"
+    ],
+    "test_84": [
+      "runtime",
+      "full"
+    ],
+    "test_85": [
+      "runtime",
+      "full"
+    ],
+    "test_86": [
+      "runtime",
+      "full"
+    ],
+    "test_87": [
+      "runtime",
+      "full"
+    ],
+    "test_88": [
+      "runtime",
+      "full"
+    ],
+    "test_89": [
+      "contract",
+      "full"
+    ],
+    "test_90": [
+      "contract",
+      "full"
+    ],
+    "test_91": [
+      "contract",
+      "full"
+    ],
+    "test_92": [
+      "integration",
+      "full"
+    ],
+    "test_93": [
+      "integration",
+      "full"
+    ],
+    "test_94": [
+      "runtime",
+      "full"
+    ],
+    "test_95": [
+      "runtime",
+      "full"
+    ],
+    "test_96": [
+      "runtime",
+      "full"
+    ],
+    "test_97": [
+      "runtime",
+      "full"
+    ],
+    "test_98": [
+      "runtime",
+      "full"
+    ],
+    "test_99": [
+      "runtime",
+      "full"
+    ],
+    "test_100": [
+      "runtime",
+      "full"
+    ],
+    "test_101": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_102": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_103": [
+      "runtime",
+      "full"
+    ],
+    "test_104": [
+      "runtime",
+      "full"
+    ],
+    "test_105": [
+      "runtime",
+      "full"
+    ],
+    "test_106": [
+      "runtime",
+      "full"
+    ],
+    "test_107": [
+      "runtime",
+      "full"
+    ],
+    "test_108": [
+      "runtime",
+      "full"
+    ],
+    "test_109": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_110": [
+      "runtime",
+      "full"
+    ],
+    "test_111": [
+      "runtime",
+      "full"
+    ],
+    "test_112": [
+      "runtime",
+      "full"
+    ],
+    "test_113": [
+      "runtime",
+      "full"
+    ],
+    "test_114": [
+      "contract",
+      "full"
+    ],
+    "test_115": [
+      "contract",
+      "full"
+    ],
+    "test_116": [
+      "runtime",
+      "full"
+    ],
+    "test_117": [
+      "runtime",
+      "full"
+    ],
+    "test_118": [
+      "runtime",
+      "full"
+    ],
+    "test_119": [
+      "runtime",
+      "full"
+    ],
+    "test_120": [
+      "runtime",
+      "full"
+    ],
+    "test_121": [
+      "runtime",
+      "full"
+    ],
+    "test_122": [
+      "runtime",
+      "full"
+    ],
+    "test_123": [
+      "runtime",
+      "full"
+    ],
+    "test_124": [
+      "runtime",
+      "full"
+    ],
+    "test_125": [
+      "runtime",
+      "full"
+    ],
+    "test_126": [
+      "runtime",
+      "full"
+    ],
+    "test_127": [
+      "runtime",
+      "full"
+    ],
+    "test_128": [
+      "runtime",
+      "full"
+    ],
+    "test_129": [
+      "runtime",
+      "full"
+    ],
+    "test_130": [
+      "runtime",
+      "full"
+    ],
+    "test_131": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_132": [
+      "runtime",
+      "full"
+    ],
+    "test_133": [
+      "integration",
+      "full"
+    ],
+    "test_134": [
+      "integration",
+      "full"
+    ],
+    "test_135": [
+      "integration",
+      "full"
+    ],
+    "test_136": [
+      "integration",
+      "full"
+    ],
+    "test_137": [
+      "integration",
+      "full"
+    ],
+    "test_138": [
+      "integration",
+      "full"
+    ],
+    "test_139": [
+      "integration",
+      "full"
+    ],
+    "test_140": [
+      "integration",
+      "full"
+    ],
+    "test_141": [
+      "integration",
+      "full"
+    ],
+    "test_142": [
+      "integration",
+      "full"
+    ],
+    "test_143": [
+      "integration",
+      "full"
+    ],
+    "test_144": [
+      "integration",
+      "full"
+    ],
+    "test_145": [
+      "integration",
+      "full"
+    ],
+    "test_146": [
+      "integration",
+      "full"
+    ],
+    "test_147": [
+      "contract",
+      "full"
+    ],
+    "test_148": [
+      "integration",
+      "full"
+    ],
+    "test_149": [
+      "integration",
+      "full"
+    ],
+    "test_150": [
+      "integration",
+      "full"
+    ],
+    "test_151": [
+      "runtime",
+      "full"
+    ],
+    "test_152": [
+      "runtime",
+      "full"
+    ],
+    "test_153": [
+      "runtime",
+      "full"
+    ],
+    "test_154": [
+      "runtime",
+      "full"
+    ],
+    "test_155": [
+      "runtime",
+      "full"
+    ],
+    "test_156": [
+      "runtime",
+      "full"
+    ],
+    "test_157": [
+      "runtime",
+      "full"
+    ],
+    "test_158": [
+      "runtime",
+      "full"
+    ],
+    "test_159": [
+      "runtime",
+      "full"
+    ],
+    "test_160": [
+      "runtime",
+      "full"
+    ],
+    "test_161": [
+      "runtime",
+      "full"
+    ],
+    "test_162": [
+      "runtime",
+      "full"
+    ],
+    "test_163": [
+      "runtime",
+      "full"
+    ],
+    "test_164": [
+      "runtime",
+      "full"
+    ],
+    "test_165": [
+      "runtime",
+      "full"
+    ],
+    "test_166": [
+      "runtime",
+      "full"
+    ],
+    "test_167": [
+      "contract",
+      "full"
+    ],
+    "test_168": [
+      "runtime",
+      "full"
+    ],
+    "test_169": [
+      "runtime",
+      "full"
+    ],
+    "test_170": [
+      "contract",
+      "full"
+    ],
+    "test_171": [
+      "runtime",
+      "full"
+    ],
+    "test_172": [
+      "runtime",
+      "full"
+    ],
+    "test_173": [
+      "runtime",
+      "full"
+    ],
+    "test_174": [
+      "runtime",
+      "full"
+    ],
+    "test_175": [
+      "runtime",
+      "full"
+    ],
+    "test_176": [
+      "runtime",
+      "full"
+    ],
+    "test_177": [
+      "runtime",
+      "full"
+    ],
+    "test_178": [
+      "runtime",
+      "full"
+    ],
+    "test_179": [
+      "runtime",
+      "full"
+    ],
+    "test_180": [
+      "runtime",
+      "full"
+    ],
+    "test_181": [
+      "runtime",
+      "full"
+    ],
+    "test_182": [
+      "runtime",
+      "full"
+    ],
+    "test_183": [
+      "runtime",
+      "full"
+    ],
+    "test_184": [
+      "contract",
+      "full"
+    ],
+    "test_185": [
+      "contract",
+      "full"
+    ],
+    "test_186": [
+      "runtime",
+      "full"
+    ],
+    "test_187": [
+      "runtime",
+      "full"
+    ],
+    "test_188": [
+      "runtime",
+      "full"
+    ],
+    "test_189": [
+      "runtime",
+      "full"
+    ],
+    "test_190": [
+      "runtime",
+      "full"
+    ],
+    "test_191": [
+      "runtime",
+      "full"
+    ],
+    "test_192": [
+      "runtime",
+      "full"
+    ],
+    "test_193": [
+      "runtime",
+      "full"
+    ],
+    "test_194": [
+      "runtime",
+      "full"
+    ],
+    "test_195": [
+      "runtime",
+      "full"
+    ],
+    "test_196": [
+      "smoke",
+      "full"
+    ],
+    "test_197": [
+      "runtime",
+      "integration",
+      "full"
+    ],
+    "test_198": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_199": [
+      "contract",
+      "full"
+    ],
+    "test_200": [
+      "runtime",
+      "full"
+    ],
+    "test_201": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_202": [
+      "smoke",
+      "full"
+    ],
+    "test_203": [
+      "contract",
+      "full"
+    ],
+    "test_204": [
+      "smoke",
+      "full"
+    ],
+    "test_205": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_206": [
+      "runtime",
+      "full"
+    ],
+    "test_207": [
+      "runtime",
+      "full"
+    ],
+    "test_208": [
+      "runtime",
+      "full"
+    ],
+    "test_209": [
+      "runtime",
+      "full"
+    ],
+    "test_210": [
+      "runtime",
+      "full"
+    ],
+    "test_211": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_212": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_213": [
+      "runtime",
+      "full"
+    ],
+    "test_214": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_215": [
+      "runtime",
+      "full"
+    ],
+    "test_216": [
+      "runtime",
+      "full"
+    ],
+    "test_217": [
+      "runtime",
+      "full"
+    ],
+    "test_218": [
+      "runtime",
+      "full"
+    ],
+    "test_219": [
+      "runtime",
+      "full"
+    ],
+    "test_220": [
+      "runtime",
+      "full"
+    ],
+    "test_221": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_222": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_223": [
+      "runtime",
+      "full"
+    ],
+    "test_224": [
+      "runtime",
+      "full"
+    ],
+    "test_225": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_226": [
+      "runtime",
+      "full"
+    ],
+    "test_227": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_228": [
+      "contract",
+      "full"
+    ],
+    "test_229": [
+      "runtime",
+      "contract",
+      "full"
+    ],
+    "test_230": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_231": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_232": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_233": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_234": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_235": [
+      "contract",
+      "full"
+    ],
+    "test_236": [
+      "contract",
+      "full"
+    ],
+    "test_237": [
+      "contract",
+      "full"
+    ],
+    "test_238": [
+      "smoke",
+      "contract",
+      "full"
+    ],
+    "test_239": [
+      "contract",
+      "full"
+    ],
+    "test_240": [
+      "contract",
+      "full"
+    ],
+    "test_241": [
+      "contract",
+      "full"
+    ],
+    "test_242": [
+      "smoke",
+      "full"
+    ],
+    "test_243": [
+      "integration",
+      "full"
+    ],
+    "test_244": [
+      "runtime",
+      "full"
+    ],
+    "test_245": [
+      "contract",
+      "full"
+    ],
+    "test_246": [
+      "contract",
+      "full"
+    ],
+    "test_247": [
+      "contract",
+      "full"
+    ],
+    "test_248": [
+      "smoke",
+      "full"
+    ],
+    "test_249": [
+      "smoke",
+      "full"
+    ],
+    "test_250": [
+      "integration",
+      "full"
+    ],
+    "test_251": [
+      "integration",
+      "full"
+    ],
+    "test_252": [
+      "integration",
+      "full"
+    ],
+    "test_253": [
+      "integration",
+      "full"
+    ],
+    "test_254": [
+      "integration",
+      "full"
+    ],
+    "test_255": [
+      "integration",
+      "full"
+    ],
+    "test_256": [
+      "contract",
+      "full"
+    ],
+    "test_257": [
+      "contract",
+      "full"
+    ],
+    "test_258": [
+      "smoke",
+      "full"
+    ],
+    "test_259": [
+      "smoke",
+      "full"
+    ],
+    "test_260": [
+      "integration",
+      "full"
+    ],
+    "test_261": [
+      "contract",
+      "integration",
+      "full"
+    ],
+    "test_262": [
+      "contract",
+      "runtime",
+      "integration",
+      "full"
+    ],
+    "test_263": [
+      "contract",
+      "runtime",
+      "full"
+    ],
+    "test_264": [
+      "smoke",
+      "integration",
+      "full"
+    ]
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "product": "YourAITeam",
+  "createdAtUtc": "2026-07-14T10:18:16Z",
+  "status": "PROPOSED",
+  "task": {
+    "description": "Почини flaky Playwright тест в CI, который иногда не дожидается загрузки таблицы",
+    "fingerprint": "dc51303670cb35a44a8f27c3797dfd9e6a04faba77348901d3c508ff80238f1f"
+  },
+  "analysis": {
+    "kind": "bugfix",
+    "risk": "medium",
+    "complexity": "low",
+    "uncertainty": "low",
+    "mutating": true,
+    "matchedSignals": [
+      "flaky",
+      "почин"
+    ]
+  },
+  "constraints": {
+    "backend": "portable",
+    "maxTokens": null,
+    "maxRoleCount": null,
+    "preference": "balanced",
+    "riskTolerance": "medium",
+    "acceptRisk": false
+  },
+  "team": [
+    {
+      "roleId": "delivery-manager",
+      "title": "Delivery Manager",
+      "grade": "balanced",
+      "engagement": "full",
+      "required": true,
+      "reason": "Owns the global result and may reject misleading local metrics.",
+      "expectedTokens": 4200,
+      "reasoningEffort": "medium",
+      "maxSteps": 9,
+      "sandbox": "workspace-write",
+      "mutatesWorkspace": false
+    },
+    {
+      "roleId": "explorer",
+      "title": "Code Explorer",
+      "grade": "economy",
+      "engagement": "full",
+      "required": false,
+      "reason": "Finds the real execution path without polluting the main context.",
+      "expectedTokens": 2900,
+      "reasoningEffort": "low",
+      "maxSteps": 5,
+      "sandbox": "read-only",
+      "mutatesWorkspace": false
+    },
+    {
+      "roleId": "implementer",
+      "title": "Implementer",
+      "grade": "balanced",
+      "engagement": "full",
+      "required": true,
+      "reason": "Implements a bounded change and supplies execution evidence.",
+      "expectedTokens": 11200,
+      "reasoningEffort": "medium",
+      "maxSteps": 9,
+      "sandbox": "workspace-write",
+      "mutatesWorkspace": true
+    },
+    {
+      "roleId": "verifier",
+      "title": "Verifier",
+      "grade": "balanced",
+      "engagement": "final-only",
+      "required": true,
+      "reason": "Runs targeted gates and reports what they actually prove.",
+      "expectedTokens": 3000,
+      "reasoningEffort": "medium",
+      "maxSteps": 6,
+      "sandbox": "workspace-write",
+      "mutatesWorkspace": false
+    },
+    {
+      "roleId": "reviewer",
+      "title": "Change Reviewer",
+      "grade": "balanced",
+      "engagement": "final-only",
+      "required": false,
+      "reason": "Reviews correctness, scope, regressions, and missing evidence.",
+      "expectedTokens": 4000,
+      "reasoningEffort": "medium",
+      "maxSteps": 6,
+      "sandbox": "read-only",
+      "mutatesWorkspace": false
+    }
+  ],
+  "budget": {
+    "directRoleTokens": 25300,
+    "coordinationOverheadTokens": 8600,
+    "coordinationOverheadRate": 0.34,
+    "expectedTokens": 33900,
+    "rangeTokens": {
+      "min": 24408,
+      "max": 49155
+    },
+    "roleCount": 5,
+    "maxConcurrentWorkers": 3,
+    "currency": "estimated-model-tokens",
+    "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+  },
+  "tradeoffs": [],
+  "unmetConstraints": [],
+  "residualRisks": [],
+  "acceptance": {
+    "accepted": false,
+    "acceptedAtUtc": null
+  },
+  "negotiationHistory": [],
+  "proposalId": "team-1df115db3a01",
+  "fingerprint": "d526dc9d82c00aad04aec8b9e9dac0ada367df0c3c6486e36fcace97d60831c8"
+}

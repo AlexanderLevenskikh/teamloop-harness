@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ValidationCacheEntry",
+  "description": "A v2 content-addressed validation cache entry. Every behavior-affecting field is protected by integrityHash; cachedAtUtc is intentionally volatile.",
+  "type": "object",
+  "required": [
+    "cacheKey",
+    "keyPayload",
+    "checkId",
+    "result",
+    "inputFingerprints",
+    "scriptFingerprints",
+    "dependencyFingerprints",
+    "policyFingerprints",
+    "profileFingerprint",
+    "executionPolicyFingerprint",
+    "manifestFingerprint",
+    "protectedPathsFingerprint",
+    "executionProfile",
+    "reuseRestrictions",
+    "implementationVersion",
+    "cacheSchemaVersion",
+    "ttlSeconds",
+    "provenance",
+    "cachedAtUtc",
+    "resultHash",
+    "integrityHash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "cacheKey": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "keyPayload": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "checkId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "result": {
+      "type": "object"
+    },
+    "inputFingerprints": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "scriptFingerprints": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "dependencyFingerprints": {
+      "type": "object"
+    },
+    "policyFingerprints": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "profileFingerprint": { "type": "string" },
+    "executionPolicyFingerprint": { "type": "string" },
+    "manifestFingerprint": { "type": "string" },
+    "protectedPathsFingerprint": { "type": "string" },
+    "executionProfile": { "type": "string" },
+    "reuseRestrictions": { "type": "object" },
+    "implementationVersion": { "type": "string" },
+    "cacheSchemaVersion": {
+      "type": "string",
+      "const": "teamloop-validation-cache/v2"
+    },
+    "ttlSeconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "provenance": { "type": "object" },
+    "cachedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resultHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "integrityHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

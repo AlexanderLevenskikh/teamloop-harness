@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ExecutionPolicy",
+  "type": "object",
+  "required": ["schemaVersion", "schemaId", "runId", "taskId", "selectedProfile", "selectionReason", "reasonCodes", "taskRisk", "protectedPathStatus", "requiredRoles", "conditionalRoles", "deterministicChecks", "triggers", "invariants", "noProgressThreshold", "sourceFingerprints", "createdAtUtc", "semanticFingerprint", "integrity"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1},
+    "schemaId": {"type": "string", "const": "teamloop-execution-policy/v1"},
+    "runId": {"type": "string", "pattern": "^run-"},
+    "taskId": {"type": "string", "pattern": "^task-"},
+    "selectedProfile": {"type": "string", "enum": ["fast", "standard", "audit"]},
+    "selectionReason": {"type": "string", "minLength": 1},
+    "reasonCodes": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "taskRisk": {"type": "string", "enum": ["low", "medium", "high"]},
+    "protectedPathStatus": {"type": "string", "enum": ["CLEAN", "PROTECTED_SCOPE", "NOT_CONFIGURED"]},
+    "protectedScopePatterns": {"type": "array", "items": {"type": "string"}},
+    "requiredRoles": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "conditionalRoles": {"type": "array", "items": {"type": "string"}},
+    "deterministicChecks": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "triggers": {"type": "object"},
+    "invariants": {"type": "object"},
+    "noProgressThreshold": {"type": "integer", "minimum": 2},
+    "sourceFingerprints": {"type": "object"},
+    "createdAtUtc": {"type": "string", "format": "date-time"},
+    "semanticFingerprint": {"type": "string", "minLength": 64},
+    "integrity": {
+      "type": "object",
+      "required": ["algorithm", "semanticSha256"],
+      "properties": {
+        "algorithm": {"type": "string", "const": "sha256"},
+        "semanticSha256": {"type": "string", "minLength": 64}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

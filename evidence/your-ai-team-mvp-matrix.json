@@ -1,0 +1,387 @@
+{
+  "schemaVersion": 1,
+  "decision": "DYNAMIC_TEAM_COMPOSITION_MVP_PASS",
+  "cases": [
+    {
+      "case": "landing",
+      "analysis": {
+        "kind": "prototype",
+        "risk": "low",
+        "complexity": "low",
+        "uncertainty": "low",
+        "mutating": true,
+        "matchedSignals": [
+          "визитк",
+          "лендинг"
+        ]
+      },
+      "roles": [
+        {
+          "id": "delivery-manager",
+          "grade": "balanced",
+          "engagement": "full"
+        },
+        {
+          "id": "vibe-coder",
+          "grade": "economy",
+          "engagement": "full"
+        }
+      ],
+      "budget": {
+        "directRoleTokens": 9400,
+        "coordinationOverheadTokens": 800,
+        "coordinationOverheadRate": 0.08,
+        "expectedTokens": 10200,
+        "rangeTokens": {
+          "min": 7344,
+          "max": 14790
+        },
+        "roleCount": 2,
+        "maxConcurrentWorkers": 1,
+        "currency": "estimated-model-tokens",
+        "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+      },
+      "status": "PROPOSED",
+      "tradeoffs": []
+    },
+    {
+      "case": "research",
+      "analysis": {
+        "kind": "research",
+        "risk": "low",
+        "complexity": "low",
+        "uncertainty": "high",
+        "mutating": false,
+        "matchedSignals": [
+          "исслед"
+        ]
+      },
+      "roles": [
+        {
+          "id": "delivery-manager",
+          "grade": "balanced",
+          "engagement": "full"
+        },
+        {
+          "id": "researcher",
+          "grade": "balanced",
+          "engagement": "full"
+        },
+        {
+          "id": "research-reviewer",
+          "grade": "balanced",
+          "engagement": "final-only"
+        }
+      ],
+      "budget": {
+        "directRoleTokens": 14300,
+        "coordinationOverheadTokens": 2300,
+        "coordinationOverheadRate": 0.16,
+        "expectedTokens": 16600,
+        "rangeTokens": {
+          "min": 11952,
+          "max": 24070
+        },
+        "roleCount": 3,
+        "maxConcurrentWorkers": 2,
+        "currency": "estimated-model-tokens",
+        "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+      },
+      "status": "PROPOSED",
+      "tradeoffs": []
+    },
+    {
+      "case": "bugfix",
+      "analysis": {
+        "kind": "bugfix",
+        "risk": "medium",
+        "complexity": "low",
+        "uncertainty": "low",
+        "mutating": true,
+        "matchedSignals": [
+          "flaky",
+          "почин"
+        ]
+      },
+      "roles": [
+        {
+          "id": "delivery-manager",
+          "grade": "balanced",
+          "engagement": "full"
+        },
+        {
+          "id": "explorer",
+          "grade": "economy",
+          "engagement": "full"
+        },
+        {
+          "id": "implementer",
+          "grade": "balanced",
+          "engagement": "full"
+        },
+        {
+          "id": "verifier",
+          "grade": "balanced",
+          "engagement": "final-only"
+        },
+        {
+          "id": "reviewer",
+          "grade": "balanced",
+          "engagement": "final-only"
+        }
+      ],
+      "budget": {
+        "directRoleTokens": 25300,
+        "coordinationOverheadTokens": 8600,
+        "coordinationOverheadRate": 0.34,
+        "expectedTokens": 33900,
+        "rangeTokens": {
+          "min": 24408,
+          "max": 49155
+        },
+        "roleCount": 5,
+        "maxConcurrentWorkers": 3,
+        "currency": "estimated-model-tokens",
+        "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+      },
+      "status": "PROPOSED",
+      "tradeoffs": []
+    },
+    {
+      "case": "migration",
+      "analysis": {
+        "kind": "migration",
+        "risk": "high",
+        "complexity": "medium",
+        "uncertainty": "low",
+        "mutating": true,
+        "matchedSignals": [
+          "мигрир"
+        ]
+      },
+      "roles": [
+        {
+          "id": "delivery-manager",
+          "grade": "premium",
+          "engagement": "full"
+        },
+        {
+          "id": "explorer",
+          "grade": "balanced",
+          "engagement": "full"
+        },
+        {
+          "id": "architect",
+          "grade": "balanced",
+          "engagement": "full"
+        },
+        {
+          "id": "senior-engineer",
+          "grade": "premium",
+          "engagement": "full"
+        },
+        {
+          "id": "reviewer",
+          "grade": "balanced",
+          "engagement": "final-only"
+        },
+        {
+          "id": "verifier",
+          "grade": "balanced",
+          "engagement": "final-only"
+        }
+      ],
+      "budget": {
+        "directRoleTokens": 49900,
+        "coordinationOverheadTokens": 22500,
+        "coordinationOverheadRate": 0.45,
+        "expectedTokens": 72400,
+        "rangeTokens": {
+          "min": 52128,
+          "max": 104980
+        },
+        "roleCount": 6,
+        "maxConcurrentWorkers": 3,
+        "currency": "estimated-model-tokens",
+        "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+      },
+      "status": "PROPOSED",
+      "tradeoffs": []
+    },
+    {
+      "case": "docs",
+      "analysis": {
+        "kind": "documentation",
+        "risk": "low",
+        "complexity": "low",
+        "uncertainty": "low",
+        "mutating": true,
+        "matchedSignals": [
+          "readme",
+          "руководство"
+        ]
+      },
+      "roles": [
+        {
+          "id": "delivery-manager",
+          "grade": "balanced",
+          "engagement": "full"
+        },
+        {
+          "id": "writer",
+          "grade": "balanced",
+          "engagement": "full"
+        }
+      ],
+      "budget": {
+        "directRoleTokens": 10400,
+        "coordinationOverheadTokens": 800,
+        "coordinationOverheadRate": 0.08,
+        "expectedTokens": 11200,
+        "rangeTokens": {
+          "min": 8064,
+          "max": 16240
+        },
+        "roleCount": 2,
+        "maxConcurrentWorkers": 1,
+        "currency": "estimated-model-tokens",
+        "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+      },
+      "status": "PROPOSED",
+      "tradeoffs": []
+    },
+    {
+      "case": "security",
+      "analysis": {
+        "kind": "security",
+        "risk": "high",
+        "complexity": "medium",
+        "uncertainty": "low",
+        "mutating": true,
+        "matchedSignals": [
+          "уязвим",
+          "авторизац"
+        ]
+      },
+      "roles": [
+        {
+          "id": "delivery-manager",
+          "grade": "premium",
+          "engagement": "full"
+        },
+        {
+          "id": "explorer",
+          "grade": "balanced",
+          "engagement": "full"
+        },
+        {
+          "id": "security-reviewer",
+          "grade": "premium",
+          "engagement": "full"
+        },
+        {
+          "id": "senior-engineer",
+          "grade": "premium",
+          "engagement": "full"
+        },
+        {
+          "id": "verifier",
+          "grade": "premium",
+          "engagement": "final-only"
+        }
+      ],
+      "budget": {
+        "directRoleTokens": 51100,
+        "coordinationOverheadTokens": 17400,
+        "coordinationOverheadRate": 0.34,
+        "expectedTokens": 68500,
+        "rangeTokens": {
+          "min": 49320,
+          "max": 99325
+        },
+        "roleCount": 5,
+        "maxConcurrentWorkers": 3,
+        "currency": "estimated-model-tokens",
+        "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+      },
+      "status": "PROPOSED",
+      "tradeoffs": []
+    }
+  ],
+  "bargain": {
+    "before": {
+      "directRoleTokens": 49900,
+      "coordinationOverheadTokens": 22500,
+      "coordinationOverheadRate": 0.45,
+      "expectedTokens": 72400,
+      "rangeTokens": {
+        "min": 52128,
+        "max": 104980
+      },
+      "roleCount": 6,
+      "maxConcurrentWorkers": 3,
+      "currency": "estimated-model-tokens",
+      "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+    },
+    "after": {
+      "directRoleTokens": 36400,
+      "coordinationOverheadTokens": 16400,
+      "coordinationOverheadRate": 0.45,
+      "expectedTokens": 52800,
+      "rangeTokens": {
+        "min": 38016,
+        "max": 76560
+      },
+      "roleCount": 6,
+      "maxConcurrentWorkers": 3,
+      "currency": "estimated-model-tokens",
+      "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+    },
+    "roles": [
+      "delivery-manager",
+      "explorer",
+      "architect",
+      "senior-engineer",
+      "reviewer",
+      "verifier"
+    ],
+    "tradeoffs": [
+      {
+        "action": "downgrade",
+        "roleId": "senior-engineer",
+        "from": "premium",
+        "to": "balanced",
+        "risk": "Less depth and fewer edge cases."
+      },
+      {
+        "action": "downgrade",
+        "roleId": "architect",
+        "from": "balanced",
+        "to": "economy",
+        "risk": "Less depth and fewer edge cases."
+      },
+      {
+        "action": "downgrade",
+        "roleId": "explorer",
+        "from": "balanced",
+        "to": "economy",
+        "risk": "Less depth and fewer edge cases."
+      },
+      {
+        "action": "downgrade",
+        "roleId": "reviewer",
+        "from": "balanced",
+        "to": "economy",
+        "risk": "Less depth and fewer edge cases."
+      },
+      {
+        "action": "downgrade",
+        "roleId": "verifier",
+        "from": "balanced",
+        "to": "economy",
+        "risk": "Less depth and fewer edge cases."
+      }
+    ],
+    "status": "BUDGET_UNSATISFIED"
+  }
+}

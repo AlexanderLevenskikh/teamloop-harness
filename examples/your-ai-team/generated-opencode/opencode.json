@@ -1,0 +1,60 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "delivery-manager",
+  "agent": {
+    "delivery-manager": {
+      "description": "Owns the global result and may reject misleading local metrics.",
+      "mode": "primary",
+      "prompt": "{file:./.opencode/agents/delivery-manager.md}",
+      "steps": 9,
+      "permission": {
+        "edit": "deny",
+        "bash": "allow",
+        "task": {
+          "*": "deny",
+          "explorer": "allow",
+          "implementer": "allow",
+          "verifier": "allow"
+        }
+      }
+    },
+    "explorer": {
+      "description": "Finds the real execution path without polluting the main context.",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/explorer.md}",
+      "steps": 5,
+      "permission": {
+        "edit": "deny",
+        "bash": "ask"
+      }
+    },
+    "implementer": {
+      "description": "Implements a bounded change and supplies execution evidence.",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/implementer.md}",
+      "steps": 5,
+      "permission": {
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "verifier": {
+      "description": "Runs targeted gates and reports what they actually prove.",
+      "mode": "subagent",
+      "prompt": "{file:./.opencode/agents/verifier.md}",
+      "steps": 3,
+      "permission": {
+        "edit": "deny",
+        "bash": "allow"
+      }
+    }
+  },
+  "command": {
+    "your-ai-team": {
+      "description": "Negotiate the minimum sufficient AI team before execution",
+      "agent": "delivery-manager",
+      "subtask": false,
+      "template": "Use the accepted YourAITeam contract in @your-ai-team-contract.json. Do not invoke any unlisted role. Requested task or negotiation: $ARGUMENTS"
+    }
+  }
+}

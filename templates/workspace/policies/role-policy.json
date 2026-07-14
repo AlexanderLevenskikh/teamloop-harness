@@ -1,7 +1,15 @@
 {
   "schemaVersion": 1,
   "defaultRoles": [
-    "supervisor", "researcher", "research-lead", "task-slicer", "executor", "change-reviewer", "gatekeeper"
+    "supervisor",
+    "researcher",
+    "research-lead",
+    "task-slicer",
+    "executor",
+    "change-reviewer",
+    "gatekeeper",
+    "watchdog",
+    "sentinel"
   ],
   "maxConcurrentRuns": 1
 }

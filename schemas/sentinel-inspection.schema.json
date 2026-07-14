@@ -1,0 +1,210 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SentinelInspection",
+  "description": "Structured sentinel inspection report produced by the sentinel watcher",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runId",
+    "inspectedAtUtc",
+    "findings",
+    "overallStatus",
+    "repositoryHead",
+    "taskId",
+    "taskRevision",
+    "implementationVersion",
+    "semanticFingerprint",
+    "policyFingerprints",
+    "manifestFingerprint",
+    "runtimeVersion",
+    "repositoryIdentity",
+    "executionPolicyFingerprint",
+    "protectedPathsFingerprint"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^run-"
+    },
+    "inspectedAtUtc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-"
+    },
+    "repositoryHead": {
+      "type": "string",
+      "description": "Git HEAD commit hash when sentinel ran"
+    },
+    "taskId": {
+      "type": "string",
+      "description": "Active task ID when sentinel ran"
+    },
+    "taskRevision": {
+      "type": "string",
+      "description": "Task revision hash when sentinel ran"
+    },
+    "implementationVersion": {
+      "type": "string",
+      "description": "Runtime implementation version"
+    },
+    "semanticFingerprint": {
+      "type": "string",
+      "description": "Semantic fingerprint of findings"
+    },
+    "policyFingerprints": {
+      "type": "object",
+      "description": "Fingerprints of policy files when sentinel ran",
+      "additionalProperties": false,
+      "required": [
+        "gate-policy.json",
+        "scope-policy.json",
+        "protected-paths.json"
+      ],
+      "properties": {
+        "gate-policy.json": {
+          "type": "string"
+        },
+        "scope-policy.json": {
+          "type": "string"
+        },
+        "protected-paths.json": {
+          "type": "string"
+        }
+      }
+    },
+    "manifestFingerprint": {
+      "type": "string",
+      "description": "Semantic fingerprint of the execution manifest, or empty string if no manifest"
+    },
+    "runtimeVersion": {
+      "type": "string",
+      "description": "Runtime implementation version"
+    },
+    "overallStatus": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "WARNING",
+        "FAIL"
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "category",
+          "severity",
+          "title",
+          "description",
+          "evidence"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "scope-policy-weakening",
+              "gate-policy-weakening",
+              "schema-integrity",
+              "test-suppression",
+              "state-mutation",
+              "protected-file-changes",
+              "hidden-unresolved-work",
+              "manual-state-mutation",
+              "evidence-manipulation"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "CRITICAL",
+              "WARNING",
+              "INFO"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "type",
+                "detail"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "FILE_PATH",
+                    "GIT_DIFF",
+                    "STATE_FIELD",
+                    "EVENT_MISMATCH",
+                    "MISSING_ARTIFACT",
+                    "SCHEMA_FIELD"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "resolutionHint": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "totalFindings",
+        "criticalCount",
+        "warningCount",
+        "infoCount"
+      ],
+      "properties": {
+        "totalFindings": {
+          "type": "integer"
+        },
+        "criticalCount": {
+          "type": "integer"
+        },
+        "warningCount": {
+          "type": "integer"
+        },
+        "infoCount": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "repositoryIdentity": {
+      "type": "string",
+      "description": "SHA-256 identity of repository remote or canonical checkout root"
+    },
+    "executionPolicyFingerprint": {
+      "type": "string",
+      "description": "Semantic fingerprint of applicable execution policy, or empty string"
+    },
+    "protectedPathsFingerprint": {
+      "type": "string",
+      "description": "SHA-256 fingerprint of protected-paths policy, or empty string"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TestSelection",
+  "description": "Schema for test selection results produced by test-select.",
+  "type": "object",
+  "required": ["schemaVersion", "selectedLayers", "selectedTests", "selectionReasons", "timestampUtc"],
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "description": "Version of the TestSelection schema."
+    },
+    "selectedLayers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["smoke", "contract", "runtime", "integration", "full"]
+      },
+      "description": "Layers selected for execution."
+    },
+    "selectedTests": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Test function names selected for execution."
+    },
+    "selectionReasons": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Maps file patterns or reasons to the layers they triggered."
+    },
+    "changedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of changed file paths that triggered selection."
+    },
+    "timestampUtc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp of selection."
+    }
+  },
+  "additionalProperties": false
+}

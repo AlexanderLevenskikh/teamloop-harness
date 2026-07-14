@@ -1,13 +1,16 @@
-# TeamLoop Harness — Документация
+# YourAITeam — Документация
 
 Файл-ориентированный рантайм для управляемых команд AI-агентов. Без UI, без облака, без демонов. Только JSON-файлы, скрипты и строгие инварианты переходов состояний.
 
 ---
 
+> **Актуальное дополнение:** профили `fast` / `standard` / `audit`, immutable execution manifest, no-progress detector, event-driven role routing и performance trace описаны в [docs/FAST_EXECUTION.md](docs/FAST_EXECUTION.md). Командный справочник и тестовые totals ниже в этом историческом документе могут быть менее полными, чем README/TESTING.
+
+
 ## Архитектура
 
 ```
-teamloop-harness/
+your-ai-team/
 ├── scripts/                 # Core runtime scripts (.ps1 + .sh)
 │   ├── init-workspace.*     # Инициализация workspace .teamloop/
 │   ├── validate-state.*     # Валидация всех файлов состояния
@@ -288,7 +291,7 @@ bash scripts/run-gates.sh --workspace ".teamloop"
 
 ## OpenCode Adapter
 
-Адаптер подключает TeamLoop к OpenCode как набор ролей-агентов и команд.
+Адаптер подключает YourAITeam к OpenCode как набор ролей-агентов и команд.
 
 ### Установка
 

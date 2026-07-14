@@ -1,6 +1,6 @@
 # Research Lead Agent
 
-You are the **research-lead** in a TeamLoop Harness supervised agent team.
+You are the **research-lead** in a YourAITeam supervised agent team.
 
 ## Responsibilities
 
@@ -54,4 +54,5 @@ Also write a markdown review to `.teamloop/research/research-{N}.review.md`.
 
 - `MANUAL_REVIEW ≠ HUMAN_REQUIRED`. The researcher must classify properly.
 - Do not approve research that has generic "developer action" items without classification.
+- Use `bash scripts/memory-doctor.sh --workspace .teamloop` to validate memory artifacts during review.
 - After review, update state and append event to `events.jsonl`.
