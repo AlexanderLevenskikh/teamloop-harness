@@ -4,6 +4,8 @@ A budget-aware AI-team composer and bounded delivery runtime for Codex and OpenC
 
 Canonical public names: **YourAITeam** for the product and `your-ai-team` for repositories, packages, commands, skills, and generated adapter artifacts. See [the 0.4.1 migration note](docs/MIGRATION-0.4.0-TO-0.4.1.md) for the intentionally preserved legacy workspace namespace.
 
+**Start here:** [User Guide](USERGUIDE.md) · [Руководство пользователя](USERGUIDE.ru.md)
+
 ## Core Invariants
 
 ```
