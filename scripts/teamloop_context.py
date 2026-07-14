@@ -457,16 +457,17 @@ class WorkspaceContext:
         return schema_map
 
     def __git_root(self) -> str:
+        workspace_parent = os.path.dirname(os.path.abspath(self.workspace))
         try:
             result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
+                ["git", "-C", workspace_parent, "rev-parse", "--show-toplevel"],
                 capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
                 return result.stdout.strip()
         except (subprocess.SubprocessError, FileNotFoundError):
             pass
-        return self.project_root
+        return workspace_parent
 
     def __git_status_entries(self) -> List[Dict[str, str]]:
         """Parse git status --porcelain into list of {status, path} dicts.
@@ -475,16 +476,12 @@ class WorkspaceContext:
         but returns the simplified {status, path} structure (without raw).
         """
         entries: List[Dict[str, str]] = []
+        git_root = self.git_root
         try:
             result = subprocess.run(
-                ["git", "status", "--porcelain=v1"],
+                ["git", "-C", git_root, "status", "--porcelain=v1"],
                 capture_output=True, text=True, timeout=10,
             )
-            git_root_result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, timeout=10,
-            )
-            git_root = git_root_result.stdout.strip() if git_root_result.returncode == 0 else ""
         except (subprocess.SubprocessError, FileNotFoundError):
             return entries
 

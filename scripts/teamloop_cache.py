@@ -40,7 +40,7 @@ from teamloop_fast_execution import (
 
 DEFAULT_TTL_SECONDS = 86400  # 24 hours
 MAX_ENTRIES = 500
-CACHE_SCHEMA_VERSION = "teamloop-validation-cache/v1"
+CACHE_SCHEMA_VERSION = "teamloop-validation-cache/v2"
 SCHEMA_ID = CACHE_SCHEMA_VERSION
 IMPLEMENTATION_VERSION = "1"
 
@@ -103,6 +103,7 @@ class ValidationCache:
         # In-memory stats.
         self._hits: int = 0
         self._misses: int = 0
+        self._key_payloads: Dict[str, Dict[str, Any]] = {}
 
         # Load existing cache from disk.
         self._entries: OrderedDict[str, Dict[str, Any]] = OrderedDict()
@@ -173,7 +174,9 @@ class ValidationCache:
             "fastExecModule": script_fps.get("teamloop_fast_execution.py", ""),
             "cacheModule": script_fps.get("teamloop_cache.py", ""),
         }
-        return sha256_text(canonical_json(payload))
+        cache_key = sha256_text(canonical_json(payload))
+        self._key_payloads[cache_key] = payload
+        return cache_key
 
     def get(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """Return the cached semantic result for *cache_key*, or ``None`` on miss.
@@ -234,6 +237,7 @@ class ValidationCache:
         check_id: Optional[str] = None,
         input_fingerprints: Optional[Dict[str, str]] = None,
         script_fingerprints: Optional[Dict[str, str]] = None,
+        semantic_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Store a validation result in the cache.
 
@@ -269,44 +273,52 @@ class ValidationCache:
                 "store() is disabled to ensure fresh evidence on every run."
             )
 
-        resolved_check_id = check_id or result.get("checkId", "") or result.get("category", "")
+        key_payload = self._key_payloads.get(cache_key, {})
+        resolved_check_id = (
+            check_id
+            or result.get("checkId", "")
+            or result.get("category", "")
+            or key_payload.get("check", "")
+        )
         script_fps = script_fingerprints or self._script_fingerprints()
         input_fps_store = input_fingerprints or {}
         result_stripped = strip_volatile(result)
         result_canonical = canonical_json(result_stripped)
         result_hash = hashlib.sha256(result_canonical.encode('utf-8')).hexdigest()
 
-        # Full-record integrity hash binding ALL semantic fields.
-        integrity_payload = {
-            "cacheKey": cache_key,
-            "checkId": resolved_check_id,
-            "result": result_stripped,
-            "inputFingerprints": json.dumps(input_fps_store, sort_keys=True),
-            "scriptFingerprints": json.dumps(script_fps, sort_keys=True),
-            "dependencyFingerprints": "",
-            "policyFingerprints": "",
-            "implementationVersion": IMPLEMENTATION_VERSION,
-            "cacheSchemaVersion": CACHE_SCHEMA_VERSION,
-            "ttl": self.ttl_seconds,
-            "provenance": "",
-        }
-        integrity_canonical = json.dumps(integrity_payload, sort_keys=True, separators=(",", ":"))
-        integrity_hash = hashlib.sha256(integrity_canonical.encode('utf-8')).hexdigest()
+        context = self._default_semantic_context()
+        if semantic_context:
+            context.update(strip_volatile(semantic_context))
 
         entry: Dict[str, Any] = {
             "cacheKey": cache_key,
+            "keyPayload": key_payload,
             "checkId": resolved_check_id,
             "result": result_stripped,
             "inputFingerprints": input_fps_store,
             "scriptFingerprints": script_fps,
-            "cachedAtUtc": _utc_now_iso(),
+            "dependencyFingerprints": context.get("dependencyFingerprints", {}),
+            "policyFingerprints": context.get("policyFingerprints", {}),
+            "profileFingerprint": context.get("profileFingerprint", ""),
+            "executionPolicyFingerprint": context.get("executionPolicyFingerprint", ""),
+            "manifestFingerprint": context.get("manifestFingerprint", ""),
+            "protectedPathsFingerprint": context.get("protectedPathsFingerprint", ""),
+            "executionProfile": context.get("executionProfile", ""),
+            "reuseRestrictions": context.get("reuseRestrictions", {}),
             "implementationVersion": IMPLEMENTATION_VERSION,
             "cacheSchemaVersion": CACHE_SCHEMA_VERSION,
-            "ttl": self.ttl_seconds,
             "ttlSeconds": self.ttl_seconds,
+            "provenance": context.get("provenance", {
+                "producer": "teamloop-validation-cache",
+                "checkId": resolved_check_id,
+            }),
+        }
+        integrity_hash = self._compute_integrity_hash(entry)
+        entry.update({
+            "cachedAtUtc": _utc_now_iso(),
             "resultHash": result_hash,
             "integrityHash": integrity_hash,
-        }
+        })
 
         # If already present, update in place (keeping position for LRU).
         if cache_key in self._entries:
@@ -383,7 +395,13 @@ class ValidationCache:
         for key, entry in self._entries.items():
             if self._verify_entry_integrity(entry):
                 valid += 1
-            elif entry.get("resultHash") and not entry.get("integrityHash"):
+            elif (
+                entry.get("resultHash")
+                and (
+                    not entry.get("integrityHash")
+                    or entry.get("cacheSchemaVersion") != CACHE_SCHEMA_VERSION
+                )
+            ):
                 legacy.append(key)
             else:
                 invalid.append(key)
@@ -517,6 +535,107 @@ class ValidationCache:
                 return False
         return True
 
+    def _default_semantic_context(self) -> Dict[str, Any]:
+        """Return stable workspace context that affects cache reuse.
+
+        The cache remains usable outside a fully materialized run: missing
+        artifacts are represented by empty strings rather than being omitted.
+        """
+        def _hash(path: str) -> str:
+            return file_sha256(path) if path and os.path.isfile(path) else ""
+
+        policy_paths = {
+            "gatePolicy": os.path.join(self.workspace, "policies", "gate-policy.json"),
+            "scopePolicy": os.path.join(self.workspace, "policies", "scope-policy.json"),
+            "protectedPaths": os.path.join(self.workspace, "policies", "protected-paths.json"),
+            "rolePolicy": os.path.join(self.workspace, "policies", "role-policy.json"),
+        }
+        policy_fps = {name: _hash(path) for name, path in policy_paths.items()}
+
+        profile_path = os.path.join(self.workspace, "profiles", "active-profile.json")
+        profile_fingerprint = _hash(profile_path)
+        execution_profile = ""
+        if os.path.isfile(profile_path):
+            try:
+                with open(profile_path, "r", encoding="utf-8") as fh:
+                    profile = json.load(fh)
+                execution_profile = str(
+                    profile.get("profileId", profile.get("name", profile.get("id", "")))
+                )
+            except (OSError, ValueError, TypeError):
+                execution_profile = ""
+
+        latest_policy_fp = ""
+        latest_manifest_fp = ""
+        runs_dir = os.path.join(self.workspace, "runs")
+        if os.path.isdir(runs_dir):
+            try:
+                run_names = sorted(os.listdir(runs_dir), reverse=True)
+            except OSError:
+                run_names = []
+            for run_name in run_names:
+                run_dir = os.path.join(runs_dir, run_name)
+                manifest_path = os.path.join(run_dir, "execution-manifest.json")
+                policy_path = os.path.join(run_dir, "execution-policy.json")
+                if not latest_manifest_fp and os.path.isfile(manifest_path):
+                    try:
+                        with open(manifest_path, "r", encoding="utf-8") as fh:
+                            latest_manifest_fp = str(json.load(fh).get("semanticFingerprint", ""))
+                    except (OSError, ValueError, TypeError):
+                        pass
+                if not latest_policy_fp and os.path.isfile(policy_path):
+                    try:
+                        with open(policy_path, "r", encoding="utf-8") as fh:
+                            latest_policy_fp = str(json.load(fh).get("semanticFingerprint", ""))
+                    except (OSError, ValueError, TypeError):
+                        pass
+                if latest_manifest_fp and latest_policy_fp:
+                    break
+
+        return {
+            "dependencyFingerprints": {},
+            "policyFingerprints": policy_fps,
+            "profileFingerprint": profile_fingerprint,
+            "executionPolicyFingerprint": latest_policy_fp,
+            "manifestFingerprint": latest_manifest_fp,
+            "protectedPathsFingerprint": policy_fps.get("protectedPaths", ""),
+            "executionProfile": execution_profile,
+            "reuseRestrictions": {
+                "auditReadOnly": bool(self.read_only),
+                "requiresScriptFingerprintMatch": True,
+                "requiresIntegrityHash": True,
+            },
+        }
+
+    @staticmethod
+    def _integrity_payload(entry: Dict[str, Any]) -> Dict[str, Any]:
+        """Return every behavior-affecting field protected by integrityHash."""
+        return {
+            "cacheKey": entry.get("cacheKey", ""),
+            "keyPayload": strip_volatile(entry.get("keyPayload", {})),
+            "checkId": entry.get("checkId", ""),
+            "result": strip_volatile(entry.get("result", {})),
+            "inputFingerprints": entry.get("inputFingerprints", {}),
+            "scriptFingerprints": entry.get("scriptFingerprints", {}),
+            "dependencyFingerprints": entry.get("dependencyFingerprints", {}),
+            "policyFingerprints": entry.get("policyFingerprints", {}),
+            "profileFingerprint": entry.get("profileFingerprint", ""),
+            "executionPolicyFingerprint": entry.get("executionPolicyFingerprint", ""),
+            "manifestFingerprint": entry.get("manifestFingerprint", ""),
+            "protectedPathsFingerprint": entry.get("protectedPathsFingerprint", ""),
+            "executionProfile": entry.get("executionProfile", ""),
+            "reuseRestrictions": entry.get("reuseRestrictions", {}),
+            "implementationVersion": entry.get("implementationVersion", ""),
+            "cacheSchemaVersion": entry.get("cacheSchemaVersion", ""),
+            "ttlSeconds": entry.get("ttlSeconds", entry.get("ttl", "")),
+            "provenance": entry.get("provenance", {}),
+        }
+
+    @classmethod
+    def _compute_integrity_hash(cls, entry: Dict[str, Any]) -> str:
+        payload = cls._integrity_payload(entry)
+        return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
     @staticmethod
     def _verify_entry_integrity(entry: Dict[str, Any]) -> bool:
         """Verify the entry's integrity hash.
@@ -538,25 +657,21 @@ class ValidationCache:
         if "result" not in entry:
             return False
 
-        # --- Full-record integrity hash (preferred, forward-looking) ---
+        # Only the current schema is trusted. Older records remain readable
+        # for diagnostics but are quarantined and never served as hits.
+        if entry.get("cacheSchemaVersion") != CACHE_SCHEMA_VERSION:
+            return False
+
+        key_payload = entry.get("keyPayload")
+        if not isinstance(key_payload, dict) or not key_payload:
+            return False
+        if sha256_text(canonical_json(key_payload)) != key:
+            return False
+
+        # --- Full-record integrity hash ---
         stored_integrity = entry.get("integrityHash", "")
         if stored_integrity:
-            # Recompute integrity hash over ALL semantic fields.
-            integrity_payload = {
-                "cacheKey": entry.get("cacheKey", ""),
-                "checkId": entry.get("checkId", ""),
-                "result": entry["result"],
-                "inputFingerprints": json.dumps(entry.get("inputFingerprints", {}), sort_keys=True),
-                "scriptFingerprints": json.dumps(entry.get("scriptFingerprints", {}), sort_keys=True),
-                "dependencyFingerprints": entry.get("dependencyFingerprints", ""),
-                "policyFingerprints": entry.get("policyFingerprints", ""),
-                "implementationVersion": entry.get("implementationVersion", ""),
-                "cacheSchemaVersion": entry.get("cacheSchemaVersion", ""),
-                "ttl": entry.get("ttl", entry.get("ttlSeconds", "")),
-                "provenance": entry.get("provenance", ""),
-            }
-            integrity_canonical = json.dumps(integrity_payload, sort_keys=True, separators=(",", ":"))
-            computed_integrity = hashlib.sha256(integrity_canonical.encode('utf-8')).hexdigest()
+            computed_integrity = ValidationCache._compute_integrity_hash(entry)
             if computed_integrity != stored_integrity:
                 return False
             return True

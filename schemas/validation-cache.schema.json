@@ -1,92 +1,90 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ValidationCacheEntry",
-  "description": "A single entry in the content-addressed validation cache (validation-cache.jsonl).",
+  "description": "A v2 content-addressed validation cache entry. Every behavior-affecting field is protected by integrityHash; cachedAtUtc is intentionally volatile.",
   "type": "object",
   "required": [
     "cacheKey",
+    "keyPayload",
     "checkId",
     "result",
     "inputFingerprints",
     "scriptFingerprints",
-    "cachedAtUtc",
+    "dependencyFingerprints",
+    "policyFingerprints",
+    "profileFingerprint",
+    "executionPolicyFingerprint",
+    "manifestFingerprint",
+    "protectedPathsFingerprint",
+    "executionProfile",
+    "reuseRestrictions",
     "implementationVersion",
-    "ttlSeconds"
+    "cacheSchemaVersion",
+    "ttlSeconds",
+    "provenance",
+    "cachedAtUtc",
+    "resultHash",
+    "integrityHash"
   ],
+  "additionalProperties": false,
   "properties": {
     "cacheKey": {
       "type": "string",
-      "description": "SHA-256 hex digest of the canonicalized check inputs, schemas, and script fingerprints.",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "keyPayload": {
+      "type": "object",
+      "minProperties": 1
     },
     "checkId": {
       "type": "string",
-      "description": "Canonical name of the validation check (e.g. 'schema-validate:team-state').",
       "minLength": 1
     },
     "result": {
-      "type": "object",
-      "description": "The cached validation result.",
-      "required": ["status"],
-      "properties": {
-        "status": {
-          "type": "string",
-          "enum": ["PASS", "FAIL", "WARNING", "SKIP"]
-        },
-        "findings": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          }
-        },
-        "errors": {
-          "type": "array",
-          "items": {
-            "type": "object"
-          }
-        },
-        "details": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": true
+      "type": "object"
     },
     "inputFingerprints": {
       "type": "object",
-      "description": "SHA-256 hash of each material input used by the check.",
-      "additionalProperties": {
-        "type": "string",
-        "minLength": 1
-      }
+      "additionalProperties": { "type": "string" }
     },
     "scriptFingerprints": {
       "type": "object",
-      "description": "SHA-256 hash of each supporting script at cache-write time.",
-      "additionalProperties": {
-        "type": "string",
-        "minLength": 1
-      }
+      "additionalProperties": { "type": "string" }
     },
-    "cachedAtUtc": {
+    "dependencyFingerprints": {
+      "type": "object"
+    },
+    "policyFingerprints": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "profileFingerprint": { "type": "string" },
+    "executionPolicyFingerprint": { "type": "string" },
+    "manifestFingerprint": { "type": "string" },
+    "protectedPathsFingerprint": { "type": "string" },
+    "executionProfile": { "type": "string" },
+    "reuseRestrictions": { "type": "object" },
+    "implementationVersion": { "type": "string" },
+    "cacheSchemaVersion": {
       "type": "string",
-      "description": "ISO-8601 timestamp when the entry was created.",
-      "format": "date-time"
-    },
-    "implementationVersion": {
-      "type": "string",
-      "description": "Cache implementation version for migration tracking.",
-      "pattern": "^[0-9]+(\\.[0-9]+)*$"
-    },
-    "ttl": {
-      "type": "integer",
-      "description": "Time-to-live in seconds (legacy field, alias of ttlSeconds).",
-      "minimum": 60
+      "const": "teamloop-validation-cache/v2"
     },
     "ttlSeconds": {
       "type": "integer",
-      "description": "Time-to-live in seconds for this cache entry.",
-      "minimum": 60
+      "minimum": 1
+    },
+    "provenance": { "type": "object" },
+    "cachedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resultHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "integrityHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     }
-  },
-  "additionalProperties": false
+  }
 }

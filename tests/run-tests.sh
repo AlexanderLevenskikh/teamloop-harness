@@ -5064,7 +5064,7 @@ with zipfile.ZipFile('$zip_file', 'r') as zf:
     return 0
 }
 
-test_run "Packaging: ZipPreservesExecutableBits" test_235
+test_run "Packaging: ZipInstallerRestoresExecutableBits" test_235
 
 # ============================================================
 # CORRECTIVE PASS REGRESSION TESTS (Defects 1-4, 7)
@@ -5187,10 +5187,12 @@ test_242() {
     # Corrective: Defect5 — Roadmap document has correct counts
     local roadmap="$PROJECT_ROOT/docs/ROADMAP_IMPLEMENTATION_STATUS.md"
     [[ -f "$roadmap" ]] || { echo "ROADMAP_IMPLEMENTATION_STATUS.md should exist"; return 1; }
-    grep -q "4 PARTIAL" "$roadmap" || { echo "roadmap should show 4 PARTIAL improvements"; return 1; }
-    # Verify I6 and I7 are classified as PARTIAL
-    grep -A1 "I6" "$roadmap" | grep -q "PARTIAL" || { echo "I6 should be PARTIAL"; return 1; }
-    grep -A1 "I7" "$roadmap" | grep -q "PARTIAL" || { echo "I7 should be PARTIAL"; return 1; }
+    grep -q "4 PARTIAL" "$roadmap" || { echo "roadmap should show 4 PARTIAL iterations"; return 1; }
+    grep -q "5 SCAFFOLD_ONLY" "$roadmap" || { echo "roadmap should show 5 SCAFFOLD_ONLY iterations"; return 1; }
+    # Verify I6 is SCAFFOLD_ONLY (not PARTIAL — the agent mailbox is not the original Inbox)
+    grep "I6" "$roadmap" | grep -q "SCAFFOLD_ONLY" || { echo "I6 should be SCAFFOLD_ONLY"; return 1; }
+    # Verify I7 is SCAFFOLD_ONLY (not PARTIAL — task lint is not the original Product Director)
+    grep "I7" "$roadmap" | grep -q "SCAFFOLD_ONLY" || { echo "I7 should be SCAFFOLD_ONLY"; return 1; }
 }
 
 test_run "Corrective: Defect5_RoadmapCounts" test_242
@@ -5466,24 +5468,640 @@ test_run "FinalGate: CacheIntegrityPresent" test_250
 test_251() {
     init_test_workspace
 
-    # Create corrupted cache
+    # Create corrupted cache at the real path
     mkdir -p "$WORKSPACE_ABS/cache"
-    echo 'NOT VALID JSON' > "$WORKSPACE_ABS/cache/sentinel.cache"
+    echo 'NOT VALID JSON' > "$WORKSPACE_ABS/cache/validation-cache.jsonl"
 
     local output
-    output=$(run_core final-gate 2>&1) || true
+    output=$("$PY" "$CORE" final-gate --workspace "$WORKSPACE_ABS" 2>&1) || true
 
-    local has_fail=0
-    echo "$output" | grep -q '"FAIL"' && has_fail=1
-    echo "$output" | grep -q "cache" && has_fail=1
+    # Parse JSON output for structured assertions
+    local overall_state
+    overall_state=$(echo "$output" | "$PY" -c "import sys,json; d=json.load(sys.stdin); print(d.get('overallStatus',''))" 2>/dev/null) || true
+    [[ "$overall_state" == "FAIL" ]] || {
+        echo "expected overallStatus FAIL, got '$overall_state'"
+        return 1
+    }
 
-    [[ $has_fail -eq 1 ]] || {
-        echo "final-gate did not fail for corrupted cache"
+    local cache_check_status
+    cache_check_status=$(echo "$output" | "$PY" -c "
+import sys,json
+d=json.load(sys.stdin)
+for c in d.get('checks',[]):
+    if c.get('name')=='cache-integrity':
+        print(c.get('status','')); break
+" 2>/dev/null) || true
+    [[ "$cache_check_status" == "FAIL" ]] || {
+        echo "expected cache-integrity status FAIL, got '$cache_check_status'"
         return 1
     }
 }
 
 test_run "FinalGate: CorruptedCacheBlocks" test_251
+
+# ============================================================
+# TEST 252: Final-gate reports summary counts
+# ============================================================
+test_252() {
+    init_test_workspace
+
+    local output
+    output=$("$PY" "$CORE" final-gate --workspace "$WORKSPACE_ABS" 2>&1) || true
+
+    # Verify summary exists and total matches checks array length
+    local summary_ok
+    summary_ok=$(echo "$output" | "$PY" -c "
+import sys,json
+d=json.load(sys.stdin)
+s=d.get('summary')
+if not s:
+    print('NO_SUMMARY')
+    sys.exit(0)
+checks = d.get('checks',[])
+if s.get('total') != len(checks):
+    print('TOTAL_MISMATCH')
+    sys.exit(0)
+# Count statuses independently
+from collections import Counter
+counts = Counter(c.get('status','') for c in checks)
+if s.get('pass') != counts.get('PASS',0):
+    print('PASS_MISMATCH')
+    sys.exit(0)
+if s.get('skip') != counts.get('SKIP',0):
+    print('SKIP_MISMATCH')
+    sys.exit(0)
+if s.get('notRequired') != counts.get('NOT_REQUIRED',0):
+    print('NOT_REQUIRED_MISMATCH')
+    sys.exit(0)
+if s.get('fail') != counts.get('FAIL',0):
+    print('FAIL_MISMATCH')
+    sys.exit(0)
+# Verify that skipped checks are NOT counted as passed
+if counts.get('SKIP',0) > 0 and s.get('pass') >= s.get('total'):
+    print('SKIP_COUNTED_AS_PASS')
+    sys.exit(0)
+print('OK')
+" 2>/dev/null) || true
+    [[ "$summary_ok" == "OK" ]] || {
+        echo "summary count verification: $summary_ok"
+        return 1
+    }
+}
+
+test_run "FinalGate: SummaryCounts" test_252
+
+# ============================================================
+# TEST 253: Final-gate executionMode is repository-baseline for empty workspace
+# ============================================================
+test_253() {
+    init_test_workspace
+
+    local output
+    output=$("$PY" "$CORE" final-gate --workspace "$WORKSPACE_ABS" 2>&1) || true
+
+    local mode
+    mode=$(echo "$output" | "$PY" -c "import sys,json; print(json.load(sys.stdin).get('executionMode',''))" 2>/dev/null) || true
+    [[ "$mode" == "repository-baseline" ]] || {
+        echo "expected executionMode 'repository-baseline', got '$mode'"
+        return 1
+    }
+}
+
+test_run "FinalGate: RepositoryBaselineMode" test_253
+
+# ============================================================
+# TEST 254: Cache-validate and final-gate agree on CORRUPT cache
+# ============================================================
+test_254() {
+    init_test_workspace
+
+    # Create corrupted cache
+    mkdir -p "$WORKSPACE_ABS/cache"
+    echo '{"valid": true}
+INVALID LINE HERE
+{"also": "ok"}' > "$WORKSPACE_ABS/cache/validation-cache.jsonl"
+
+    local cv_output
+    cv_output=$("$PY" "$CORE" cache-validate --workspace "$WORKSPACE_ABS" 2>&1) || true
+    local cv_status
+    cv_status=$(echo "$cv_output" | "$PY" -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null) || true
+
+    local fg_output
+    fg_output=$("$PY" "$CORE" final-gate --workspace "$WORKSPACE_ABS" 2>&1) || true
+    local fg_cache_state
+    fg_cache_state=$(echo "$fg_output" | "$PY" -c "
+import sys,json
+d=json.load(sys.stdin)
+for c in d.get('checks',[]):
+    if c.get('name')=='cache-integrity':
+        print(c.get('cacheState','')); break
+" 2>/dev/null) || true
+    local fg_overall
+    fg_overall=$(echo "$fg_output" | "$PY" -c "import sys,json; print(json.load(sys.stdin).get('overallStatus',''))" 2>/dev/null) || true
+
+    # cache-validate should report FAIL/CORRUPT
+    [[ "$cv_status" == "FAIL" || "$cv_status" == "CORRUPT" ]] || {
+        echo "cache-validate should report FAIL or CORRUPT, got '$cv_status'"
+        return 1
+    }
+    # final-gate should report CORRUPT cache state and FAIL overall
+    [[ "$fg_cache_state" == "CORRUPT" ]] || {
+        echo "final-gate cacheState should be CORRUPT, got '$fg_cache_state'"
+        return 1
+    }
+    [[ "$fg_overall" == "FAIL" ]] || {
+        echo "final-gate overallStatus should be FAIL, got '$fg_overall'"
+        return 1
+    }
+}
+
+test_run "CacheFinalGate: ConsistentCorrupt" test_254
+
+# ============================================================
+# TEST 255: Empty cache is not corrupt in final-gate
+# ============================================================
+test_255() {
+    init_test_workspace
+
+    # Create empty cache directory
+    mkdir -p "$WORKSPACE_ABS/cache"
+    touch "$WORKSPACE_ABS/cache/validation-cache.jsonl"
+
+    local output
+    output=$("$PY" "$CORE" final-gate --workspace "$WORKSPACE_ABS" 2>&1) || true
+
+    local cache_state
+    cache_state=$(echo "$output" | "$PY" -c "
+import sys,json
+d=json.load(sys.stdin)
+for c in d.get('checks',[]):
+    if c.get('name')=='cache-integrity':
+        print(c.get('cacheState','')); break
+" 2>/dev/null) || true
+
+    # Empty cache should be EMPTY, not CORRUPT
+    [[ "$cache_state" != "CORRUPT" ]] || {
+        echo "empty cache should not be CORRUPT"
+        return 1
+    }
+}
+
+test_run "Cache: EmptyNotCorrupt" test_255
+
+# ============================================================
+# TEST 256: Roadmap has exactly 9 iterations with correct titles
+# ============================================================
+test_256() {
+    local roadmap="$PROJECT_ROOT/docs/ROADMAP_IMPLEMENTATION_STATUS.md"
+    [[ -f "$roadmap" ]] || { echo "roadmap file not found"; return 1; }
+
+    local result
+    result=$("$PY" - "$roadmap" <<'PYCODE'
+import re, sys
+from collections import Counter
+
+text = open(sys.argv[1], encoding="utf-8").read()
+expected = [
+    "Single Validation Host",
+    "Layered and Impact-Aware Test Execution",
+    "Honest Content-Addressed Validation Cache",
+    "Public Release and Compatibility Hardening",
+    "Structured Dogfood and Old/New Runtime Guard",
+    "Minimal TeamLoop Inbox Contract and Read-Only Prototype",
+    "Product Director L0 Advisory Mode",
+    "StateStore Abstraction Preparation",
+    "Adapter Contract Foundation",
+]
+blocks = re.split(r"(?=^## Iteration \d+ — )", text, flags=re.M)[1:]
+if len(blocks) != 9:
+    print(f"ITERATION_COUNT:{len(blocks)}")
+    raise SystemExit
+
+classes = []
+for index, (block, title) in enumerate(zip(blocks, expected), 1):
+    first = block.splitlines()[0]
+    if first != f"## Iteration {index} — {title}":
+        print(f"TITLE_{index}:{first}")
+        raise SystemExit
+    match = re.search(
+        r"^\*\*Classification:\*\* \*\*(COMPLETE|PARTIAL|SCAFFOLD_ONLY|NOT_STARTED)\*\*",
+        block,
+        re.M,
+    )
+    if not match:
+        print(f"CLASS_{index}_MISSING")
+        raise SystemExit
+    classes.append(match.group(1))
+
+markers = {
+    4: ["workspace migration", "compatibility matrix", "diagnostic bundle"],
+    6: ["read-only control-plane", "active runs/tasks", "HUMAN_REQUIRED"],
+    7: ["next bounded task", "expected value", "suggested execution profile"],
+}
+for index, needles in markers.items():
+    lower = blocks[index - 1].lower()
+    for needle in needles:
+        if needle.lower() not in lower:
+            print(f"I{index}_GOAL_MISSING:{needle}")
+            raise SystemExit
+
+counts = Counter(classes)
+summary = re.search(
+    r"\*\*Total:\*\* (\d+) PARTIAL, (\d+) SCAFFOLD_ONLY, (\d+) COMPLETE, (\d+) NOT_STARTED",
+    text,
+)
+if not summary:
+    print("SUMMARY_MISSING")
+    raise SystemExit
+derived = (
+    counts["PARTIAL"],
+    counts["SCAFFOLD_ONLY"],
+    counts["COMPLETE"],
+    counts["NOT_STARTED"],
+)
+if tuple(map(int, summary.groups())) != derived:
+    print(f"SUMMARY_MISMATCH:{summary.groups()}!={derived}")
+    raise SystemExit
+if derived != (4, 5, 0, 0):
+    print(f"UNEXPECTED_COUNTS:{derived}")
+    raise SystemExit
+print("OK")
+PYCODE
+) || true
+    [[ "$result" == "OK" ]] || { echo "$result"; return 1; }
+}
+
+test_run "Roadmap: TitlesAndGoals" test_256
+
+# ============================================================
+# TEST 257: No direct ValidationCache(workspace) in runtime code
+# ============================================================
+test_257() {
+    # Check that teamloop-core.py does not contain direct ValidationCache(workspace)
+    # (except in comments or imports)
+    local bad_count
+    bad_count=$("$PY" -c "
+import re
+with open('$PROJECT_ROOT/scripts/teamloop-core.py', 'r') as f:
+    content = f.read()
+# Look for ValidationCache(workspace) or ValidationCache as SentinelCache(workspace)
+bad = re.findall(r'ValidationCache\s*\(\s*workspace\s*\)', content)
+bad2 = re.findall(r'SentinelCache\s*\(\s*workspace\s*\)', content)
+print(len(bad) + len(bad2))
+")
+    [[ "$bad_count" == "0" ]] || {
+        echo "Found $bad_count direct ValidationCache(workspace) calls"
+        return 1
+    }
+}
+
+test_run "Cache: NoDirectWorkspaceConstructor" test_257
+
+# ============================================================
+# TEST 258: Package manifest exists and has required fields
+# ============================================================
+test_258() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+
+    # Run release-package
+    bash "$PROJECT_ROOT/scripts/release-package.sh" "$tmpdir" >/dev/null 2>&1 || true
+
+    local manifest="$tmpdir/package-manifest.json"
+    [[ -f "$manifest" ]] || {
+        echo "package-manifest.json not created"
+        rm -rf "$tmpdir"
+        return 1
+    }
+
+    # Check required fields
+    for field in packageVersion sourceCommit filesIncluded filesIncludedList filesExcludedByCategory fileChecksums packageFormat installCommand archiveChecksum createdAtUtc platformNotes; do
+        grep -q "\"$field\"" "$manifest" || {
+            echo "Missing field: $field"
+            rm -rf "$tmpdir"
+            return 1
+        }
+    done
+
+    # Check packageFormat is zip
+    grep -q '"packageFormat": "zip"' "$manifest" || {
+        echo "Expected packageFormat zip"
+        rm -rf "$tmpdir"
+        return 1
+    }
+
+    # Check filesIncludedList is an array
+    grep -q '"filesIncludedList": \[' "$manifest" || {
+        echo "filesIncludedList must be a list"
+        rm -rf "$tmpdir"
+        return 1
+    }
+
+    rm -rf "$tmpdir"
+}
+
+test_run "Package: ManifestFields" test_258
+
+# ============================================================
+# TEST 259: Package excludes runtime debris
+# ============================================================
+test_259() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+
+    # Run release-package
+    bash "$PROJECT_ROOT/scripts/release-package.sh" "$tmpdir" >/dev/null 2>&1 || true
+
+    local archive
+    archive=$(ls "$tmpdir"/*.zip 2>/dev/null | head -1)
+    [[ -f "$archive" ]] || {
+        echo "no ZIP archive created"
+        rm -rf "$tmpdir"
+        return 1
+    }
+
+    # Extract and check names
+    local names
+    names=$(python -c "import zipfile; [print(n) for n in zipfile.ZipFile('$archive').namelist()]" 2>/dev/null) || true
+
+    # Check forbidden prefixes
+    for prefix in '.git/' '.teamloop/' '.teamloop-' '.pytest_cache/' '__pycache__/' '.idea/' '.vscode/' 'node_modules/' '.mypy_cache/' '.ruff_cache/'; do
+        echo "$names" | grep -Fq "$prefix" && {
+            echo "FORBIDDEN prefix: $prefix"
+            rm -rf "$tmpdir"
+            return 1
+        }
+    done
+
+    # Check forbidden suffixes
+    for suffix in '.pyc' '.pyo' '.log'; do
+        echo "$names" | grep -q "${suffix}$" && {
+            echo "FORBIDDEN suffix: $suffix"
+            rm -rf "$tmpdir"
+            return 1
+        }
+    done
+
+    rm -rf "$tmpdir"
+}
+
+test_run "Package: ExcludesDebris" test_259
+
+# ============================================================
+# TEST 260: Final-gate cache-integrity has structured fields
+# ============================================================
+test_260() {
+    init_test_workspace
+
+    local output
+    output=$("$PY" "$CORE" final-gate --workspace "$WORKSPACE_ABS" 2>&1) || true
+
+    local result
+    result=$(echo "$output" | "$PY" -c "
+import sys,json
+d=json.load(sys.stdin)
+ci = None
+for c in d.get('checks',[]):
+    if c.get('name')=='cache-integrity':
+        ci = c; break
+if not ci:
+    print('NO_CACHE_CHECK')
+    sys.exit(0)
+required_fields = ['cacheState', 'enabled', 'totalRecords', 'malformedLines', 'legacyUntrusted']
+missing = [f for f in required_fields if f not in ci]
+if missing:
+    print(f'MISSING_FIELDS: {missing}')
+    sys.exit(0)
+print('OK')
+" 2>/dev/null) || true
+    [[ "$result" == "OK" ]] || {
+        echo "cache-integrity structured fields: $result"
+        return 1
+    }
+}
+
+test_run "FinalGate: CacheStructuredFields" test_260
+
+# ============================================================
+# TEST 261: Final-gate output validates against its published schema
+# ============================================================
+test_261() {
+    init_test_workspace
+
+    local output_file
+    output_file=$(mktemp)
+    run_core final-gate >"$output_file" 2>/dev/null || true
+
+    local result
+    result=$("$PY" - "$output_file" "$PROJECT_ROOT/schemas/final-gate.schema.json" <<'PYCODE'
+import json, sys
+instance = json.load(open(sys.argv[1], encoding="utf-8"))
+schema = json.load(open(sys.argv[2], encoding="utf-8"))
+try:
+    import jsonschema
+    jsonschema.validate(instance=instance, schema=schema)
+except ImportError:
+    required = set(schema.get("required", []))
+    if not required.issubset(instance):
+        print("MISSING_TOP_LEVEL")
+        raise SystemExit
+    if instance.get("executionMode") not in ("repository-baseline", "active-run", "final-handoff"):
+        print("BAD_EXECUTION_MODE")
+        raise SystemExit
+except Exception as exc:
+    print(f"SCHEMA_FAIL:{exc}")
+    raise SystemExit
+print("OK")
+PYCODE
+) || true
+    rm -f "$output_file"
+    [[ "$result" == "OK" ]] || { echo "$result"; return 1; }
+}
+
+test_run "FinalGate: PublishedSchemaValid" test_261
+
+# ============================================================
+# TEST 262: Sentinel identity and semantic fields are actually verified
+# ============================================================
+test_262() {
+    init_test_workspace
+    start_fast_execution_task task-sentinel-identity P2 "src/**" "src/**"
+    run_core prepare-execution >/dev/null
+    run_core run-sentinel --no-cache >/dev/null
+
+    local sentinel_path="$WORKSPACE_ABS/runs/$FAST_RUN_ID/sentinel-inspection.json"
+    [[ -f "$sentinel_path" ]] || { echo "sentinel artifact missing"; return 1; }
+
+    local result
+    result=$("$PY" - "$PROJECT_ROOT/scripts/teamloop-core.py" "$WORKSPACE_ABS" "$sentinel_path" <<'PYCODE'
+import copy, importlib.util, json, os, sys
+
+core_path, workspace, sentinel_path = sys.argv[1:]
+sys.path.insert(0, os.path.dirname(core_path))
+spec = importlib.util.spec_from_file_location("teamloop_core_test", core_path)
+core = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(core)
+
+original = json.load(open(sentinel_path, encoding="utf-8"))
+state = core.read_json_file_safe(os.path.join(workspace, "state", "team-state.json"))
+
+def evaluate(candidate):
+    with open(sentinel_path, "w", encoding="utf-8") as fh:
+        json.dump(candidate, fh)
+    return core._evaluate_sentinel_evidence(workspace, state).get("status")
+
+cases = []
+cases.append(("baseline", original, "PASS"))
+
+mutations = [
+    ("taskRevision", lambda d: d.__setitem__("taskRevision", "0" * 64), "STALE"),
+    ("implementationVersion", lambda d: d.__setitem__("implementationVersion", "999"), "STALE"),
+    ("runtimeVersion", lambda d: d.__setitem__("runtimeVersion", "999"), "STALE"),
+    ("executionPolicyFingerprint", lambda d: d.__setitem__("executionPolicyFingerprint", "0" * 64), "STALE"),
+    ("protectedPathsFingerprint", lambda d: d.__setitem__("protectedPathsFingerprint", "0" * 64), "STALE"),
+    ("repositoryIdentity", lambda d: d.__setitem__("repositoryIdentity", "0" * 64), "STALE"),
+    ("semanticFingerprint", lambda d: d.__setitem__("semanticFingerprint", "0" * 64), "INVALID"),
+    ("findings", lambda d: d["findings"][0].__setitem__("title", d["findings"][0]["title"] + " tampered"), "INVALID"),
+    ("overallStatus", lambda d: d.__setitem__("overallStatus", "FAIL" if d["overallStatus"] != "FAIL" else "PASS"), "INVALID"),
+]
+for name, mutate, expected in mutations:
+    candidate = copy.deepcopy(original)
+    mutate(candidate)
+    cases.append((name, candidate, expected))
+
+errors = []
+try:
+    for name, candidate, expected in cases:
+        actual = evaluate(candidate)
+        if actual != expected:
+            errors.append(f"{name}:{actual}!={expected}")
+finally:
+    with open(sentinel_path, "w", encoding="utf-8") as fh:
+        json.dump(original, fh)
+
+print("OK" if not errors else ";".join(errors))
+PYCODE
+) || true
+    [[ "$result" == "OK" ]] || { echo "$result"; return 1; }
+}
+
+test_run "Sentinel: CompleteIdentityBinding" test_262
+
+# ============================================================
+# TEST 263: Full cache record integrity and cache-key consistency
+# ============================================================
+test_263() {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+
+    local result
+    result=$("$PY" - "$PROJECT_ROOT/scripts" "$tmpdir" <<'PYCODE'
+import copy, json, os, sys
+sys.path.insert(0, sys.argv[1])
+from teamloop_cache import ValidationCache
+
+root = sys.argv[2]
+workspace = os.path.join(root, ".teamloop")
+os.makedirs(os.path.join(workspace, "cache"), exist_ok=True)
+cache_path = os.path.join(workspace, "cache", "validation-cache.jsonl")
+
+cache = ValidationCache(cache_path, workspace=workspace, project_root=os.path.dirname(sys.argv[1]))
+key = cache.build_key("alpha-check", inputs={"value": "alpha"})
+cache.store(key, {"status": "PASS", "message": "ok"})
+if cache.get(key) is None:
+    print("VALID_ENTRY_NOT_REUSED")
+    raise SystemExit
+
+original = json.loads(open(cache_path, encoding="utf-8").read())
+mutations = {
+    "ttlSeconds": lambda d: d.__setitem__("ttlSeconds", d["ttlSeconds"] + 1),
+    "provenance": lambda d: d["provenance"].__setitem__("producer", "tampered"),
+    "policyFingerprints": lambda d: d["policyFingerprints"].__setitem__("gatePolicy", "tampered"),
+    "profileFingerprint": lambda d: d.__setitem__("profileFingerprint", "tampered"),
+    "executionPolicyFingerprint": lambda d: d.__setitem__("executionPolicyFingerprint", "tampered"),
+    "result": lambda d: d["result"].__setitem__("status", "FAIL"),
+    "keyPayload": lambda d: d["keyPayload"].__setitem__("check", "other-check"),
+}
+errors=[]
+for name, mutate in mutations.items():
+    candidate=copy.deepcopy(original)
+    mutate(candidate)
+    open(cache_path, "w", encoding="utf-8").write(json.dumps(candidate) + "\n")
+    loaded=ValidationCache(cache_path, workspace=workspace, project_root=os.path.dirname(sys.argv[1]))
+    integrity=loaded.integrity_check()
+    if integrity["status"] != "FAIL" or loaded.get(key) is not None:
+        errors.append(f"{name}:{integrity['status']}")
+
+legacy=copy.deepcopy(original)
+legacy["cacheSchemaVersion"]="teamloop-validation-cache/v1"
+open(cache_path, "w", encoding="utf-8").write(json.dumps(legacy) + "\n")
+loaded=ValidationCache(cache_path, workspace=workspace, project_root=os.path.dirname(sys.argv[1]))
+integrity=loaded.integrity_check()
+if integrity["status"] != "WARNING" or integrity["legacyUntrustedCount"] != 1 or loaded.get(key) is not None:
+    errors.append("legacy-not-quarantined")
+
+print("OK" if not errors else ";".join(errors))
+PYCODE
+) || true
+    rm -rf "$tmpdir"
+    [[ "$result" == "OK" ]] || { echo "$result"; return 1; }
+}
+
+test_run "Cache: FullSemanticRecordIntegrity" test_263
+
+# ============================================================
+# TEST 264: Build, extract, install, and execute the actual ZIP package
+# ============================================================
+test_264() {
+    local tmpdir outdir extractdir freshrepo
+    tmpdir=$(mktemp -d)
+    outdir="$tmpdir/out"
+    extractdir="$tmpdir/extracted"
+    freshrepo="$tmpdir/repo"
+    mkdir -p "$outdir" "$extractdir" "$freshrepo"
+
+    bash "$PROJECT_ROOT/scripts/release-package.sh" "$outdir" >/dev/null
+    local archive
+    archive=$(find "$outdir" -maxdepth 1 -name '*.zip' -type f | head -1)
+    [[ -f "$archive" ]] || { echo "release archive missing"; rm -rf "$tmpdir"; return 1; }
+
+    "$PY" - "$archive" "$extractdir" "$outdir/package-manifest.json" <<'PYCODE'
+import hashlib, json, os, sys, zipfile
+archive, extract_dir, manifest_path = sys.argv[1:]
+manifest=json.load(open(manifest_path, encoding="utf-8"))
+digest=hashlib.sha256(open(archive,"rb").read()).hexdigest()
+assert manifest["archiveChecksum"] == "sha256:" + digest
+with zipfile.ZipFile(archive) as zf:
+    names=zf.namelist()
+    forbidden=(".git/", ".teamloop/", ".teamloop-", ".pytest_cache/", "__pycache__/", ".idea/", ".vscode/")
+    bad=[n for n in names if any(part in n for part in forbidden) or n.endswith((".pyc", ".pyo", ".log"))]
+    assert not bad, bad[:10]
+    zf.extractall(extract_dir)
+for rel, expected in manifest["fileChecksums"].items():
+    actual=hashlib.sha256(open(os.path.join(extract_dir, rel),"rb").read()).hexdigest()
+    assert expected == "sha256:" + actual, rel
+PYCODE
+
+    [[ ! -x "$extractdir/scripts/validate-state.sh" ]] || {
+        echo "ZIP unexpectedly preserved executable mode"; rm -rf "$tmpdir"; return 1;
+    }
+    bash "$extractdir/scripts/install.sh" >/dev/null
+    [[ -x "$extractdir/scripts/validate-state.sh" ]] || { echo "install did not chmod .sh wrapper"; rm -rf "$tmpdir"; return 1; }
+    [[ -x "$extractdir/scripts/validate-state" ]] || { echo "install did not chmod extensionless shim"; rm -rf "$tmpdir"; return 1; }
+
+    git init "$freshrepo" >/dev/null 2>&1
+    "$extractdir/scripts/init-workspace.sh" --workspace "$freshrepo/.teamloop" >/dev/null
+    "$extractdir/scripts/validate-state.sh" --workspace "$freshrepo/.teamloop" >/dev/null
+
+    [[ ! -e "$extractdir/.teamloop" ]] || { echo "active .teamloop shipped"; rm -rf "$tmpdir"; return 1; }
+    if find "$extractdir" -maxdepth 1 -name '.teamloop-*' | grep -q .; then
+        echo "archived TeamLoop state shipped"; rm -rf "$tmpdir"; return 1
+    fi
+
+    rm -rf "$tmpdir"
+}
+
+test_run "Package: ActualZipInstallSmoke" test_264
 
 # ============================================================
 # SUMMARY

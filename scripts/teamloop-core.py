@@ -40,6 +40,31 @@ def _create_cache(workspace, project_root, read_only=False):
     )
 
 
+def _classify_cache_state(cache, integrity_result):
+    """Classify cache integrity into a canonical state string.
+
+    Returns one of: PASS, EMPTY, DISABLED, CORRUPT, INVALID, LEGACY_UNTRUSTED
+    """
+    status = integrity_result.get("status", "UNKNOWN")
+    total = integrity_result.get("totalEntries", 0)
+    malformed = integrity_result.get("malformedLineCount", 0)
+    has_corruption = integrity_result.get("hasCorruption", False)
+    legacy_count = integrity_result.get("legacyUntrustedCount", 0)
+    invalid_entries = integrity_result.get("invalidEntries", [])
+
+    if has_corruption or malformed > 0:
+        return "CORRUPT"
+    if invalid_entries:
+        return "INVALID"
+    if legacy_count > 0:
+        return "LEGACY_UNTRUSTED"
+    if total == 0:
+        return "EMPTY"
+    if status in ("PASS", "WARNING"):
+        return "PASS"
+    return status
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1642,6 +1667,7 @@ def _evaluate_workspace_integrity(workspace):
     14. contradictory-sentinels — multiple PASS sentinels with conflicting fingerprints
     15. cache-integrity — cache file integrity (malformed lines, hash failures)
     """
+    project_root = fast_execution._repo_root(workspace)
     checks = []
     blocking_issues = []
 
@@ -1853,29 +1879,28 @@ def _evaluate_workspace_integrity(workspace):
     _check_contradictory_sentinels(workspace, checks, blocking_issues)
 
     # ===== Check 15: cache-integrity =====
-    try:
-        from teamloop_cache import ValidationCache as SentinelCache
-        cache = SentinelCache(workspace)
+    cache = _create_cache(workspace, project_root)
+    if cache is None:
+        _add_skip("cache-integrity",
+                   "cache disabled by TEAMLOOP_NO_CACHE")
+    else:
         cache_status = cache.integrity_check()
-        ci_status = cache_status.get("status", "UNKNOWN")
-        if ci_status in ("PASS", "EMPTY", "WARNING"):
+        cache_state = _classify_cache_state(cache, cache_status)
+        if cache_state in ("PASS", "EMPTY", "DISABLED"):
             _add_pass("cache-integrity",
-                       f"cache ok ({ci_status})")
-        elif ci_status == "CORRUPT":
+                       f"cache ok ({cache_state})")
+        elif cache_state in ("CORRUPT", "INVALID"):
             _add_fail("cache-integrity",
-                       f"cache corruption: {cache_status.get('malformedLines', 0)} malformed lines, "
-                       f"{cache_status.get('corruptedCount', 0)} hash failures",
+                       f"cache {cache_state}: "
+                       f"malformed={cache_status.get('malformedLineCount', 0)}, "
+                       f"invalid={len(cache_status.get('invalidEntries', []))}, "
+                       f"legacy={cache_status.get('legacyUntrustedCount', 0)}",
                        blocking=True)
-        elif ci_status == "FAIL":
-            _add_fail("cache-integrity",
-                       cache_status.get("message", "cache integrity failure"),
-                       blocking=True)
+        elif cache_state == "LEGACY_UNTRUSTED":
+            _add_pass("cache-integrity",
+                       f"cache has {cache_status.get('legacyUntrustedCount', 0)} legacy entries (quarantined)")
         else:
-            _add_skip("cache-integrity", f"unexpected cache status: {ci_status}")
-    except ImportError:
-        _add_skip("cache-integrity", "cache module not available")
-    except Exception as exc:
-        _add_fail("cache-integrity", f"cache check error: {exc}", blocking=True)
+            _add_skip("cache-integrity", f"unexpected cache state: {cache_state}")
 
     # ---- compute overall status ----
     if blocking_issues:
@@ -3890,6 +3915,77 @@ def _sentinel_get_run_id(host):
     return "run-{}".format(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S"))
 
 
+def _repository_identity(repo_root):
+    """Return a stable repository identity for evidence binding.
+
+    Prefer the configured ``origin`` URL because it remains stable across
+    checkouts.  Repositories without a remote fall back to the canonical Git
+    top-level path.  The value is hashed so reports do not expose local paths
+    or credentials embedded in remote URLs.
+    """
+    raw_identity = ""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo_root, "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0:
+            raw_identity = proc.stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    if not raw_identity:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", repo_root, "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode == 0:
+                raw_identity = os.path.realpath(proc.stdout.strip())
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+
+    if not raw_identity:
+        return ""
+    return hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()
+
+
+def _sentinel_semantic_payload(report):
+    """Build the canonical, non-volatile payload protected by the sentinel.
+
+    ``inspectedAtUtc`` and summary counts are deliberately excluded: the
+    timestamp is volatile and the summary is derived from findings.  Every
+    identity/policy field that can affect applicability is included.
+    """
+    return {
+        "schemaVersion": report.get("schemaVersion", 1),
+        "runId": report.get("runId", ""),
+        "repositoryIdentity": report.get("repositoryIdentity", ""),
+        "repositoryHead": report.get("repositoryHead", ""),
+        "taskId": report.get("taskId", ""),
+        "taskRevision": report.get("taskRevision", ""),
+        "implementationVersion": report.get("implementationVersion", ""),
+        "runtimeVersion": report.get("runtimeVersion", ""),
+        "manifestFingerprint": report.get("manifestFingerprint", ""),
+        "executionPolicyFingerprint": report.get("executionPolicyFingerprint", ""),
+        "protectedPathsFingerprint": report.get("protectedPathsFingerprint", ""),
+        "policyFingerprints": report.get("policyFingerprints", {}),
+        "overallStatus": report.get("overallStatus", ""),
+        "findings": fast_execution.strip_volatile(report.get("findings", [])),
+    }
+
+
+def _compute_sentinel_semantic_fingerprint(report):
+    return hashlib.sha256(
+        json.dumps(
+            _sentinel_semantic_payload(report),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _sentinel_check_scope_policy_weakening(host):
     """Check 1: scope-policy-weakening — scope-policy.json must have baseline forbiddenWrites."""
     policy_path = os.path.join(host.workspace, "policies", "scope-policy.json")
@@ -4523,69 +4619,41 @@ def cmd_run_sentinel(args):
         overall_status = "PASS"
 
     # ------------------------------------------------------------------
-    # Sentinel identity binding (Defect 2 fix)
+    # Sentinel identity binding
     # ------------------------------------------------------------------
-    # Compute identity fields so that final-gate can verify the artifact
-    # was produced for the current context.
+    identity = _resolve_applicable_identity(workspace)
     repo_root = host.git_root
-    current_head = ""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", repo_root, "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if proc.returncode == 0:
-            current_head = proc.stdout.strip()
-    except (subprocess.SubprocessError, FileNotFoundError):
-        pass
 
-    task_id = ""
-    task_revision = ""
-    state = host.state_safe
-    if state:
-        task_id = state.get("currentTaskId", "")
-    if task_id:
-        task_obj = host.current_task
-        if task_obj:
-            task_revision = fast_execution._task_revision(task_obj)
+    # Bind the report to the authoritative contract when one exists.  The
+    # run directory selected above must agree with that contract.
+    if identity.get("runId"):
+        run_id = identity["runId"]
+        run_dir = os.path.join(workspace, "runs", run_id)
+        os.makedirs(run_dir, exist_ok=True)
 
-    # Resolve manifest fingerprint for identity binding.
-    manifest_fingerprint = ""
-    runs_dir_sentinel = os.path.join(workspace, "runs")
-    if os.path.isdir(runs_dir_sentinel):
-        for run_name in reversed(sorted(os.listdir(runs_dir_sentinel))):
-            manifest_path = os.path.join(runs_dir_sentinel, run_name, "execution-manifest.json")
-            if os.path.exists(manifest_path):
-                manifest_data = read_json_file_safe(manifest_path)
-                if manifest_data and "semanticFingerprint" in manifest_data:
-                    manifest_fingerprint = manifest_data["semanticFingerprint"]
-                break
-
-    # Semantic fingerprint over the findings (excluding volatile fields).
-    findings_stripped = fast_execution.strip_volatile(findings)
-    findings_fp = hashlib.sha256(
-        json.dumps(findings_stripped, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-    # Policy fingerprints for staleness checking
     policy_fps = {}
     for pname in ("gate-policy.json", "scope-policy.json", "protected-paths.json"):
         ppath = os.path.join(workspace, "policies", pname)
-        if os.path.exists(ppath):
-            policy_fps[pname] = fast_execution.file_sha256(ppath) if os.path.getsize(ppath) < 1_000_000 else ""
+        policy_fps[pname] = (
+            fast_execution.file_sha256(ppath)
+            if os.path.isfile(ppath) and os.path.getsize(ppath) < 1_000_000
+            else ""
+        )
 
     report = {
         "schemaVersion": 1,
         "runId": run_id,
         "inspectedAtUtc": utc_now_iso(),
-        "repositoryHead": current_head,
-        "taskId": task_id,
-        "taskRevision": task_revision,
+        "repositoryIdentity": identity.get("repositoryIdentity") or _repository_identity(repo_root),
+        "repositoryHead": identity.get("repositoryHead", ""),
+        "taskId": identity.get("taskId", ""),
+        "taskRevision": identity.get("taskRevision", ""),
         "implementationVersion": _cache_mod.IMPLEMENTATION_VERSION,
-        "semanticFingerprint": findings_fp,
-        "policyFingerprints": policy_fps,
-        "manifestFingerprint": manifest_fingerprint,
         "runtimeVersion": _cache_mod.IMPLEMENTATION_VERSION,
+        "policyFingerprints": policy_fps,
+        "manifestFingerprint": identity.get("manifestFingerprint", ""),
+        "executionPolicyFingerprint": identity.get("policyFingerprint", ""),
+        "protectedPathsFingerprint": identity.get("protectedPathsFingerprint", ""),
         "findings": findings,
         "overallStatus": overall_status,
         "summary": {
@@ -4595,6 +4663,7 @@ def cmd_run_sentinel(args):
             "infoCount": info_count,
         },
     }
+    report["semanticFingerprint"] = _compute_sentinel_semantic_fingerprint(report)
 
     # Write report to run directory
     report_path = os.path.join(run_dir, "sentinel-inspection.json")
@@ -4707,7 +4776,12 @@ def _evaluate_sentinel_evidence(workspace, state):
         }
 
     # Required identity fields for staleness checking
-    required_identity_fields = {"repositoryHead", "runId", "overallStatus", "findings"}
+    required_identity_fields = {
+        "repositoryIdentity", "repositoryHead", "runId", "overallStatus", "findings",
+        "taskId", "taskRevision", "implementationVersion", "runtimeVersion",
+        "semanticFingerprint", "policyFingerprints", "manifestFingerprint",
+        "executionPolicyFingerprint", "protectedPathsFingerprint",
+    }
     missing_fields = required_identity_fields - set(sentinel_data.keys())
     if missing_fields:
         return {
@@ -4721,8 +4795,11 @@ def _evaluate_sentinel_evidence(workspace, state):
     # Item 3: When a contract exists, additional identity fields must be present
     # and non-empty (taskId/taskRevision may be "" when no task is active).
     if identity.get("source") in ("execution-manifest", "execution-policy", "team-state"):
-        additional_required = {"taskId", "taskRevision", "implementationVersion",
-                               "semanticFingerprint", "policyFingerprints"}
+        additional_required = {
+            "taskId", "taskRevision", "implementationVersion", "runtimeVersion",
+            "semanticFingerprint", "policyFingerprints", "manifestFingerprint",
+            "executionPolicyFingerprint", "protectedPathsFingerprint",
+        }
         missing_additional = additional_required - set(sentinel_data.keys())
         if missing_additional:
             return {
@@ -4733,7 +4810,7 @@ def _evaluate_sentinel_evidence(workspace, state):
                 "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
             }
         # Verify non-empty for fields that must have content
-        for field in ("implementationVersion", "semanticFingerprint"):
+        for field in ("implementationVersion", "runtimeVersion", "semanticFingerprint"):
             val = sentinel_data.get(field, "")
             if not val:
                 return {
@@ -4771,11 +4848,23 @@ def _evaluate_sentinel_evidence(workspace, state):
             "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
         }
 
+    identity_repo = identity.get("repositoryIdentity", "")
+    artifact_repo = sentinel_data.get("repositoryIdentity", "")
+    if identity_repo and artifact_repo != identity_repo:
+        return {
+            "name": "sentinel-result",
+            "status": "STALE",
+            "description": "sentinel-inspection.json belongs to a different repository",
+            "blocking": True,
+            "reason": f"repository identity mismatch: artifact {artifact_repo[:12]} vs current {identity_repo[:12]}",
+            "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+        }
+
     # 4b. runId must match identity's run (if identity specifies one)
     identity_run_id = identity.get("runId", "")
     if identity_run_id:
         artifact_run_id = sentinel_data.get("runId", "")
-        if artifact_run_id and artifact_run_id != identity_run_id:
+        if artifact_run_id != identity_run_id:
             return {
                 "name": "sentinel-result",
                 "status": "STALE",
@@ -4789,7 +4878,7 @@ def _evaluate_sentinel_evidence(workspace, state):
     identity_task_id = identity.get("taskId", "")
     if identity_task_id:
         artifact_task_id = sentinel_data.get("taskId", "")
-        if artifact_task_id and artifact_task_id != identity_task_id:
+        if artifact_task_id != identity_task_id:
             return {
                 "name": "sentinel-result",
                 "status": "STALE",
@@ -4799,34 +4888,94 @@ def _evaluate_sentinel_evidence(workspace, state):
                 "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
             }
 
+    # 4ca. taskRevision must match identity's task revision
+    identity_task_rev = identity.get("taskRevision", "")
+    if identity_task_rev:
+        artifact_task_rev = sentinel_data.get("taskRevision", "")
+        if artifact_task_rev != identity_task_rev:
+            return {
+                "name": "sentinel-result",
+                "status": "STALE",
+                "description": "sentinel-inspection.json was produced for a different task revision",
+                "blocking": True,
+                "reason": f"artifact taskRevision {artifact_task_rev} != identity taskRevision {identity_task_rev}",
+                "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+            }
+
+    # 4cb. implementationVersion must match
+    identity_impl_ver = identity.get("implementationVersion", "")
+    if identity_impl_ver:
+        artifact_impl_ver = sentinel_data.get("implementationVersion", "")
+        if artifact_impl_ver != identity_impl_ver:
+            return {
+                "name": "sentinel-result",
+                "status": "STALE",
+                "description": "sentinel-inspection.json was produced with a different implementation version",
+                "blocking": True,
+                "reason": f"artifact implementationVersion {artifact_impl_ver} != identity {identity_impl_ver}",
+                "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+            }
+
+    # 4cc. runtimeVersion must match
+    identity_rt_ver = identity.get("runtimeVersion", "")
+    if identity_rt_ver:
+        artifact_rt_ver = sentinel_data.get("runtimeVersion", "")
+        if artifact_rt_ver != identity_rt_ver:
+            return {
+                "name": "sentinel-result",
+                "status": "STALE",
+                "description": "sentinel-inspection.json was produced with a different runtime version",
+                "blocking": True,
+                "reason": f"artifact runtimeVersion {artifact_rt_ver} != identity {identity_rt_ver}",
+                "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+            }
+
     # 4d. policyFingerprints must match current policy files
     artifact_policy_fps = sentinel_data.get("policyFingerprints", {})
-    if artifact_policy_fps:
-        current_policy_fps = {}
-        for pname in ("gate-policy.json", "scope-policy.json", "protected-paths.json"):
-            ppath = os.path.join(workspace, "policies", pname)
-            if os.path.exists(ppath):
-                try:
-                    current_policy_fps[pname] = fast_execution.file_sha256(ppath)
-                except (OSError, TypeError):
-                    pass
-        for pname, art_fp in artifact_policy_fps.items():
-            cur_fp = current_policy_fps.get(pname, "")
-            if art_fp and cur_fp and art_fp != cur_fp:
-                return {
-                    "name": "sentinel-result",
-                    "status": "STALE",
-                    "description": f"sentinel-inspection.json policy fingerprint for {pname} has changed",
-                    "blocking": True,
-                    "reason": f"{pname} hash mismatch: artifact {art_fp[:12]} vs current {cur_fp[:12]}",
-                    "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
-                }
+    current_policy_fps = {}
+    for pname in ("gate-policy.json", "scope-policy.json", "protected-paths.json"):
+        ppath = os.path.join(workspace, "policies", pname)
+        try:
+            current_policy_fps[pname] = (
+                fast_execution.file_sha256(ppath) if os.path.isfile(ppath) else ""
+            )
+        except (OSError, TypeError):
+            current_policy_fps[pname] = ""
+    if not isinstance(artifact_policy_fps, dict):
+        return {
+            "name": "sentinel-result", "status": "INVALID",
+            "description": "sentinel-inspection.json policyFingerprints is not an object",
+            "blocking": True,
+            "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+        }
+    for pname, cur_fp in current_policy_fps.items():
+        art_fp = artifact_policy_fps.get(pname, "")
+        if art_fp != cur_fp:
+            return {
+                "name": "sentinel-result",
+                "status": "STALE",
+                "description": f"sentinel-inspection.json policy fingerprint for {pname} has changed",
+                "blocking": True,
+                "reason": f"{pname} hash mismatch: artifact {art_fp[:12]} vs current {cur_fp[:12]}",
+                "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+            }
+
+    identity_policy_fp = identity.get("policyFingerprint", "")
+    artifact_policy_fp = sentinel_data.get("executionPolicyFingerprint", "")
+    if identity_policy_fp and artifact_policy_fp != identity_policy_fp:
+        return {
+            "name": "sentinel-result", "status": "STALE",
+            "description": "sentinel-inspection.json was produced for a different execution policy",
+            "blocking": True,
+            "reason": f"execution policy fingerprint mismatch: artifact {artifact_policy_fp[:12]} vs current {identity_policy_fp[:12]}",
+            "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+        }
 
     # 4e. Manifest fingerprint: if the sentinel was produced before the current
     # manifest was materialized (different semanticFingerprint), the sentinel is STALE.
     identity_manifest_fp = identity.get("manifestFingerprint", "")
     artifact_manifest_fp = sentinel_data.get("manifestFingerprint", "")
-    if identity_manifest_fp and artifact_manifest_fp and identity_manifest_fp != artifact_manifest_fp:
+    if identity_manifest_fp and identity_manifest_fp != artifact_manifest_fp:
         return {
             "name": "sentinel-result",
             "status": "STALE",
@@ -4837,25 +4986,34 @@ def _evaluate_sentinel_evidence(workspace, state):
         }
 
     # ------------------------------------------------------------------
+    # 4ea. Protected-paths policy fingerprint: if guard policy changed, sentinel is STALE.
+    # ------------------------------------------------------------------
+    identity_pp_fp = identity.get("protectedPathsFingerprint", "")
+    artifact_pp_fp = sentinel_data.get("protectedPathsFingerprint", "")
+    if identity_pp_fp and identity_pp_fp != artifact_pp_fp:
+        return {
+            "name": "sentinel-result",
+            "status": "STALE",
+            "description": "sentinel-inspection.json was produced with a different protected-paths policy",
+            "blocking": True,
+            "reason": f"protectedPaths fingerprint mismatch: artifact {artifact_pp_fp[:12]} vs current {identity_pp_fp[:12]}",
+            "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+        }
+
+    # ------------------------------------------------------------------
     # 4f. Recompute and verify semanticFingerprint
     # ------------------------------------------------------------------
     stored_fp = sentinel_data.get("semanticFingerprint", "")
-    if stored_fp:
-        sent_findings = sentinel_data.get("findings", [])
-        if isinstance(sent_findings, list):
-            sent_findings_stripped = fast_execution.strip_volatile(sent_findings)
-            recomputed_fp = hashlib.sha256(
-                json.dumps(sent_findings_stripped, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            ).hexdigest()
-            if recomputed_fp != stored_fp:
-                return {
-                    "name": "sentinel-result",
-                    "status": "INVALID",
-                    "description": "sentinel-inspection.json semantic fingerprint mismatch — findings may have been tampered",
-                    "blocking": True,
-                    "reason": f"stored {stored_fp[:12]} != recomputed {recomputed_fp[:12]}",
-                    "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
-                }
+    recomputed_fp = _compute_sentinel_semantic_fingerprint(sentinel_data)
+    if recomputed_fp != stored_fp:
+        return {
+            "name": "sentinel-result",
+            "status": "INVALID",
+            "description": "sentinel-inspection.json semantic fingerprint mismatch — artifact may have been tampered",
+            "blocking": True,
+            "reason": f"stored {stored_fp[:12]} != recomputed {recomputed_fp[:12]}",
+            "evidenceArtifact": os.path.relpath(sentinel_path, os.path.dirname(workspace)),
+        }
 
     # ------------------------------------------------------------------
     # 5. Check findings — overallStatus and CRITICAL findings
@@ -4928,6 +5086,7 @@ def _resolve_applicable_identity(workspace):
         "runId": "",
         "taskId": "",
         "taskRevision": "",
+        "repositoryIdentity": "",
         "repositoryHead": "",
         "manifestFingerprint": "",
         "policyFingerprint": "",
@@ -4937,6 +5096,26 @@ def _resolve_applicable_identity(workspace):
         "sentinelRequired": False,
         "source": "none",
     }
+
+    repo_root = fast_execution._repo_root(workspace)
+    identity["repositoryIdentity"] = _repository_identity(repo_root)
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0:
+            identity["repositoryHead"] = proc.stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    # Load protected-paths fingerprint from workspace policy
+    pp_path = os.path.join(workspace, "policies", "protected-paths.json")
+    if os.path.exists(pp_path):
+        try:
+            identity["protectedPathsFingerprint"] = fast_execution.file_sha256(pp_path)
+        except (OSError, TypeError):
+            pass
 
     runs_dir = os.path.join(workspace, "runs")
 
@@ -4961,14 +5140,20 @@ def _resolve_applicable_identity(workspace):
             identity["runId"] = current_run_id
             identity["taskId"] = manifest.get("taskId", current_task_id)
             identity["taskRevision"] = manifest.get("taskRevision", "")
+            identity["repositoryHead"] = manifest.get(
+                "repositoryHead", identity["repositoryHead"]
+            )
             identity["manifestFingerprint"] = manifest.get("semanticFingerprint", "")
+            identity["policyFingerprint"] = manifest.get("policyFingerprint", "")
             identity["sentinelRequired"] = True
             identity["source"] = "execution-manifest"
             # Also load policy fingerprints from the same run
             policy_path = os.path.join(runs_dir, current_run_id, "execution-policy.json")
             policy_data = read_json_file_safe(policy_path)
             if policy_data and isinstance(policy_data, dict):
-                identity["policyFingerprint"] = policy_data.get("policyFingerprint", "")
+                identity["policyFingerprint"] = policy_data.get(
+                    "semanticFingerprint", identity["policyFingerprint"]
+                )
             return identity
 
     # Fallback: find the most recent manifest across all runs
@@ -4980,14 +5165,20 @@ def _resolve_applicable_identity(workspace):
                 identity["runId"] = run_name
                 identity["taskId"] = manifest.get("taskId", "")
                 identity["taskRevision"] = manifest.get("taskRevision", "")
+                identity["repositoryHead"] = manifest.get(
+                    "repositoryHead", identity["repositoryHead"]
+                )
                 identity["manifestFingerprint"] = manifest.get("semanticFingerprint", "")
+                identity["policyFingerprint"] = manifest.get("policyFingerprint", "")
                 identity["sentinelRequired"] = True
                 identity["source"] = "execution-manifest"
                 # Also load policy fingerprints from the same run
                 policy_path = os.path.join(runs_dir, run_name, "execution-policy.json")
                 policy_data = read_json_file_safe(policy_path)
                 if policy_data and isinstance(policy_data, dict):
-                    identity["policyFingerprint"] = policy_data.get("policyFingerprint", "")
+                    identity["policyFingerprint"] = policy_data.get(
+                        "semanticFingerprint", identity["policyFingerprint"]
+                    )
                 return identity
 
     # ------------------------------------------------------------------
@@ -4999,7 +5190,8 @@ def _resolve_applicable_identity(workspace):
             policy_data = read_json_file_safe(policy_path)
             if policy_data and isinstance(policy_data, dict):
                 identity["runId"] = run_name
-                identity["policyFingerprint"] = policy_data.get("policyFingerprint", "")
+                identity["taskId"] = policy_data.get("taskId", "")
+                identity["policyFingerprint"] = policy_data.get("semanticFingerprint", "")
                 identity["sentinelRequired"] = True
                 identity["source"] = "execution-policy"
                 return identity
@@ -5051,15 +5243,87 @@ def cmd_final_gate(args):
     subprocess_invocations = 0
 
     # ------------------------------------------------------------------
+    # Check 0: cache-integrity (MUST run first, before any subprocess
+    # that could modify the cache. All subsequent subprocess invocations
+    # set TEAMLOOP_NO_CACHE to prevent cache mutation during final-gate.)
+    # ------------------------------------------------------------------
+    cache = _create_cache(workspace, project_root, read_only=True)
+    if cache is None:
+        cache_integrity_check = {
+            "name": "cache-integrity",
+            "status": "SKIP",
+            "description": "cache disabled by TEAMLOOP_NO_CACHE",
+            "blocking": False,
+            "cacheState": "DISABLED",
+            "cachePath": os.path.join(workspace, "cache", "validation-cache.jsonl"),
+            "enabled": False,
+            "totalRecords": 0,
+            "validRecords": 0,
+            "malformedLines": 0,
+            "invalidIntegrity": 0,
+            "legacyUntrusted": 0,
+            "quarantinedRecords": 0,
+            "evidenceArtifact": os.path.join(
+                os.path.basename(workspace), "cache", "validation-cache.jsonl"
+            ),
+        }
+    else:
+        cache_status = cache.integrity_check()
+        cache_state = _classify_cache_state(cache, cache_status)
+        total_records = cache_status.get("totalEntries", 0)
+        valid_records = cache_status.get("validEntries", 0)
+        malformed_lines = cache_status.get("malformedLineCount", 0)
+        invalid_count = len(cache_status.get("invalidEntries", []))
+        legacy_count = cache_status.get("legacyUntrustedCount", 0)
+
+        cache_integrity_check = {
+            "name": "cache-integrity",
+            "status": "FAIL" if cache_state in ("CORRUPT", "INVALID") else "PASS",
+            "description": f"cache integrity: {cache_state}",
+            "blocking": cache_state in ("CORRUPT", "INVALID"),
+            "cacheState": cache_state,
+            "cachePath": cache.cache_path,
+            "enabled": True,
+            "totalRecords": total_records,
+            "validRecords": valid_records,
+            "malformedLines": malformed_lines,
+            "invalidIntegrity": invalid_count,
+            "legacyUntrusted": legacy_count,
+            "quarantinedRecords": legacy_count + invalid_count,
+            "evidenceArtifact": os.path.relpath(
+                cache.cache_path, os.path.dirname(workspace)
+            ),
+        }
+        if cache_state in ("CORRUPT", "INVALID"):
+            cache_integrity_check["reason"] = (
+                f"malformedLines={malformed_lines}, invalidIntegrity={invalid_count}, "
+                f"legacyUntrusted={legacy_count}"
+            )
+        if legacy_count > 0:
+            advisory_findings.append(
+                f"cache has {legacy_count} legacy-untrusted entries "
+                f"(not served, safe to ignore)"
+            )
+    checks.append(cache_integrity_check)
+
+    # Block on cache corruption immediately — do not run further checks
+    # if the cache is corrupt, to avoid subprocesses repairing it.
+    cache_blocks = cache_integrity_check.get("blocking", False)
+
+    # ------------------------------------------------------------------
     # Helper: run a subprocess and return exit code
+    # Sets TEAMLOOP_NO_CACHE=1 to prevent cache mutation during final-gate.
     # ------------------------------------------------------------------
     def _run_sub(cmd, timeout=30):
         nonlocal subprocess_invocations
         subprocess_invocations += 1
         try:
+            env = os.environ.copy()
+            env["TEAMLOOP_NO_CACHE"] = "1"
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout,
-                cwd=os.path.dirname(os.path.abspath(workspace))
+                cwd=os.path.dirname(os.path.abspath(workspace)),
+                env=env,
             )
             return proc.returncode, proc.stdout, proc.stderr
         except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError) as e:
@@ -5573,75 +5837,9 @@ def cmd_final_gate(args):
     # ------------------------------------------------------------------
     # Check 14: cache-integrity
     # ------------------------------------------------------------------
-    try:
-        from teamloop_cache import ValidationCache as SentinelCache
-        cache = SentinelCache(workspace)
-        cache_status = cache.integrity_check()
-        ci_status = cache_status.get("status", "UNKNOWN")
-        if ci_status in ("PASS", "EMPTY"):
-            checks.append({
-                "name": "cache-integrity",
-                "status": "PASS",
-                "description": "cache integrity check passed",
-                "blocking": True,
-            })
-            if cache_status.get("verifiedCount", 0) > 0:
-                checks[-1]["description"] = (
-                    f"cache integrity passed: {cache_status['verifiedCount']} verified, "
-                    f"{cache_status.get('legacyUntrustedCount', 0)} legacy"
-                )
-            if cache_status.get("legacyUntrustedCount", 0) > 0:
-                advisory_findings.append(
-                    f"cache has {cache_status['legacyUntrustedCount']} legacy-untrusted entries "
-                    f"(not served, safe to ignore)"
-                )
-        elif ci_status == "WARNING":
-            checks.append({
-                "name": "cache-integrity",
-                "status": "PASS",
-                "description": f"cache integrity warning: {cache_status.get('message', 'legacy entries present')}",
-                "blocking": False,
-            })
-            advisory_findings.append(cache_status.get("message", "cache has legacy or untrusted entries"))
-        elif ci_status == "CORRUPT":
-            checks.append({
-                "name": "cache-integrity",
-                "status": "FAIL",
-                "description": "cache corruption detected",
-                "blocking": True,
-                "reason": f"{cache_status.get('malformedLines', 0)} malformed JSON lines, "
-                          f"{cache_status.get('corruptedCount', 0)} integrity-hash failures",
-            })
-        elif ci_status == "FAIL":
-            checks.append({
-                "name": "cache-integrity",
-                "status": "FAIL",
-                "description": "cache integrity check failed",
-                "blocking": True,
-                "reason": cache_status.get("message", "cache integrity failure")[:500],
-            })
-        else:
-            checks.append({
-                "name": "cache-integrity",
-                "status": "SKIP",
-                "description": f"cache returned unexpected status: {ci_status}",
-                "blocking": False,
-            })
-    except ImportError:
-        checks.append({
-            "name": "cache-integrity",
-            "status": "SKIP",
-            "description": "cache module not available",
-            "blocking": False,
-        })
-    except Exception as exc:
-        checks.append({
-            "name": "cache-integrity",
-            "status": "FAIL",
-            "description": "cache integrity check error",
-            "blocking": True,
-            "reason": str(exc)[:500],
-        })
+    # Already performed as Check 0 (above), before any subprocess could
+    # mutate the cache.  This comment block is kept as a section marker
+    # for the check numbering.
 
     # Optimized execution contracts preserve the existing mandatory final
     # sentinel invariant.  A missing sentinel is not a legacy advisory once a
@@ -5758,8 +5956,10 @@ def cmd_final_gate(args):
     # ------------------------------------------------------------------
     # Compute overall status
     # ------------------------------------------------------------------
-    # FAIL if any check is FAIL
-    has_any_fail = any(c["status"] == "FAIL" for c in checks)
+    # Component-specific evidence states MISSING/STALE/INVALID are all
+    # failure-class outcomes for the aggregate final gate.
+    failure_statuses = {"FAIL", "MISSING", "STALE", "INVALID"}
+    has_any_fail = any(c.get("status") in failure_statuses for c in checks)
 
     # NOT_CONFIGURED only if at least one NON-BLOCKING check is NOT_CONFIGURED
     # (blocking NOT_CONFIGURED would be treated as FAIL)
@@ -5787,7 +5987,7 @@ def cmd_final_gate(args):
     current_head = ""
     try:
         branch_proc = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            ["git", "-C", project_root, "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True, text=True, timeout=10,
         )
         if branch_proc.returncode == 0:
@@ -5797,7 +5997,7 @@ def cmd_final_gate(args):
 
     try:
         head_proc = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "-C", project_root, "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=10,
         )
         if head_proc.returncode == 0:
@@ -5808,6 +6008,43 @@ def cmd_final_gate(args):
     # ------------------------------------------------------------------
     # Build result
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Determine execution mode
+    # ------------------------------------------------------------------
+    # "repository-baseline": no active task/run; baseline repo validation.
+    # "active-run": has a current task and/or run in progress.
+    # "final-handoff": completed task with execution contract.
+    execution_mode = "repository-baseline"
+    if contract_present:
+        execution_mode = "final-handoff"
+    elif state:
+        if state.get("currentTaskId") or state.get("currentRunId"):
+            execution_mode = "active-run"
+
+    # ------------------------------------------------------------------
+    # Compute summary counts
+    # ------------------------------------------------------------------
+    status_counts = {
+        "PASS": 0, "FAIL": 0, "SKIP": 0, "NOT_REQUIRED": 0,
+        "UNAVAILABLE": 0, "NOT_CONFIGURED": 0,
+        "MISSING": 0, "STALE": 0, "INVALID": 0,
+    }
+    for c in checks:
+        s = c.get("status", "")
+        if s in status_counts:
+            status_counts[s] += 1
+
+    summary = {
+        "total": len(checks),
+        "pass": status_counts["PASS"],
+        "fail": sum(status_counts[s] for s in ("FAIL", "MISSING", "STALE", "INVALID")),
+        "skip": status_counts["SKIP"],
+        "notRequired": status_counts["NOT_REQUIRED"],
+        "unavailable": status_counts["UNAVAILABLE"],
+        "notConfigured": status_counts["NOT_CONFIGURED"],
+        "stateBreakdown": status_counts,
+    }
+
     run_id = "run-{}-{}".format(
         datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S"),
         os.getpid()
@@ -5819,6 +6056,8 @@ def cmd_final_gate(args):
         "currentBranch": current_branch,
         "currentHead": current_head,
         "overallStatus": overall_status,
+        "executionMode": execution_mode,
+        "summary": summary,
         "checks": checks,
     }
     if advisory_findings:

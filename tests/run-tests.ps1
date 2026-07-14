@@ -35,7 +35,7 @@ function Resolve-TestSelection {
     }
 
     if ($Full) {
-        return # explicit full — no filtering
+        return # explicit full -- no filtering
     }
 
     if (-not [string]::IsNullOrWhiteSpace($env:TEAMLOOP_TEST_AUTO)) {
@@ -362,9 +362,9 @@ Test-Run "P0: CONTINUE_LOOP clears current-task.json" -Layers @("smoke") {
 }
 
 # ============================================================
-# P0 TEST 5: failed gate → validate-state PASS → next-action RUN_EXECUTOR
+# P0 TEST 5: failed gate -> validate-state PASS -> next-action RUN_EXECUTOR
 # ============================================================
-Test-Run "P0: failed gate → validate-state PASS → next-action RUN_EXECUTOR" -Layers @("smoke") {
+Test-Run "P0: failed gate -> validate-state PASS -> next-action RUN_EXECUTOR" -Layers @("smoke") {
     Init-TestWorkspace
 
     $taskJson = '{"schemaVersion":1,"taskId":"task-001","title":"Gate test","status":"READY","scope":["src/**"],"successCriteria":["Pass"]}'
@@ -1240,7 +1240,7 @@ Test-Run "Campaign: ReviewEvidence_ValidContent" -Layers @("integration") {
 Test-Run "Campaign: GuardNotConfigured" -Layers @("integration") {
     Init-TestWorkspace
     Remove-Item (Join-Path $script:workspaceAbs "policies\protected-paths.json") -Force -ErrorAction SilentlyContinue
-    # No protected-paths.json — should report NOT_CONFIGURED
+    # No protected-paths.json -- should report NOT_CONFIGURED
     $result = Invoke-PythonScriptWithExit "check-guard-integrity"
     $output = $result.output -join "`n"
     if ($output -notmatch '"NOT_CONFIGURED"') {
@@ -1274,10 +1274,10 @@ Test-Run "Campaign: MojibakeDetection" -Layers @("contract") {
     }
     $content = Get-Content $teamloopFile -Raw -Encoding UTF8
     if ($content -notmatch '\u2260') {
-        Write-Host "  FAIL: TEAMLOOP.md should contain the ≠ (U+2260) symbol" -ForegroundColor Red
+        Write-Host "  FAIL: TEAMLOOP.md should contain the U+2260 NOT EQUAL TO symbol" -ForegroundColor Red
         return $false
     }
-    if ($content -match 'тЙа|тАФ|тЖТ|тЦ╝') {
+    if ($content -match '(?:\u0442\u0419\u0430|\u0442\u0410\u0424|\u0442\u0416\u0422|\u0442\u0426\u255D)') {
         Write-Host "  FAIL: TEAMLOOP.md contains known encoding corruption" -ForegroundColor Red
         return $false
     }

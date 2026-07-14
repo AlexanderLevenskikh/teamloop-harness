@@ -33,7 +33,10 @@ fi
 
 echo "Restoring executable permissions in $SCRIPTS_DIR..."
 find "$SCRIPTS_DIR" -name '*.sh' -exec chmod +x {} +
-echo "Done. All .sh files in $SCRIPTS_DIR are now executable."
+# Extensionless command shims (for example scripts/validate-state) are also
+# part of the supported CLI surface and lose mode bits in ZIP archives.
+find "$SCRIPTS_DIR" -maxdepth 1 -type f ! -name '*.*' -exec chmod +x {} +
+echo "Done. Shell wrappers and extensionless command shims are executable."
 
 # Optional: verify python is available
 if command -v python3 &>/dev/null; then
