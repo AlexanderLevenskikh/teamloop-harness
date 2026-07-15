@@ -29,6 +29,8 @@ All scripts have `.sh` and `.ps1` variants. See [RUNTIME.md](RUNTIME.md) for ful
 
 YourAITeam 0.5.0-alpha.1 provides a front door that proposes the **minimum sufficient AI team** for a task before subagents start spending tokens. The user can negotiate the token ceiling, role grades, engagement, and removed coverage; the accepted contract can then be materialized for Codex or OpenCode.
 
+For Codex, materialize directly into the repository root with `--codex-model-mode inherit`, run `scripts/codex-doctor`, and start a new trusted Codex task. The adapter now supplies full lifecycle skill guidance, accepted-role enforcement, model compatibility repair, and non-destructive `.codex/config.toml` merging.
+
 ```bash
 bash scripts/your-ai-team.sh propose --backend codex \
   --task "Почини flaky Playwright тест" \
@@ -160,3 +162,7 @@ python scripts/teamloop-core.py boundary-status --workspace .teamloop --boundary
 ```
 
 The report separates draft coverage from receipt-verified accepted progress.
+
+## Codex parity
+
+Codex materialization now includes project custom agents, an accepted-team skill, a managed root Delivery Manager block in `AGENTS.md`, non-destructive project config merging, model-inheritance compatibility, `codex-doctor`, and an opt-in read-only `codex-smoke`. Use `inherit` as the default model mode for ChatGPT-account compatibility.

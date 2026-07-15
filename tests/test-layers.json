@@ -1138,6 +1138,11 @@
       "runtime",
       "integration",
       "full"
+    ],
+    "test_269": [
+      "contract",
+      "integration",
+      "full"
     ]
   }
 }

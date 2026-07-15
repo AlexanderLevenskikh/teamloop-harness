@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "codex",
+  "version": "1.0.0",
+  "description": "Project-scoped Codex adapter for YourAITeam custom agents, skills, model compatibility, and deterministic lifecycle enforcement",
+  "requiredCommands": [
+    "init-workspace",
+    "next-action",
+    "apply-transition",
+    "write-event",
+    "check-scope",
+    "run-gates",
+    "validate-state",
+    "validate-task",
+    "validate-artifact",
+    "run-sentinel",
+    "check-guard-integrity",
+    "final-gate",
+    "prepare-execution",
+    "validate-execution-contract",
+    "record-progress",
+    "route-role",
+    "boundary-create",
+    "boundary-measure",
+    "boundary-status",
+    "boundary-decide",
+    "boundary-complete-improvement",
+    "boundary-verify",
+    "boundary-lock-status",
+    "team-propose",
+    "team-negotiate",
+    "team-accept",
+    "team-materialize",
+    "team-codex-doctor",
+    "team-codex-smoke"
+  ],
+  "optionalCommands": [
+    "cache-inspect",
+    "cache-clear",
+    "cache-stats",
+    "test-select",
+    "release-info",
+    "compat-check",
+    "schema-lint",
+    "dogfood",
+    "performance-report",
+    "record-performance"
+  ],
+  "providedSkills": [
+    {
+      "name": "your-ai-team",
+      "file": "adapters/codex/skills/your-ai-team/SKILL.md"
+    }
+  ],
+  "supportedProfiles": [
+    "generic-software-task"
+  ],
+  "supportedTransitions": [
+    "RUN_DISCOVERY",
+    "RUN_RESEARCHER",
+    "RUN_RESEARCH_LEAD",
+    "RUN_TASK_SLICER",
+    "RUN_EXECUTOR",
+    "RETRY_EXECUTOR",
+    "RUN_CHANGE_REVIEWER",
+    "RUN_GATEKEEPER",
+    "RUN_WATCHDOG",
+    "CONTINUE_LOOP",
+    "SET_SAFE_CHECKPOINT",
+    "SET_HUMAN_REQUIRED",
+    "GATE_FAILED",
+    "REQUEST_CHANGES",
+    "SET_DONE",
+    "RUN_QUALITY_VALUE_MANAGER"
+  ],
+  "capabilities": {
+    "roleDispatch": true,
+    "transitionEngine": true,
+    "gateRunner": true,
+    "researchSupport": true,
+    "memorySupport": false,
+    "dynamicTeamComposition": true,
+    "budgetNegotiation": true,
+    "qualityValueBoundaryManagement": true,
+    "advancementReceiptLock": true,
+    "projectScopedCustomAgents": true,
+    "modelCompatibilityDoctor": true,
+    "rootDeliveryManagerGuidance": true,
+    "liveCompatibilitySmoke": true
+  },
+  "outputFormat": {
+    "commandOutput": "both",
+    "errorHandling": "structured"
+  }
+}

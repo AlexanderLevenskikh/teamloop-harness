@@ -6219,6 +6219,25 @@ test_268() {
 test_run "Sentinel: CachePreflightAndFreshRetry" test_268
 
 # ============================================================
+# TEST 269: Codex materialization, model compatibility, doctor, and lifecycle skill
+# ============================================================
+test_269() {
+    (cd "$PROJECT_ROOT" && "$PY" -m unittest tests.test_your_ai_team) || return 1
+    local adapter_result
+    adapter_result=$(cd "$PROJECT_ROOT" && "$PY" scripts/teamloop-core.py adapter-verify --json) || { echo "$adapter_result"; return 1; }
+    "$PY" - "$adapter_result" <<'PYCODE'
+import json,sys
+data=json.loads(sys.argv[1])
+assert data["status"]=="PASS",data
+assert data["adapterCount"]>=2,data
+assert any(x["name"]=="schema-validate-codex" and x["status"]=="PASS" for x in data["checks"]),data
+assert any(x["name"]=="skills-exist-codex" and x["status"]=="PASS" for x in data["checks"]),data
+PYCODE
+}
+
+test_run "Codex: FullAdapterCompatibility" test_269
+
+# ============================================================
 # SUMMARY
 # ============================================================
 echo ""

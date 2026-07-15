@@ -334,6 +334,78 @@ bash scripts/your-ai-team.sh propose \
 
 Для Codex используйте `--backend codex`.
 
+### Полный путь для Codex
+
+Codex должен видеть сгенерированные файлы в корне репозитория. Не материализуйте команду только в `.teamloop/generated/codex`, иначе новый Codex-сеанс не обнаружит project agents и skill автоматически.
+
+```powershell
+.\scripts\your-ai-team.ps1 propose `
+  --backend codex `
+  --task "Проверь README и найди одну неточность. Код не меняй." `
+  --max-tokens 14000 `
+  --max-roles 3 `
+  --preference cost `
+  --output .teamloop\team\codex-proposal.json
+
+.\scripts\your-ai-team.ps1 accept `
+  --proposal .teamloop\team\codex-proposal.json `
+  --output .teamloop\team\codex-accepted.json
+
+.\scripts\your-ai-team.ps1 materialize `
+  --proposal .teamloop\team\codex-accepted.json `
+  --backend codex `
+  --output-dir . `
+  --codex-model-mode inherit
+
+.\scripts\codex-doctor.ps1 --project-root .
+```
+
+`inherit` — рекомендуемый режим совместимости. Custom agents не пинят конкретную модель и наследуют модель, доступную текущему Codex account.
+
+Дополнительные режимы:
+
+| Режим | Поведение |
+|---|---|
+| `inherit` | Не пишет `model` в agent TOML; самый безопасный вариант для ChatGPT login. |
+| `chatgpt` | economy → Luna, balanced → Terra, premium → Sol. |
+| `explicit` | Использует переданные `--codex-*-model`; подходит для управляемого API/provider setup. |
+
+После materialize:
+
+1. отметьте repository как trusted в Codex;
+2. откройте **новый** Codex task из корня repository;
+3. вызовите `$your-ai-team` или выберите skill через `/skills`;
+4. убедитесь, что root thread действует как Delivery Manager;
+5. попросите запустить только роли из `your-ai-team-contract.json`;
+6. проверяйте agent threads через `/agent`.
+
+Дешёвый smoke:
+
+```text
+$your-ai-team
+
+Используй принятый team contract. Ничего не редактируй.
+Запусти только custom agent writer, попроси его найти одну конкретную
+неточность в README, дождись результата и сообщи имя thread.
+```
+
+Если subagent завершился с ошибкой о неподдерживаемой модели:
+
+```powershell
+.\scripts\codex-doctor.ps1 --project-root . --fix-models inherit
+```
+
+Затем закройте текущий Codex task и откройте новый. Не тратьте токены на диагностику WSL, кавычек или временных скриптов до выполнения doctor.
+
+Материализация также создаёт:
+
+- `.codex/config.toml` с ограниченными `max_threads` и `max_depth = 1`;
+- `.codex/agents/*.toml`;
+- `.agents/skills/your-ai-team/SKILL.md`;
+- `your-ai-team-contract.json`;
+- `your-ai-team-codex.json` с provenance и model policy;
+- `CODEX_SETUP.md`.
+
 ---
 
 ## 9. Какие статусы можно увидеть
@@ -483,3 +555,22 @@ bash scripts/validate-scripts.sh --root .
 - [Fast / standard / audit](docs/FAST_EXECUTION.md)
 - [Quality/value boundary](docs/QUALITY_VALUE_BOUNDARY.ru.md)
 - [Тестирование](TESTING.md)
+
+
+### Дешёвая живая проверка Codex
+
+Статический doctor ничего не тратит. После него можно один раз запустить **платный**, но маленький read-only smoke:
+
+```powershell
+.\scripts\codex-smoke.ps1 -ProjectRoot . -Role writer -Json
+```
+
+Он запускает `codex exec` в `read-only`, требует ровно одного принятого custom agent, не разрешает менять файлы и отдельно распознаёт ошибку несовместимой модели. Это compatibility smoke, а не доказательство готовности результата.
+
+Если появилось `UNSUPPORTED_AGENT_MODEL`:
+
+```powershell
+.\scripts\codex-doctor.ps1 -ProjectRoot . -FixModels inherit
+```
+
+Затем полностью перезапустите Codex-сессию.

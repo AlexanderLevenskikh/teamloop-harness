@@ -149,6 +149,22 @@
         "advancementReceiptLock": {
           "type": "boolean",
           "description": "Adapter respects fingerprint-bound acceptance receipts before advancement"
+        },
+        "projectScopedCustomAgents": {
+          "type": "boolean",
+          "description": "Adapter can materialize project-scoped custom agents"
+        },
+        "modelCompatibilityDoctor": {
+          "type": "boolean",
+          "description": "Adapter can diagnose and repair model compatibility pins"
+        },
+        "rootDeliveryManagerGuidance": {
+          "type": "boolean",
+          "description": "Adapter provides persistent root-thread delivery-manager guidance"
+        },
+        "liveCompatibilitySmoke": {
+          "type": "boolean",
+          "description": "Adapter provides an opt-in live backend compatibility smoke"
         }
       },
       "additionalProperties": false
@@ -176,6 +192,30 @@
         }
       },
       "additionalProperties": false
+    },
+    "providedSkills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "file"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Skill name"
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Relative path to SKILL.md"
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "Skills provided by this adapter"
     }
   },
   "additionalProperties": false

@@ -334,6 +334,69 @@ Then use `negotiate`, `accept`, and `materialize` in the same way.
 
 For Codex, use `--backend codex`.
 
+### Complete Codex path
+
+Codex must see generated project files at the repository root. Do not materialize only under `.teamloop/generated/codex`; a new Codex task will not automatically discover agents and skills there.
+
+```powershell
+.\scripts\your-ai-team.ps1 propose `
+  --backend codex `
+  --task "Check README and find one concrete inaccuracy. Do not edit files." `
+  --max-tokens 14000 `
+  --max-roles 3 `
+  --preference cost `
+  --output .teamloop\team\codex-proposal.json
+
+.\scripts\your-ai-team.ps1 accept `
+  --proposal .teamloop\team\codex-proposal.json `
+  --output .teamloop\team\codex-accepted.json
+
+.\scripts\your-ai-team.ps1 materialize `
+  --proposal .teamloop\team\codex-accepted.json `
+  --backend codex `
+  --output-dir . `
+  --codex-model-mode inherit
+
+.\scripts\codex-doctor.ps1 --project-root .
+```
+
+`inherit` is the compatibility default. Custom agents do not pin a model and inherit one supported by the active Codex account.
+
+| Mode | Behavior |
+|---|---|
+| `inherit` | Omits `model` in agent TOML; safest for ChatGPT sign-in. |
+| `chatgpt` | economy → Luna, balanced → Terra, premium → Sol. |
+| `explicit` | Uses `--codex-*-model` overrides for managed API/provider setups. |
+
+After materialization:
+
+1. trust the repository in Codex;
+2. start a **new** Codex task from the repository root;
+3. invoke `$your-ai-team` or select it through `/skills`;
+4. keep the root thread as Delivery Manager;
+5. spawn only roles listed in `your-ai-team-contract.json`;
+6. inspect agent threads with `/agent`.
+
+Cheap smoke prompt:
+
+```text
+$your-ai-team
+
+Use the accepted team contract. Do not edit files.
+Spawn only custom agent writer, ask it to find one concrete README
+inaccuracy, wait for the result, and report the thread name.
+```
+
+When a subagent fails because a model is unsupported:
+
+```powershell
+.\scripts\codex-doctor.ps1 --project-root . --fix-models inherit
+```
+
+Then close the current Codex task and start a new one. Do not spend agent tokens debugging WSL, quoting, or temporary scripts before running the doctor.
+
+Materialization creates `.codex/config.toml`, `.codex/agents/*.toml`, the project skill, accepted contract, provenance manifest, and `CODEX_SETUP.md`.
+
 ---
 
 ## 9. Statuses you will see
@@ -483,3 +546,22 @@ That path gives the best balance between useful autonomy and honest stopping beh
 - [Fast / standard / audit](docs/FAST_EXECUTION.md)
 - [Quality/value boundary](docs/QUALITY_VALUE_BOUNDARY.md)
 - [Testing](TESTING.md)
+
+
+### Cheap live Codex check
+
+The static doctor consumes no model usage. After it passes, you may run one **paid but small** read-only smoke:
+
+```powershell
+.\scripts\codex-smoke.ps1 -ProjectRoot . -Role writer -Json
+```
+
+It runs `codex exec` in a read-only sandbox, requires exactly one accepted custom agent, rejects file changes, and classifies unsupported-model failures explicitly. This is compatibility evidence, not delivery acceptance.
+
+When it reports `UNSUPPORTED_AGENT_MODEL`:
+
+```powershell
+.\scripts\codex-doctor.ps1 -ProjectRoot . -FixModels inherit
+```
+
+Then restart the Codex task completely.

@@ -221,3 +221,39 @@ TEAMLOOP_TEST_FROM=267 TEAMLOOP_TEST_TO=268 PY=python3 bash tests/run-tests.sh
 
 The regression proves that authoritative policy/state changes invalidate sentinel cache keys and that a cached non-PASS finding is rechecked fresh once. The runtime reports `STALE_ENTRY_RECOMPUTED` instead of forcing an agent to diagnose WSL paths or clear cache manually.
 
+
+## Codex adapter compatibility
+
+Run the focused suite:
+
+```bash
+python -m unittest tests.test_your_ai_team
+```
+
+It verifies default model inheritance, optional Sol/Terra/Luna pins, non-destructive project config merge, required custom-agent TOML fields, full delivery lifecycle skill guidance, provenance manifest, and doctor repair of incompatible model pins.
+
+Static doctor smoke:
+
+```bash
+python scripts/codex_support.py --project-root <materialized-project> --no-cli
+```
+
+A live Codex subagent smoke is intentionally opt-in because it consumes plan credits/tokens and requires an installed authenticated Codex client.
+
+## Codex live compatibility smoke
+
+Static checks:
+
+```powershell
+.\scripts\codex-doctor.ps1 -ProjectRoot .
+python -m unittest tests.test_your_ai_team
+python scripts/teamloop-core.py adapter-verify --json
+```
+
+Optional paid live smoke:
+
+```powershell
+.\scripts\codex-smoke.ps1 -ProjectRoot . -Role writer -Json
+```
+
+Do not run the live smoke in every unit-test job. It consumes Codex usage and is intended for release or environment compatibility checks.

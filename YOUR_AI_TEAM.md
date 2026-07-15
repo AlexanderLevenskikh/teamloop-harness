@@ -40,11 +40,14 @@ bash scripts/your-ai-team.sh accept \
 bash scripts/your-ai-team.sh materialize \
   --proposal .teamloop/team/accepted.json \
   --backend codex \
-  --output-dir .teamloop/generated/codex
+  --output-dir . \
+  --codex-model-mode inherit
+
+bash scripts/codex-doctor.sh --project-root .
 ```
 
 For OpenCode, use `--backend opencode`. In the repository OpenCode config, call `/your-ai-team`.
-In Codex, invoke `$your-ai-team` or select the skill through `/skills`.
+In Codex, materialize into the repository root, restart the Codex task, then invoke `$your-ai-team` or select the skill through `/skills`. The default `inherit` model mode avoids account-specific model-pin failures; `chatgpt` maps grades to Luna/Terra/Sol.
 
 ## What “price” means
 

@@ -1728,6 +1728,23 @@ Test-Run "Sentinel: CachePreflightAndFreshRetry" -Layers @("runtime", "integrati
     }
 }
 
+Test-Run "Codex: FullAdapterCompatibility" -Layers @("contract", "integration") {
+    Push-Location $projectRoot
+    try {
+        & python -m unittest tests.test_your_ai_team
+        if ($LASTEXITCODE -ne 0) { return $false }
+        $raw = & python scripts/teamloop-core.py adapter-verify --json 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  FAIL: adapter-verify failed: $raw" -ForegroundColor Red
+            return $false
+        }
+        $data = $raw | ConvertFrom-Json
+        return ($data.status -eq "PASS" -and $data.adapterCount -ge 2)
+    } finally {
+        Pop-Location
+    }
+}
+
 # ============================================================
 # SUMMARY
 # ============================================================

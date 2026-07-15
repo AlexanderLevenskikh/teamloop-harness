@@ -524,36 +524,262 @@ def _toml_quote(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def materialize_codex(proposal: Dict[str, Any], output: str) -> Dict[str, Any]:
+CODEX_CHATGPT_GRADE_MODELS = {
+    "economy": "gpt-5.6-luna",
+    "balanced": "gpt-5.6-terra",
+    "premium": "gpt-5.6-sol",
+}
+CODEX_NICKNAMES = {
+    "delivery-manager": ["Navigator", "Harbor", "Conductor"],
+    "quality-value-manager": ["Balance", "Ledger", "Compass"],
+    "explorer": ["Scout", "Maple", "Trace"],
+    "researcher": ["Curie", "Sagan", "Turing"],
+    "research-reviewer": ["Skeptic", "Verifier", "Delta"],
+    "vibe-coder": ["Spark", "Pixel", "Tempo"],
+    "implementer": ["Builder", "Forge", "Patch"],
+    "senior-engineer": ["Atlas", "Keystone", "Anchor"],
+    "architect": ["Blueprint", "Arch", "Frame"],
+    "reviewer": ["Sentinel", "Lens", "Prism"],
+    "verifier": ["Proof", "Check", "Gauge"],
+    "security-reviewer": ["Shield", "Aegis", "Vault"],
+    "writer": ["Schrodinger", "Quill", "Draft"],
+    "visual-checker": ["Canvas", "Focus", "Iris"],
+}
+
+CODEX_GUIDANCE_BEGIN = "<!-- YOUR_AI_TEAM_CODEX_BEGIN -->"
+CODEX_GUIDANCE_END = "<!-- YOUR_AI_TEAM_CODEX_END -->"
+
+
+
+def _codex_root_guidance(proposal: Dict[str, Any]) -> str:
+    accepted_roles = ", ".join(role["roleId"].replace("-", "_") for role in proposal["team"])
+    fingerprint = proposal.get("acceptance", {}).get("acceptedFingerprint") or proposal.get("fingerprint") or "UNKNOWN"
+    return f"""{CODEX_GUIDANCE_BEGIN}
+## YourAITeam Codex execution contract
+
+- When the user invokes `$your-ai-team` or asks to use the accepted team, the root Codex thread acts as the Delivery Manager.
+- Read `your-ai-team-contract.json`; use only accepted roles: {accepted_roles}.
+- Do not spawn agents before explicit acceptance. Keep subagent depth at 1 and wait for required threads.
+- A failed thread is failed work, not completion. If an agent model is unsupported, run `scripts/codex-doctor` with `--fix-models inherit`, restart Codex, and retry once.
+- Use deterministic `.teamloop` routing, gates, quality/value boundary receipts, sentinel, and final gate before claiming completion.
+- `SAFE_CHECKPOINT` is not automatically `DONE`; ticket closure or a manager decision alone is not accepted user value.
+- Accepted contract fingerprint: `{fingerprint}`.
+{CODEX_GUIDANCE_END}"""
+
+
+def _merge_codex_agents_guidance(path: Path, proposal: Dict[str, Any]) -> None:
+    """Append or replace a small managed Codex block without deleting project guidance."""
+    guidance = _codex_root_guidance(proposal)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    pattern = re.compile(
+        re.escape(CODEX_GUIDANCE_BEGIN) + r".*?" + re.escape(CODEX_GUIDANCE_END),
+        re.DOTALL,
+    )
+    if pattern.search(existing):
+        merged = pattern.sub(guidance, existing)
+    else:
+        merged = existing.rstrip()
+        if merged:
+            merged += "\n\n"
+        merged += guidance
+    path.write_text(merged.rstrip() + "\n", encoding="utf-8")
+
+
+def _merge_codex_config(path: Path, *, max_threads: int, max_depth: int = 1) -> None:
+    """Merge bounded [agents] settings without overwriting unrelated project config."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(
+            f"[agents]\nmax_threads = {max_threads}\nmax_depth = {max_depth}\n",
+            encoding="utf-8",
+        )
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    section_start = None
+    section_end = len(lines)
+    for index, line in enumerate(lines):
+        match = re.match(r"^\s*\[([^]]+)\]\s*$", line)
+        if not match:
+            continue
+        if match.group(1).strip() == "agents":
+            section_start = index
+            continue
+        if section_start is not None and index > section_start:
+            section_end = index
+            break
+    if section_start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(["[agents]", f"max_threads = {max_threads}", f"max_depth = {max_depth}"])
+    else:
+        found_threads = False
+        found_depth = False
+        updated = []
+        for index, line in enumerate(lines):
+            if section_start < index < section_end and re.match(r"^\s*max_threads\s*=", line):
+                updated.append(f"max_threads = {max_threads}")
+                found_threads = True
+            elif section_start < index < section_end and re.match(r"^\s*max_depth\s*=", line):
+                updated.append(f"max_depth = {max_depth}")
+                found_depth = True
+            else:
+                updated.append(line)
+        additions = []
+        if not found_threads:
+            additions.append(f"max_threads = {max_threads}")
+        if not found_depth:
+            additions.append(f"max_depth = {max_depth}")
+        if additions:
+            updated[section_end:section_end] = additions
+        lines = updated
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _codex_model(role: Dict[str, Any], model_mode: str, overrides: Optional[Dict[str, str]]) -> Optional[str]:
+    overrides = overrides or {}
+    if role["grade"] in overrides and overrides[role["grade"]]:
+        return overrides[role["grade"]]
+    if model_mode == "inherit":
+        return None
+    if model_mode == "chatgpt":
+        return CODEX_CHATGPT_GRADE_MODELS[role["grade"]]
+    if model_mode == "explicit":
+        raise ValueError(f"explicit Codex model mode requires a model for grade {role['grade']}")
+    raise ValueError("codex model mode must be inherit, chatgpt, or explicit")
+
+
+def _codex_skill(proposal: Dict[str, Any], role_names: str) -> str:
+    return f"""---
+name: your-ai-team
+description: Propose, negotiate, accept, and execute the minimum sufficient Codex agent team under an explicit budget and YourAITeam runtime gates. Use before multi-agent delegation or when resuming an accepted team contract.
+---
+
+# YourAITeam for Codex
+
+You are the root Delivery Manager. Do not spawn a subagent before an explicit accepted contract exists.
+
+## Proposal and negotiation
+
+Use the platform-native wrapper for the current shell:
+
+- PowerShell: `.\\scripts\\your-ai-team.ps1 propose --backend codex --task \"<task>\" --output .teamloop\\team\\proposal.json`
+- Bash/WSL: `bash scripts/your-ai-team.sh propose --backend codex --task \"<task>\" --output .teamloop/team/proposal.json`
+
+Show roles, grades, expected token range, coordination overhead, removed coverage, residual risks, and one cheaper alternative. Translate user bargaining through `negotiate`. Accept only after an explicit yes.
+
+## Materialization
+
+Materialize into the repository root, not under `.teamloop/generated`:
+
+- PowerShell: `.\\scripts\\your-ai-team.ps1 materialize --proposal .teamloop\\team\\accepted.json --backend codex --output-dir . --codex-model-mode inherit`
+- Bash/WSL: `bash scripts/your-ai-team.sh materialize --proposal .teamloop/team/accepted.json --backend codex --output-dir . --codex-model-mode inherit`
+
+`inherit` is the compatibility default: child agents inherit a model supported by the active Codex account. Use `chatgpt` only when the account supports the generated Sol/Terra/Luna pins.
+
+## Execution contract
+
+1. Read `your-ai-team-contract.json` and use only accepted roles: {role_names}.
+2. Keep subagent depth at 1. Never allow recursive hiring.
+3. Run read-heavy independent work in parallel only when it saves time; serialize write-heavy roles.
+4. Wait for every required role and collect a concise evidence summary. A failed agent thread is not completed work.
+5. If a custom agent reports an unsupported model, do not investigate WSL, paths, or temporary scripts. Run `codex-doctor --fix-models inherit`, restart the Codex task, and retry once.
+6. Before implementation, initialize or resume `.teamloop`, then use deterministic `next-action` and runtime routing rather than inventing lifecycle transitions.
+7. After deterministic gates pass, obey the quality/value boundary lock. The quality-value-manager may read `boundary-status` and record one decision; it cannot edit code, policy, metrics, evidence, history, or receipts.
+8. Before claiming completion, run current validation, sentinel when required, boundary verification, and `final-gate`. Report PASS, FAIL, SKIP, and NOT_REQUIRED honestly.
+9. `SAFE_CHECKPOINT` is not automatically `DONE`; stopped or budget-exhausted work must retain visible limitations.
+10. Never treat role invocation, ticket closure, generated files, or a manager decision JSON as accepted user value.
+"""
+
+
+def materialize_codex(
+    proposal: Dict[str, Any],
+    output: str,
+    *,
+    model_mode: str = "inherit",
+    model_overrides: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     root = Path(output)
     agents_dir = root / ".codex" / "agents"
     skill_dir = root / ".agents" / "skills" / "your-ai-team"
     agents_dir.mkdir(parents=True, exist_ok=True)
     skill_dir.mkdir(parents=True, exist_ok=True)
     worker_roles = [r for r in proposal["team"] if r["roleId"] != "delivery-manager"]
-    config = "[agents]\nmax_threads = %d\nmax_depth = 1\n\n" % max(1, proposal["budget"]["maxConcurrentWorkers"])
-    (root / ".codex" / "config.toml").parent.mkdir(parents=True, exist_ok=True)
-    (root / ".codex" / "config.toml").write_text(config, encoding="utf-8")
+    _merge_codex_config(
+        root / ".codex" / "config.toml",
+        max_threads=max(1, proposal["budget"]["maxConcurrentWorkers"]),
+        max_depth=1,
+    )
+    _merge_codex_agents_guidance(root / "AGENTS.md", proposal)
+    manifest_agents = []
     for role in proposal["team"]:
-        model = "gpt-5.6-terra" if role["grade"] == "economy" else "gpt-5.6"
-        content = "\n".join([
-            f"name = {_toml_quote(role['roleId'].replace('-', '_'))}",
+        model = _codex_model(role, model_mode, model_overrides)
+        agent_name = role["roleId"].replace("-", "_")
+        lines = [
+            f"name = {_toml_quote(agent_name)}",
             f"description = {_toml_quote(role['reason'])}",
-            f"model = {_toml_quote(model)}",
+        ]
+        if model:
+            lines.append(f"model = {_toml_quote(model)}")
+        lines.extend([
             f"model_reasoning_effort = {_toml_quote(role['reasoningEffort'])}",
             f"sandbox_mode = {_toml_quote(role['sandbox'])}",
+            f"nickname_candidates = {_toml_quote(CODEX_NICKNAMES.get(role['roleId'], [role['title']]))}",
             "developer_instructions = \"\"\"",
             _role_prompt(role, proposal).replace('"""', "'''").rstrip(),
             "\"\"\"",
             "",
         ])
-        (agents_dir / f"{role['roleId']}.toml").write_text(content, encoding="utf-8")
+        (agents_dir / f"{role['roleId']}.toml").write_text("\n".join(lines), encoding="utf-8")
+        manifest_agents.append({
+            "roleId": role["roleId"],
+            "agentName": agent_name,
+            "grade": role["grade"],
+            "model": model or "INHERIT",
+            "reasoningEffort": role["reasoningEffort"],
+            "sandbox": role["sandbox"],
+        })
     role_names = ", ".join(r["roleId"].replace("-", "_") for r in worker_roles) or "no subagents"
-    skill = f"""---\nname: your-ai-team\ndescription: Propose, negotiate, accept, and run the minimum sufficient AI team for a task under an explicit token budget. Use before delegating work to multiple Codex agents.\n---\n\n1. Before spawning any subagent, run `bash scripts/your-ai-team.sh propose --backend codex --task \"<task>\"` or inspect an accepted proposal supplied by the user.\n2. Show the user role composition, expected token range, coordination overhead, residual risks, and at least one cheaper trade-off.\n3. Negotiate until the user explicitly accepts. Never interpret silence as acceptance.\n4. After acceptance, use only the accepted roles: {role_names}.\n5. Keep `max_depth = 1`; do not allow recursive hiring.\n6. The delivery manager owns the result and stopping decision. Metrics are evidence, not the target.\n7. Do not spawn roles that are absent from the accepted contract.\n"""
-    (skill_dir / "SKILL.md").write_text(skill, encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text(_codex_skill(proposal, role_names), encoding="utf-8")
     (root / "your-ai-team-contract.json").write_text(json.dumps(proposal, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return {"backend": "codex", "output": str(root), "files": [str(p.relative_to(root)) for p in sorted(root.rglob("*")) if p.is_file()]}
+    materialization = {
+        "schemaVersion": 1,
+        "backend": "codex",
+        "contractFingerprint": proposal.get("fingerprint"),
+        "acceptedFingerprint": proposal.get("acceptance", {}).get("acceptedFingerprint"),
+        "modelMode": model_mode,
+        "modelPolicy": "inherit active Codex model" if model_mode == "inherit" else (model_overrides or CODEX_CHATGPT_GRADE_MODELS),
+        "maxThreads": max(1, proposal["budget"]["maxConcurrentWorkers"]),
+        "maxDepth": 1,
+        "agents": manifest_agents,
+        "rootDeliveryManager": True,
+        "rootGuidance": {"file": "AGENTS.md", "managedBlock": "YOUR_AI_TEAM_CODEX"},
+        "runtimeAuthority": "YourAITeam deterministic gates, boundary receipts, and final-gate",
+    }
+    (root / "your-ai-team-codex.json").write_text(json.dumps(materialization, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    setup = """# Codex setup
 
+1. Review the managed YourAITeam block appended to `AGENTS.md`. Existing project guidance is preserved.
+2. Trust the repository in Codex so project `.codex/` configuration and `AGENTS.md` are loaded.
+3. Start a new Codex task from this repository root.
+4. Run `python scripts/codex_support.py --project-root .` or the platform wrapper.
+5. Invoke `$your-ai-team` and use `your-ai-team-contract.json`.
+6. For the cheapest live check, run `scripts/codex-smoke` (or its PowerShell wrapper).
+
+If a model pin is unsupported for ChatGPT authentication, run:
+
+```text
+python scripts/codex_support.py --project-root . --fix-models inherit
+```
+
+Then restart the Codex task because project instructions and agent configuration are loaded at task start.
+"""
+    (root / "CODEX_SETUP.md").write_text(setup, encoding="utf-8")
+    return {
+        "backend": "codex",
+        "output": str(root),
+        "modelMode": model_mode,
+        "files": [str(p.relative_to(root)) for p in sorted(root.rglob("*")) if p.is_file()],
+    }
 
 def materialize_opencode(proposal: Dict[str, Any], output: str) -> Dict[str, Any]:
     root = Path(output)
@@ -622,11 +848,23 @@ def materialize_opencode(proposal: Dict[str, Any], output: str) -> Dict[str, Any
     return {"backend": "opencode", "output": str(root), "files": [str(p.relative_to(root)) for p in sorted(root.rglob("*")) if p.is_file()]}
 
 
-def materialize(proposal: Dict[str, Any], backend: str, output: str) -> Dict[str, Any]:
+def materialize(
+    proposal: Dict[str, Any],
+    backend: str,
+    output: str,
+    *,
+    codex_model_mode: str = "inherit",
+    codex_model_overrides: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     if proposal.get("status") != "ACCEPTED":
         raise ValueError("proposal must be ACCEPTED before materialization")
     if backend == "codex":
-        return materialize_codex(proposal, output)
+        return materialize_codex(
+            proposal,
+            output,
+            model_mode=codex_model_mode,
+            model_overrides=codex_model_overrides,
+        )
     if backend == "opencode":
         return materialize_opencode(proposal, output)
     raise ValueError("backend must be codex or opencode")

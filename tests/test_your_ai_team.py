@@ -2,12 +2,16 @@ import json
 import os
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import your_ai_team as team
+import codex_support
 
 
 class YourAITeamTests(unittest.TestCase):
@@ -132,6 +136,119 @@ class YourAITeamTests(unittest.TestCase):
             self.assertIn("max_depth = 1", config)
             self.assertTrue((Path(td) / ".agents" / "skills" / "your-ai-team" / "SKILL.md").exists())
             self.assertTrue(any(f.startswith(".codex/agents/") for f in result["files"]))
+
+    def test_codex_default_inherits_parent_model_for_chatgpt_compatibility(self):
+        p = team.accept(team.propose("Обнови README", backend="codex"))
+        with tempfile.TemporaryDirectory() as td:
+            result = team.materialize(p, "codex", td)
+            self.assertEqual("inherit", result["modelMode"])
+            agent_files = list((Path(td) / ".codex" / "agents").glob("*.toml"))
+            self.assertTrue(agent_files)
+            for path in agent_files:
+                data = tomllib.loads(path.read_text(encoding="utf-8"))
+                self.assertNotIn("model", data)
+                self.assertNotEqual("gpt-5.6", data.get("model"))
+
+    def test_codex_chatgpt_mode_uses_sol_terra_luna_not_generic_model(self):
+        p = team.accept(team.propose("Почини production баг", backend="codex"))
+        with tempfile.TemporaryDirectory() as td:
+            team.materialize(p, "codex", td, codex_model_mode="chatgpt")
+            models = set()
+            for path in (Path(td) / ".codex" / "agents").glob("*.toml"):
+                data = tomllib.loads(path.read_text(encoding="utf-8"))
+                models.add(data["model"])
+                self.assertIn(data["model"], set(team.CODEX_CHATGPT_GRADE_MODELS.values()))
+                self.assertNotEqual("gpt-5.6", data["model"])
+            self.assertTrue(models)
+
+    def test_codex_materialization_merges_existing_project_config(self):
+        p = team.accept(team.propose("Обнови README", backend="codex"))
+        with tempfile.TemporaryDirectory() as td:
+            config_path = Path(td) / ".codex" / "config.toml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                'model = "gpt-5.4"\napproval_policy = "on-request"\n\n[agents]\nmax_threads = 99\n',
+                encoding="utf-8",
+            )
+            team.materialize(p, "codex", td)
+            data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual("gpt-5.4", data["model"])
+            self.assertEqual("on-request", data["approval_policy"])
+            self.assertEqual(1, data["agents"]["max_depth"])
+            self.assertEqual(p["budget"]["maxConcurrentWorkers"], data["agents"]["max_threads"])
+
+    def test_codex_materialization_preserves_project_agents_and_adds_root_delivery_guidance(self):
+        p = team.accept(team.propose("Обнови README", backend="codex"))
+        with tempfile.TemporaryDirectory() as td:
+            agents = Path(td) / "AGENTS.md"
+            agents.write_text("# Existing project guidance\n\n- Keep this rule.\n", encoding="utf-8")
+            team.materialize(p, "codex", td)
+            text = agents.read_text(encoding="utf-8")
+            self.assertIn("Keep this rule", text)
+            self.assertIn(team.CODEX_GUIDANCE_BEGIN, text)
+            self.assertIn("root Codex thread acts as the Delivery Manager", text)
+            # Re-materialization updates one managed block instead of duplicating it.
+            team.materialize(p, "codex", td)
+            self.assertEqual(1, agents.read_text(encoding="utf-8").count(team.CODEX_GUIDANCE_BEGIN))
+
+    def test_codex_doctor_requires_root_guidance_for_full_materialization(self):
+        p = team.accept(team.propose("Обнови README", backend="codex"))
+        with tempfile.TemporaryDirectory() as td:
+            team.materialize(p, "codex", td)
+            report = codex_support.inspect_codex_project(td, run_cli=False)
+            check = next(item for item in report["checks"] if item["id"] == "root-delivery-guidance")
+            self.assertEqual("PASS", check["status"])
+
+    def test_codex_live_smoke_reports_unsupported_custom_agent_model(self):
+        p = team.accept(team.propose("Обнови README", backend="codex"))
+        with tempfile.TemporaryDirectory() as td:
+            team.materialize(p, "codex", td)
+            fake = SimpleNamespace(
+                returncode=1,
+                stdout='{"type":"turn.failed"}\n',
+                stderr="The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account.",
+            )
+            with patch.object(codex_support, "inspect_codex_project", return_value={"status": "PASS"}), \
+                 patch.object(codex_support.shutil, "which", return_value="codex"), \
+                 patch.object(codex_support.subprocess, "run", return_value=fake):
+                report = codex_support.run_live_smoke(td, role="writer")
+            self.assertEqual("FAIL", report["status"])
+            self.assertEqual("UNSUPPORTED_AGENT_MODEL", report["code"])
+            self.assertEqual("RUN_CODEX_DOCTOR_FIX_MODELS_INHERIT_AND_RESTART", report["recommendedNextAction"])
+
+    def test_codex_skill_is_full_delivery_lifecycle_not_only_materialization(self):
+        p = team.accept(team.propose("Почини баг", backend="codex"))
+        with tempfile.TemporaryDirectory() as td:
+            team.materialize(p, "codex", td)
+            skill = (Path(td) / ".agents" / "skills" / "your-ai-team" / "SKILL.md").read_text(encoding="utf-8")
+            for marker in ("root Delivery Manager", "final-gate", "boundary", "only accepted roles", "unsupported model"):
+                self.assertIn(marker.lower(), skill.lower())
+
+    def test_codex_doctor_detects_generic_model_and_can_remove_pins(self):
+        p = team.accept(team.propose("Обнови README", backend="codex"))
+        with tempfile.TemporaryDirectory() as td:
+            team.materialize(p, "codex", td, codex_model_mode="chatgpt")
+            agent = next((Path(td) / ".codex" / "agents").glob("*.toml"))
+            text = agent.read_text(encoding="utf-8")
+            text = __import__("re").sub(r'^model\s*=.*$', 'model = "gpt-5.6"', text, flags=__import__("re").MULTILINE)
+            agent.write_text(text, encoding="utf-8")
+            report = codex_support.inspect_codex_project(td, run_cli=False)
+            self.assertEqual("WARN", report["status"])
+            self.assertTrue(any("failed on some ChatGPT-account" in warning for warning in report["warnings"]))
+            codex_support.apply_model_mode(td, "inherit")
+            data = tomllib.loads(agent.read_text(encoding="utf-8"))
+            self.assertNotIn("model", data)
+
+    def test_codex_materialization_writes_provenance_manifest(self):
+        p = team.accept(team.propose("Исследуй архитектуру", backend="codex"))
+        with tempfile.TemporaryDirectory() as td:
+            team.materialize(p, "codex", td)
+            manifest = json.loads((Path(td) / "your-ai-team-codex.json").read_text(encoding="utf-8"))
+            self.assertEqual("codex", manifest["backend"])
+            self.assertEqual("inherit", manifest["modelMode"])
+            self.assertEqual(1, manifest["maxDepth"])
+            self.assertTrue(manifest["rootDeliveryManager"])
+            self.assertEqual(len(p["team"]), len(manifest["agents"]))
 
     def test_opencode_materialization_allows_only_selected_subagents(self):
         p = team.accept(team.propose("Исследуй архитектуру проекта", backend="opencode"))

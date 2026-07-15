@@ -20,6 +20,7 @@ import teamloop_cache as _cache_mod
 import teamloop_inbox as inbox_mod
 import teamloop_advisory as advisory_mod
 import your_ai_team as team_mod
+import codex_support as codex_mod
 import quality_value_boundary as boundary_mod
 from teamloop_context import WorkspaceContext
 from version import YOUR_AI_TEAM_VERSION, YOUR_AI_TEAM_SCHEMA_VERSION
@@ -7483,11 +7484,55 @@ def cmd_team_accept(args):
 def cmd_team_materialize(args):
     try:
         proposal = team_mod.load(args.proposal)
-        data = team_mod.materialize(proposal, args.backend, args.output_dir)
+        overrides = {
+            key: value
+            for key, value in {
+                "economy": getattr(args, "codex_economy_model", ""),
+                "balanced": getattr(args, "codex_balanced_model", ""),
+                "premium": getattr(args, "codex_premium_model", ""),
+            }.items()
+            if value
+        }
+        data = team_mod.materialize(
+            proposal,
+            args.backend,
+            args.output_dir,
+            codex_model_mode=getattr(args, "codex_model_mode", "inherit"),
+            codex_model_overrides=overrides,
+        )
     except (ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(2)
     print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def cmd_team_codex_doctor(args):
+    try:
+        if args.fix_models:
+            data = codex_mod.apply_model_mode(args.project_root, args.fix_models)
+        else:
+            data = codex_mod.inspect_codex_project(args.project_root, run_cli=not args.no_cli)
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+    if data.get("status") == "FAIL":
+        sys.exit(1)
+
+
+def cmd_team_codex_smoke(args):
+    try:
+        data = codex_mod.run_live_smoke(
+            args.project_root,
+            role=args.role,
+            timeout=args.timeout,
+        )
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+    if data.get("status") != "PASS":
+        sys.exit(2 if data.get("status") == "UNAVAILABLE" else 1)
 
 
 # ---------------------------------------------------------------------------
@@ -7572,7 +7617,7 @@ def cmd_adapter_verify(args):
             "route-role", "record-performance", "performance-report", "test-select",
             "release-info", "compat-check", "schema-lint", "dogfood",
             "inbox-send", "inbox-receive", "inbox-stats", "advisory-check",
-            "team-propose", "team-negotiate", "team-accept", "team-materialize",
+            "team-propose", "team-negotiate", "team-accept", "team-materialize", "team-codex-doctor", "team-codex-smoke",
             "boundary-create", "boundary-measure", "boundary-status", "boundary-decide",
             "boundary-complete-improvement", "boundary-verify", "boundary-lock-status",
             "adapter-verify",
@@ -7669,7 +7714,29 @@ def cmd_adapter_verify(args):
                     "detail": f"All {len(cmds)} command files exist"
                 })
 
-            # 6. Supported transitions are valid
+            # 6. Provided skills exist
+            skills = contract.get("providedSkills", [])
+            missing_skill_files = []
+            for skill in skills:
+                skill_file = skill.get("file", "")
+                skill_path = os.path.join(project_root, skill_file)
+                if not os.path.exists(skill_path):
+                    missing_skill_files.append(skill_file)
+            if missing_skill_files:
+                checks.append({
+                    "name": f"skills-exist-{adapter_id}",
+                    "status": "FAIL",
+                    "detail": f"Missing skill files: {', '.join(missing_skill_files)}"
+                })
+                violations.append(f"{adapter_id}: missing skill files {missing_skill_files}")
+            else:
+                checks.append({
+                    "name": f"skills-exist-{adapter_id}",
+                    "status": "PASS",
+                    "detail": f"All {len(skills)} skill files exist"
+                })
+
+            # 7. Supported transitions are valid
             supported_trans = contract.get("supportedTransitions", [])
             known_transitions = set(_TRANSITIONS.keys())
             unknown_trans = [t for t in supported_trans if t not in known_transitions]
@@ -8206,6 +8273,20 @@ def main():
     p_team_materialize.add_argument("--proposal", required=True)
     p_team_materialize.add_argument("--backend", choices=["codex", "opencode"], required=True)
     p_team_materialize.add_argument("--output-dir", required=True)
+    p_team_materialize.add_argument("--codex-model-mode", choices=["inherit", "chatgpt", "explicit"], default="inherit")
+    p_team_materialize.add_argument("--codex-economy-model", default="")
+    p_team_materialize.add_argument("--codex-balanced-model", default="")
+    p_team_materialize.add_argument("--codex-premium-model", default="")
+
+    p_team_codex_doctor = subparsers.add_parser("team-codex-doctor", help="Validate Codex installation, agents, skill, auth, and model compatibility")
+    p_team_codex_doctor.add_argument("--project-root", default=".")
+    p_team_codex_doctor.add_argument("--no-cli", action="store_true", help="Skip codex binary and login checks")
+    p_team_codex_doctor.add_argument("--fix-models", choices=["inherit", "chatgpt"], default="")
+
+    p_team_codex_smoke = subparsers.add_parser("team-codex-smoke", help="Run one opt-in read-only Codex custom-agent compatibility smoke")
+    p_team_codex_smoke.add_argument("--project-root", default=".")
+    p_team_codex_smoke.add_argument("--role", default="")
+    p_team_codex_smoke.add_argument("--timeout", type=int, default=240)
 
     # quality/value boundary manager
     def add_boundary_common(parser_obj):
@@ -8298,6 +8379,8 @@ def main():
         "team-negotiate": cmd_team_negotiate,
         "team-accept": cmd_team_accept,
         "team-materialize": cmd_team_materialize,
+        "team-codex-doctor": cmd_team_codex_doctor,
+        "team-codex-smoke": cmd_team_codex_smoke,
         "boundary-create": cmd_boundary_create,
         "boundary-measure": cmd_boundary_measure,
         "boundary-decide": cmd_boundary_decide,

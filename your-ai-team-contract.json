@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "product": "YourAITeam",
+  "createdAtUtc": "2026-07-15T17:56:20Z",
+  "status": "ACCEPTED",
+  "task": {
+    "description": "Проверь README и найди одну явную неточность. Код не меняй.",
+    "fingerprint": "75707412cb13b0334cb073b6eb4982de5d4e3fbdc09cc9bbf6ed12045123a9f2"
+  },
+  "analysis": {
+    "kind": "documentation",
+    "risk": "low",
+    "complexity": "low",
+    "uncertainty": "low",
+    "mutating": true,
+    "matchedSignals": [
+      "readme"
+    ]
+  },
+  "constraints": {
+    "backend": "codex",
+    "maxTokens": 14000,
+    "maxRoleCount": 3,
+    "preference": "cost",
+    "riskTolerance": "medium",
+    "acceptRisk": false
+  },
+  "team": [
+    {
+      "roleId": "delivery-manager",
+      "title": "Delivery Manager",
+      "grade": "balanced",
+      "engagement": "full",
+      "required": true,
+      "reason": "Owns the global result and may reject misleading local metrics.",
+      "expectedTokens": 4200,
+      "reasoningEffort": "medium",
+      "maxSteps": 9,
+      "sandbox": "workspace-write",
+      "mutatesWorkspace": false
+    },
+    {
+      "roleId": "writer",
+      "title": "Technical Writer",
+      "grade": "balanced",
+      "engagement": "full",
+      "required": true,
+      "reason": "Produces concise user-facing or engineering documentation.",
+      "expectedTokens": 6200,
+      "reasoningEffort": "medium",
+      "maxSteps": 9,
+      "sandbox": "workspace-write",
+      "mutatesWorkspace": true
+    },
+    {
+      "roleId": "quality-value-manager",
+      "title": "Quality/Value Boundary Manager",
+      "grade": "economy",
+      "engagement": "final-only",
+      "required": true,
+      "reason": "Runs once per authoritative metrics fingerprint and cannot waive hard gates.",
+      "expectedTokens": 1300,
+      "reasoningEffort": "low",
+      "maxSteps": 3,
+      "sandbox": "read-only",
+      "mutatesWorkspace": false
+    }
+  ],
+  "budget": {
+    "directRoleTokens": 11700,
+    "coordinationOverheadTokens": 1900,
+    "coordinationOverheadRate": 0.16,
+    "expectedTokens": 13600,
+    "rangeTokens": {
+      "min": 9792,
+      "max": 19720
+    },
+    "roleCount": 3,
+    "maxConcurrentWorkers": 2,
+    "currency": "estimated-model-tokens",
+    "billingDisclaimer": "Planning estimate only; exact provider billing and cached-token behavior are backend-specific."
+  },
+  "tradeoffs": [],
+  "unmetConstraints": [],
+  "residualRisks": [],
+  "acceptance": {
+    "accepted": true,
+    "acceptedAtUtc": "2026-07-15T17:56:41Z",
+    "acceptedFingerprint": "4159cfc00635c83cb970a6043155d44f18e4d5fc5c2a8e7aec62fbb973fbe995"
+  },
+  "negotiationHistory": [],
+  "proposalId": "team-c1b87599d59e",
+  "fingerprint": "0d89811a4a0fa6b0c4519fa265683e2a8f1a3eb1c19983f279e8f2b3c015f38e"
+}
