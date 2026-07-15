@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "YourAITeamScriptValidation",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "checkedAtUtc",
+    "status",
+    "root",
+    "files",
+    "checks",
+    "runtimes",
+    "results"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "contract": { "type": "string", "const": "your-ai-team.script-validation/v1" },
+    "checkedAtUtc": { "type": "string", "format": "date-time" },
+    "status": { "type": "string", "enum": ["PASS", "FAIL"] },
+    "root": { "type": "string", "minLength": 1 },
+    "files": {
+      "type": "object",
+      "required": ["powershell", "bash", "python", "shims"],
+      "properties": {
+        "powershell": { "type": "integer", "minimum": 0 },
+        "bash": { "type": "integer", "minimum": 0 },
+        "python": { "type": "integer", "minimum": 0 },
+        "shims": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "checks": {
+      "type": "object",
+      "required": ["pass", "fail", "unavailable"],
+      "properties": {
+        "pass": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "unavailable": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "runtimes": {
+      "type": "object",
+      "required": ["python", "bash", "powershell"],
+      "properties": {
+        "python": { "type": "string" },
+        "bash": { "type": "string" },
+        "powershell": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path", "status", "detail"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["powershell", "bash", "python", "shim"] },
+          "path": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["PASS", "FAIL", "UNAVAILABLE"] },
+          "detail": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
